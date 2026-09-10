@@ -669,6 +669,13 @@ pub enum TypeExpr {
         params: Vec<Spanned<TypeExpr>>,
         return_type: Box<Spanned<TypeExpr>>,
     },
+    /// An anonymous actor's handle type, `actor(M) -> R`, mirroring `fn(M) -> R`.
+    /// Several parameters describe one tuple message, as an anonymous actor's
+    /// body takes one message per turn.
+    ActorFn {
+        params: Vec<Spanned<TypeExpr>>,
+        return_type: Box<Spanned<TypeExpr>>,
+    },
     Pointer {
         is_mutable: bool,
         pointee: Box<Spanned<TypeExpr>>,

@@ -2188,6 +2188,17 @@ fn render_type_expr(ty: &TypeExpr) -> String {
                 render_type_expr(&return_type.0)
             )
         }
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
+            format!(
+                "actor({}) -> {}",
+                ps.join(", "),
+                render_type_expr(&return_type.0)
+            )
+        }
         TypeExpr::Pointer {
             is_mutable,
             pointee,
@@ -2402,6 +2413,10 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => {
             for param in params {
                 canonicalize_injected_cursor_type_expr(&mut param.0);
@@ -9899,6 +9914,10 @@ fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => {
             for param in params {
                 collect_type_expr_named_leaves(&param.0, out);
@@ -10622,11 +10641,11 @@ impl LowerCtx {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![ResolvedTy::Named {
-                    name: hew_types::BuiltinType::LocalPid
+                    name: hew_types::BuiltinType::ActorHandle
                         .canonical_name()
                         .to_string(),
                     args: vec![ResolvedTy::Unit],
-                    builtin: Some(hew_types::BuiltinType::LocalPid),
+                    builtin: Some(hew_types::BuiltinType::ActorHandle),
                     is_opaque: false,
                 }],
                 linkage: None,
@@ -10663,11 +10682,11 @@ impl LowerCtx {
                     id,
                     return_ty: ResolvedTy::Unit,
                     param_tys: vec![ResolvedTy::Named {
-                        name: hew_types::BuiltinType::LocalPid
+                        name: hew_types::BuiltinType::ActorHandle
                             .canonical_name()
                             .to_string(),
                         args: vec![ResolvedTy::Unit],
-                        builtin: Some(hew_types::BuiltinType::LocalPid),
+                        builtin: Some(hew_types::BuiltinType::ActorHandle),
                         is_opaque: false,
                     }],
                     linkage: None,
@@ -15028,35 +15047,6 @@ impl LowerCtx {
     ) -> ResolvedTy {
         if let ResolvedTy::Named {
             name,
-            mut args,
-            builtin: Some(BuiltinType::LocalPid),
-            is_opaque,
-        } = ty
-        {
-            if let [ResolvedTy::Named {
-                name: actor_name,
-                builtin: None,
-                ..
-            }] = args.as_mut_slice()
-            {
-                if !actor_name.contains('.') {
-                    if let Some(module) = decl_module {
-                        let qualified = format!("{module}.{actor_name}");
-                        if self.actor_type_names.contains(&qualified) {
-                            actor_name.clone_from(&qualified);
-                        }
-                    }
-                }
-            }
-            return ResolvedTy::Named {
-                name,
-                args,
-                builtin: Some(BuiltinType::LocalPid),
-                is_opaque,
-            };
-        }
-        if let ResolvedTy::Named {
-            name,
             args,
             builtin,
             ..
@@ -15078,9 +15068,9 @@ impl LowerCtx {
 
                 if let Some(actor_name) = actor_name {
                     return ResolvedTy::Named {
-                        name: BuiltinType::LocalPid.canonical_name().to_string(),
-                        args: vec![ResolvedTy::named_user(actor_name, args.clone())],
-                        builtin: Some(BuiltinType::LocalPid),
+                        name: actor_name,
+                        args: args.clone(),
+                        builtin: Some(BuiltinType::ActorHandle),
                         is_opaque: false,
                     };
                 }
@@ -17603,7 +17593,7 @@ impl LowerCtx {
             }
             Expr::Identifier(name) if name == "self" && self.lookup(name).is_none() => {
                 // Bare `self` inside an actor `receive fn` — the actor's own
-                // handle. The checker records its type as `LocalPid<Self>` in
+                // handle, whose type is the actor. The checker records it in
                 // `expr_types`, but ONLY inside an actor; elsewhere it reports
                 // an undefined variable and records nothing usable. HIR is
                 // checker-authoritative here: it READS that recorded type, it
@@ -17616,22 +17606,22 @@ impl LowerCtx {
                     Some(ty) => match ResolvedTy::from_ty(&ty) {
                         Ok(
                             resolved @ ResolvedTy::Named {
-                                builtin: Some(BuiltinType::LocalPid),
+                                builtin: Some(BuiltinType::ActorHandle),
                                 ..
                             },
                         ) => (HirExprKind::ActorSelf, resolved),
-                        // The checker recorded a type for `self` that is not a
-                        // `LocalPid<_>`. The only authoritative producer is the
-                        // actor-handler synthesis (`LocalPid<Self>`); anything
-                        // else is a boundary violation — fail closed, never
-                        // fabricate a self-handle.
+                        // The checker recorded a type for `self` that is not an
+                        // actor handle. The only authoritative producer is the
+                        // actor-handler synthesis (`Self` is the actor type);
+                        // anything else is a boundary violation — fail closed,
+                        // never fabricate a self-handle.
                         Ok(other) => {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
                                     name: "self".to_string(),
                                     reason: format!(
-                                        "expected `LocalPid<Self>` recorded by the checker, \
-                                         got `{}`",
+                                        "expected the actor's own handle type recorded by \
+                                         the checker, got `{}`",
                                         other.user_facing()
                                     ),
                                 },
@@ -19680,7 +19670,7 @@ impl LowerCtx {
         ResolvedTy::Named {
             name: "LambdaPid".to_string(),
             args: vec![msg_ty, reply_ty],
-            builtin: Some(hew_types::BuiltinType::LambdaPid),
+            builtin: Some(hew_types::BuiltinType::ActorFn),
             is_opaque: false,
         }
     }
@@ -20095,13 +20085,13 @@ impl LowerCtx {
             ));
             ResolvedTy::Unit
         };
-        // The checker's `LocalPid<T>` inner name is the actor's resolved
-        // identity: dotted (`bank.Account`) for module actors, bare for
-        // root/flat actors. It already encodes the local-first bare-name
-        // resolution (a bare `spawn Account()` inside module `bank` resolves
-        // to `bank.Account`), so it overrides the syntactic spelling. MIR
-        // actor layouts key on the same identity (`qualified_name()`).
-        if let Some(inner) = Self::local_pid_actor_identity(&ty) {
+        // The checker's handle type names the actor's resolved identity:
+        // dotted (`bank.Account`) for module actors, bare for root/flat
+        // actors. It already encodes the local-first bare-name resolution (a
+        // bare `spawn Account()` inside module `bank` resolves to
+        // `bank.Account`), so it overrides the syntactic spelling. MIR actor
+        // layouts key on the same identity (`qualified_name()`).
+        if let Some(inner) = Self::actor_handle_identity(&ty) {
             inner.clone_into(&mut actor_name);
         }
         if let Some(qualified) = self
@@ -20120,16 +20110,13 @@ impl LowerCtx {
         )
     }
 
-    fn local_pid_actor_identity(ty: &ResolvedTy) -> Option<&str> {
+    fn actor_handle_identity(ty: &ResolvedTy) -> Option<&str> {
         let ResolvedTy::Named {
-            args,
-            builtin: Some(BuiltinType::LocalPid),
+            name,
+            builtin: Some(BuiltinType::ActorHandle),
             ..
         } = ty
         else {
-            return None;
-        };
-        let [ResolvedTy::Named { name, .. }] = args.as_slice() else {
             return None;
         };
         Some(name)
@@ -22941,7 +22928,7 @@ impl LowerCtx {
                 return checked;
             }
         }
-        if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
+        if matches!(builtin, Some(BuiltinType::ChildRef)) {
             if let [ResolvedTy::Named {
                 name: actor_name, ..
             }] = args.as_mut_slice()
@@ -22954,6 +22941,32 @@ impl LowerCtx {
                     actor_name.clone_from(qualified);
                 }
             }
+        }
+        // An actor is the type of its handle: the handle's own nominal is the
+        // actor declaration, and the discriminator is that declaration's
+        // representation authority. Qualify the name the way a source record's
+        // is qualified, and keep the handle — the source-declaration rule below
+        // strips an unproven presentation marker, which this is not.
+        if matches!(builtin, Some(BuiltinType::ActorHandle)) {
+            let mut actor_name = name;
+            if let Some(qualified) = self
+                .imported_actor_rewrites
+                .as_ref()
+                .and_then(|rewrites| rewrites.get(&actor_name))
+            {
+                actor_name.clone_from(qualified);
+            } else if !actor_name.contains('.') {
+                let canonical = self.canonical_current_module_record_name(&actor_name);
+                if self.actor_type_names.contains(&canonical) {
+                    actor_name = canonical;
+                }
+            }
+            return ResolvedTy::Named {
+                name: actor_name,
+                args,
+                builtin,
+                is_opaque,
+            };
         }
         let current_module_is_file_import = self
             .current_module_name
@@ -23766,7 +23779,12 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     }
-                    _ => self.resolve_named_type_ref(name, args),
+                    _ => {
+                        let resolved = self.resolve_named_type_ref(name, args);
+                        // An actor is the type of its handle: a written actor
+                        // name in any position holds the actor.
+                        self.canonicalize_actor_ref_field_ty(resolved, None)
+                    }
                 }
             }
             TypeExpr::Infer => {
@@ -23801,6 +23819,23 @@ impl LowerCtx {
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
                 ret: Box::new(self.lower_type(return_type)),
             },
+            TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                let resolved: Vec<ResolvedTy> =
+                    params.iter().map(|param| self.lower_type(param)).collect();
+                let msg = match resolved.len() {
+                    0 => ResolvedTy::Unit,
+                    1 => resolved.into_iter().next().unwrap_or(ResolvedTy::Unit),
+                    _ => ResolvedTy::Tuple(resolved),
+                };
+                ResolvedTy::named_builtin(
+                    BuiltinType::ActorFn.canonical_name(),
+                    BuiltinType::ActorFn,
+                    vec![msg, Box::new(self.lower_type(return_type)).as_ref().clone()],
+                )
+            }
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
@@ -35339,7 +35374,7 @@ impl Widget {
         assert!(
             matches!(
                 &init.ty,
-                ResolvedTy::Named { builtin: Some(BuiltinType::LocalPid), args, .. }
+                ResolvedTy::Named { builtin: Some(BuiltinType::ActorHandle), args, .. }
                     if args == &[ResolvedTy::named_user("Worker", Vec::new())]
             ),
             "spawn must retain the exact builtin PID and authored actor type: {:?}",
@@ -35448,7 +35483,7 @@ impl Widget {
             // ChildRef, LocalPid, and the raw runtime word free nothing.
             for (name, kind) in [
                 ("ChildRef", BuiltinType::ChildRef),
-                ("LocalPid", BuiltinType::LocalPid),
+                ("LocalPid", BuiltinType::ActorHandle),
             ] {
                 assert!(!transfers(&builtin_handle(name, kind)));
             }
@@ -35468,7 +35503,7 @@ impl Widget {
                 ("Stream", BuiltinType::Stream),
                 ("Sink", BuiltinType::Sink),
                 ("Duplex", BuiltinType::Duplex),
-                ("LambdaPid", BuiltinType::LambdaPid),
+                ("LambdaPid", BuiltinType::ActorFn),
                 ("BoxedActor", BuiltinType::BoxedActor),
                 ("MonitorRef", BuiltinType::MonitorRef),
             ] {
@@ -35600,18 +35635,16 @@ impl Widget {
             None
         );
 
-        let actor = named("bank.Account", None, Vec::new());
-        let renamed_pid = named(
-            "WorkerHandle",
-            Some(BuiltinType::LocalPid),
-            vec![actor.clone()],
-        );
-        let user_pid = named("LocalPid", None, vec![actor]);
+        // An actor is the type of its handle: the identity is the handle's own
+        // name, and a same-named user nominal without the discriminator is not
+        // an actor handle.
+        let handle = named("bank.Account", Some(BuiltinType::ActorHandle), Vec::new());
+        let user_nominal = named("bank.Account", None, Vec::new());
         assert_eq!(
-            LowerCtx::local_pid_actor_identity(&renamed_pid),
+            LowerCtx::actor_handle_identity(&handle),
             Some("bank.Account")
         );
-        assert_eq!(LowerCtx::local_pid_actor_identity(&user_pid), None);
+        assert_eq!(LowerCtx::actor_handle_identity(&user_nominal), None);
 
         let mut vec_ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -37882,12 +37915,12 @@ impl Widget {
     /// `canonicalize_actor_ref_field_ty` produces for a resolved actor field.
     fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
         ResolvedTy::Named {
-            name: BuiltinType::LocalPid.canonical_name().to_string(),
+            name: BuiltinType::ActorHandle.canonical_name().to_string(),
             args: vec![ResolvedTy::named_user(
                 qualified_actor_name.to_string(),
                 Vec::new(),
             )],
-            builtin: Some(BuiltinType::LocalPid),
+            builtin: Some(BuiltinType::ActorHandle),
             is_opaque: false,
         }
     }

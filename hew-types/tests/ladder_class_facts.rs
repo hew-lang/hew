@@ -215,7 +215,7 @@ fn a_local_pid_is_bitcopy() {
         matches!(
             ty,
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::LocalPid),
+                builtin: Some(BuiltinType::ActorHandle),
                 ..
             }
         )

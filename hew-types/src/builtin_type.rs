@@ -35,13 +35,18 @@ pub enum BuiltinType {
     Sink,
     Duplex,
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
-    /// supervisor `S`. Runtime representation is `{ LocalPid<S>, i64 pool_key }`.
+    /// supervisor `S`. Runtime representation is `{ actor handle, i64 pool_key }`.
     SupervisorPool,
     /// `ChildRef<T>` — a stable reference to a declared actor or supervisor role.
     /// It carries an opaque owner identity and static child slot; nested owners
     /// preserve the complete role path across supervisor replacement.
     ChildRef,
-    LocalPid,
+    /// The handle of a declared actor: `Ty::Named { name: "Orders", args, builtin:
+    /// Some(ActorHandle) }` is the type written `Orders` in source. An actor is
+    /// the type of its handle (D489), so the actor's own name and type arguments
+    /// ride the `Named` carrier and there is no separate pid spelling. Runtime
+    /// representation is one opaque pointer word (`*mut HewActor`).
+    ActorHandle,
     NodeId,
     Location,
     RemotePid,
@@ -54,15 +59,13 @@ pub enum BuiltinType {
     MachineState,
     SendHalf,
     RecvHalf,
-    /// `LambdaPid<M, R>` — the user-visible handle for a lambda actor
-    /// (`actor |m: M| -> R { .. }`). PID-like: "a pid you ask, M in → R out".
-    /// Unifies the conceptual model with `LocalPid`/`RemotePid` (the `Pid`
-    /// family) rather than the `Duplex` channel substrate. `handle_family =
-    /// ActorPid` (not `Duplex`) so the channel-only surface (`.recv()`,
-    /// `.send_half()`, `.recv_half()`) is never exposed on an actor handle.
-    /// Lowers to `*mut HewLambdaActorHandle`; a call on it reaches the
-    /// lambda actor's one handler through the ordinary actor ask path.
-    LambdaPid,
+    /// The handle of an anonymous actor, written `actor(M) -> R` and produced by
+    /// `actor |m: M| -> R { .. }`. It mirrors an `fn` type: message in, reply out.
+    /// `handle_family = ActorPid` (not `Duplex`) so the channel-only surface
+    /// (`.recv()`, `.send_half()`, `.recv_half()`) is never exposed on an actor
+    /// handle. Lowers to `*mut HewLambdaActorHandle`; a call on it reaches the
+    /// anonymous actor's one handler through the ordinary actor ask path.
+    ActorFn,
     CrashInfo,
     CrashAction,
     /// `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`
@@ -175,7 +178,7 @@ pub enum BuiltinHandleFamily {
 pub enum BuiltinTypeRole {
     ActorDispatchLocal,
     ActorDispatchRemote,
-    SupervisorLocalPid,
+    SupervisorHandle,
     WasmNativeOnlyHandle,
     ActorStatePayload,
     MachineStatePayload,
@@ -233,7 +236,7 @@ builtin_types! {
     Duplex => "Duplex",
     SupervisorPool => "SupervisorPool",
     ChildRef => "ChildRef",
-    LocalPid => "LocalPid",
+    ActorHandle => "ActorHandle",
     NodeId => "NodeId",
     Location => "Location",
     RemotePid => "RemotePid",
@@ -246,7 +249,7 @@ builtin_types! {
     MachineState => "MachineState",
     SendHalf => "SendHalf",
     RecvHalf => "RecvHalf",
-    LambdaPid => "LambdaPid",
+    ActorFn => "ActorFn",
     CrashInfo => "CrashInfo",
     CrashAction => "CrashAction",
     CrashNotification => "CrashNotification",
@@ -328,9 +331,9 @@ impl BuiltinType {
         matches!(
             self,
             Self::ChildRef
-                | Self::LocalPid
+                | Self::ActorHandle
                 | Self::RemotePid
-                | Self::LambdaPid
+                | Self::ActorFn
                 | Self::HewActor
                 | Self::Rc
                 | Self::Weak
@@ -346,8 +349,8 @@ impl BuiltinType {
     /// the delivered copy a scope-exit owner in the handler, so a transferring
     /// argument consumes the caller's binding.
     ///
-    /// The exclusions are exactly the NON-OWNING actor references: `LocalPid`
-    /// and its raw runtime word `HewActor` (the pointer `LocalPid<T>` lowers
+    /// The exclusions are exactly the NON-OWNING actor references: `ActorHandle`
+    /// and its raw runtime word `HewActor` (the pointer `ActorHandle<T>` lowers
     /// to). A pid's drop frees nothing — it is a by-value reference snapshot —
     /// so sending one must leave the sender's handle live, or every supervisor
     /// that hands one child's pid to two peers stops compiling.
@@ -355,7 +358,7 @@ impl BuiltinType {
     /// Everything else with a release contract transfers, including handles
     /// that merely LOOK like references:
     ///
-    /// * `LambdaPid` — a refcounted wrapper. The runtime
+    /// * `ActorFn` — a refcounted wrapper. The runtime
     ///   exposes `hew_lambda_actor_clone`, which allocates a distinct owning
     ///   wrapper precisely because a plain address copy is unsafe; two owners
     ///   of one wrapper release it twice (observed: SIGSEGV).
@@ -387,7 +390,7 @@ impl BuiltinType {
                 | Self::HewRecvHalf
                 | Self::Generator
                 | Self::CancellationToken
-                | Self::LambdaPid
+                | Self::ActorFn
                 | Self::BoxedActor
                 | Self::MonitorRef
         )
@@ -409,19 +412,19 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaPid
+            | Self::ActorFn
             | Self::CancellationToken
             | Self::MonitorRef
             // ir-ladder §1.1 gives a pid the BitCopy row, and the class table
             // records that verdict. These three markers cannot follow yet:
             // `marker()` is the legacy lowering's input and the legacy route is
-            // the parity oracle, so flipping `LocalPid` routes a
-            // `Vec<LocalPid<_>>` element off its pointer ABI and moves an
+            // the parity oracle, so flipping `ActorHandle` routes a
+            // `Vec<ActorHandle<_>>` element off its pointer ABI and moves an
             // elaborated-MIR baseline, and `HewActor`/`BoxedActor` carry
             // `close_method() = Some("close")` while
             // `hew-hir/src/builtin_type_classes.rs` asserts a BitCopy builtin
             // registers none. They flip at P5 with the legacy carrier (§9).
-            | Self::LocalPid => BuiltinTypeMarker::Resource,
+            | Self::ActorHandle => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
             | Self::ChildRef
             | Self::NodeId
@@ -475,7 +478,7 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaPid
+            | Self::ActorFn
             | Self::MonitorRef => Some("close"),
             Self::CancellationToken => Some("release"),
             _ => None,
@@ -517,7 +520,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::ChildRef | Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
+            Self::ChildRef | Self::ActorHandle | Self::RemotePid | Self::ActorFn => {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
@@ -548,7 +551,6 @@ impl BuiltinType {
             | Self::Receiver
             | Self::Stream
             | Self::Sink
-            | Self::LocalPid
             | Self::RemotePid
             | Self::ChildRef
             | Self::ActorState
@@ -562,7 +564,7 @@ impl BuiltinType {
             | Self::Duplex
             | Self::SupervisorPool
             | Self::HewDuplex
-            | Self::LambdaPid => 2,
+            | Self::ActorFn => 2,
             Self::JsonValue
             | Self::YamlValue
             | Self::HewActor
@@ -593,17 +595,20 @@ impl BuiltinType {
             | Self::Instant
             | Self::Trap
             | Self::CancellationToken
-            | Self::TimeoutError => 0,
+            | Self::TimeoutError
+            // An actor handle carries the actor declaration's own type
+            // arguments, so it has no fixed builtin arity.
+            | Self::ActorHandle => 0,
         }
     }
 
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::ChildRef | Self::LambdaPid => &[BuiltinTypeRole::ActorDispatchLocal],
-            Self::LocalPid => &[
+            Self::ChildRef | Self::ActorFn => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::ActorHandle => &[
                 BuiltinTypeRole::ActorDispatchLocal,
-                BuiltinTypeRole::SupervisorLocalPid,
+                BuiltinTypeRole::SupervisorHandle,
             ],
             Self::RemotePid => &[BuiltinTypeRole::ActorDispatchRemote],
             Self::HewActor
@@ -656,7 +661,7 @@ impl BuiltinType {
     }
 
     /// True for the local actor-handle builtin that lowers to a single
-    /// pointer-shaped runtime word (`*mut HewActor`) — `LocalPid<T>`.
+    /// pointer-shaped runtime word (`*mut HewActor`) — `ActorHandle<T>`.
     ///
     /// This is the builtin whose codegen `resolve_ty` arm produces an opaque
     /// `ptr` and whose `Vec<T>` constructor routes to `hew_vec_new_ptr` (see
@@ -673,7 +678,7 @@ impl BuiltinType {
     /// move-only resources and are not admitted as Vec elements here.
     #[must_use]
     pub const fn lowers_as_pointer_vec_element(self) -> bool {
-        matches!(self, Self::LocalPid)
+        matches!(self, Self::ActorHandle)
     }
 
     /// True when the builtin's complete value ABI is one opaque pointer word.
@@ -700,8 +705,8 @@ impl BuiltinType {
                 | Self::Sink
                 | Self::SendHalf
                 | Self::RecvHalf
-                | Self::LocalPid
-                | Self::LambdaPid
+                | Self::ActorHandle
+                | Self::ActorFn
                 | Self::Generator
         )
     }
@@ -1014,8 +1019,8 @@ mod tests {
             BuiltinType::Sink,
             BuiltinType::SendHalf,
             BuiltinType::RecvHalf,
-            BuiltinType::LocalPid,
-            BuiltinType::LambdaPid,
+            BuiltinType::ActorHandle,
+            BuiltinType::ActorFn,
             BuiltinType::Generator,
         ];
 
@@ -1045,14 +1050,14 @@ mod tests {
     fn handle_and_project_cap_facts_are_registered() {
         let expected = [
             (
-                BuiltinType::LocalPid,
+                BuiltinType::ActorHandle,
                 BuiltinTypeMarker::Resource,
                 None,
                 Some(BuiltinHandleFamily::ActorPid),
-                1,
+                0,
                 &[
                     BuiltinTypeRole::ActorDispatchLocal,
-                    BuiltinTypeRole::SupervisorLocalPid,
+                    BuiltinTypeRole::SupervisorHandle,
                 ][..],
             ),
             (
@@ -1064,7 +1069,7 @@ mod tests {
                 &[BuiltinTypeRole::ActorDispatchRemote][..],
             ),
             (
-                BuiltinType::LambdaPid,
+                BuiltinType::ActorFn,
                 BuiltinTypeMarker::Resource,
                 Some("close"),
                 Some(BuiltinHandleFamily::ActorPid),

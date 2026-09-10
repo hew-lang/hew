@@ -511,13 +511,13 @@ impl Checker {
                     }
                 }
             }
-            // `LocalPid<C>` → `LocalPid<T>` coercion when `C: T`.
+            // Actor-handle narrowing `C` → `T` when `C: T`.
             //
             // The active-mode `conn.attach(this)` surface needs a concrete
-            // actor pid (`LocalPid<EchoConn>`) to satisfy an extern that takes
-            // the trait-typed handler pid (`LocalPid<ConnectionHandler>`). A
-            // `LocalPid<T>` is an opaque actor-ref pointer (`*mut HewActor`);
-            // the inner type parameter is purely a compile-time tag used for
+            // actor handle (`EchoConn`) to satisfy an extern that takes the
+            // handler-trait handle (`ConnectionHandler`). An actor handle is an
+            // opaque actor-ref pointer (`*mut HewActor`); its nominal
+            // identity is purely a compile-time tag used for
             // `.send`/`.ask` message typing and (for handler traits) for
             // msg_id synthesis. Narrowing a concrete-actor pid to a
             // handler-trait pid is therefore pointer-identical at runtime — no
@@ -529,8 +529,8 @@ impl Checker {
             // `attach` call site), so the trait erasure carries no runtime
             // payload here.
             if let (Some(expected_inner), Some(actual_inner)) = (
-                expected_resolved.as_local_pid(),
-                actual_resolved.as_local_pid(),
+                expected_resolved.as_actor_handle(),
+                actual_resolved.as_actor_handle(),
             ) {
                 if let (
                     Ty::Named {
@@ -900,6 +900,10 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => {
             params.iter().any(|p| type_expr_mentions_self(&p.0))
                 || type_expr_mentions_self(&return_type.0)

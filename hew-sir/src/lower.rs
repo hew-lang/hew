@@ -2747,8 +2747,8 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || collection_type_arguments(ty).is_some()
-        || ty.is_builtin(hew_types::BuiltinType::LocalPid)
-        || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
+        || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
+        || ty.is_builtin(hew_types::BuiltinType::ActorFn)
         || ty.is_builtin(hew_types::BuiltinType::ChildRef)
         // A pool view is the same fixed-width pair a role is: the owning
         // supervisor and a slot.

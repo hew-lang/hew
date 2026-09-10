@@ -980,10 +980,10 @@ pub fn collection_value_dependencies(
             continue;
         }
         if matches!(&ty, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::LocalPid), args, ..
+            builtin: Some(hew_types::BuiltinType::ActorHandle), args, ..
         } if args.len() == 1)
             || matches!(&ty, ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::LambdaPid), args, ..
+                builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
             } if args.len() == 2)
         {
             // The protocol parameters describe an actor, not an embedded value.

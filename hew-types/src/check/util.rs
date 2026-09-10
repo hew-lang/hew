@@ -98,6 +98,10 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => params
             .iter()
             .find_map(first_infer_span_in_type_expr)

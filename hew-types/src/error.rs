@@ -871,6 +871,12 @@ pub enum TypeErrorKind {
     /// cannot be named in user source. Bindings of this type are inferred from
     /// `fork name = expr` context only.
     TaskNotNameable,
+    /// A retired actor-handle spelling (`LocalPid<A>`, `Pid<A>`,
+    /// `LambdaPid<M, R>`) was written in a type position. An actor is the type
+    /// of its handle, so the actor's own name is the only spelling.
+    ///
+    /// Envelope code: `E_ACTOR_HANDLE_TYPE`.
+    ActorHandleTypeNotNameable,
     /// An operation that requires an `unsafe { ... }` block was performed
     /// outside of one.  The `operation` field names the specific unsafe
     /// construct (e.g. `"raw pointer dereference"`, `"extern fn call"`).
@@ -1523,6 +1529,7 @@ impl TypeErrorKind {
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
+            Self::ActorHandleTypeNotNameable => "E_ACTOR_HANDLE_TYPE",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
             Self::RawPointerOpNotLowered { .. } => "RawPointerOpNotLowered",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",

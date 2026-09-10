@@ -755,10 +755,10 @@ fn classify(
             | BuiltinType::CloseError
             // §1.1 decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
-            | BuiltinType::LocalPid
+            | BuiltinType::ActorHandle
             // A lambda actor's handle is a pid under another spelling, and
             // owns the actor no more than `LocalPid` does.
-            | BuiltinType::LambdaPid
+            | BuiltinType::ActorFn
             | BuiltinType::HewActor => bits,
             // Enums whose class is the join over their payload arguments.
             BuiltinType::Option | BuiltinType::Result => {

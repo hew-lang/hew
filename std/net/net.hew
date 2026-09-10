@@ -592,7 +592,7 @@ trait ConnectionMethods {
 ///
 /// Declared `pub` so the type checker can recognise that a concrete actor's
 /// `receive fn`s structurally satisfy this handler trait at the
-/// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion site (the
+/// Actor-handle narrowing `Actor` → `ConnectionHandler` coercion site (the
 /// `conn.attach(self)` surface).
 ///
 /// # Example
@@ -611,7 +611,7 @@ trait ConnectionMethods {
 ///
 /// fn main() {
 ///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
+///     let handler: InboundLogger = spawn InboundLogger;
 ///     match conn.attach(handler) {
 ///         .Ok(()) => {},
 ///         .Err(net.AttachError.Refused) => println("attach refused"),
@@ -724,7 +724,7 @@ impl Connection {
     /// refusal the runtime closes the consumed connection before returning
     /// `Err(AttachError.Refused)`. Every call site is rewritten to
     /// `hew_tcp_attach_local` by the checker/codegen.
-    fn attach(consume self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
+    fn attach(consume self, handler: ConnectionHandler) -> Result<(), AttachError> {
         Err(AttachError.Refused)
     }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.

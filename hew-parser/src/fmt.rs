@@ -2034,6 +2034,18 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&return_type.0);
                 }
             }
+            TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                self.write("actor(");
+                self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
+                self.write(")");
+                if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
+                    self.write(" -> ");
+                    self.format_type_expr(&return_type.0);
+                }
+            }
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,

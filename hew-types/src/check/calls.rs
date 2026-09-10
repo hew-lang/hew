@@ -2025,8 +2025,11 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                // Not a RemotePid — fall through to the generic `fn_sigs` path,
-                // which applies the `link`/`unlink(LocalPid<T>)` builtin signature.
+                if !self.require_actor_handle_argument(&resolved, &func_name, sp) {
+                    return Ty::Error;
+                }
+                // A local actor handle — fall through to the generic `fn_sigs`
+                // path, which applies the builtin's own result type.
             }
             // Cross-node monitor: `monitor(RemotePid<T>)`. The local
             // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
@@ -2055,12 +2058,27 @@ impl Checker {
                     );
                     return result_ty;
                 }
-                // Not a RemotePid — fall through to the generic `fn_sigs` path,
-                // which applies the local typed-result builtin signature (and
-                // reports the precise mismatch for a bad argument).
+                if !self.require_actor_handle_argument(&resolved, &func_name, sp) {
+                    return Ty::Error;
+                }
+                // A local actor handle — fall through to the generic `fn_sigs`
+                // path, which applies the local typed-result builtin signature.
+            }
+            "Node::register" if args.len() == 2 && !self.declares_function(&func_name) => {
+                // Codegen extracts the runtime pid from a local actor handle, so
+                // a remote handle or a bare integer is refused here.
+                let (name_expr, name_sp) = args[0].expr();
+                self.check_against(name_expr, name_sp, &Ty::String);
+                let (actor_expr, actor_sp) = args[1].expr();
+                let actor_ty = self.synthesize(actor_expr, actor_sp);
+                let resolved = self.subst.resolve(&actor_ty);
+                if !self.require_actor_handle_argument(&resolved, "Node.register", actor_sp) {
+                    return Ty::Error;
+                }
+                return Ty::I32;
             }
             "supervisor_child" if args.len() == 2 => {
-                // supervisor_child(sup, index) → typed LocalPid based on supervisor decl
+                // supervisor_child(sup, index) → the child's actor type
                 let (sup_expr, sup_sp) = args[0].expr();
                 let sup_ty = self.synthesize(sup_expr, sup_sp);
                 let sup_ty_resolved = self.subst.resolve(&sup_ty);
@@ -2405,7 +2423,7 @@ impl Checker {
             if matches!(
                 &resolved_func_ty,
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::LambdaPid),
+                    builtin: Some(crate::BuiltinType::ActorFn),
                     ..
                 }
             ) {
@@ -2529,6 +2547,26 @@ impl Checker {
         Ty::Error
     }
 
+    /// Require a local actor handle as a builtin's operand.
+    ///
+    /// An actor is the type of its handle, so these builtins carry a free
+    /// variable in their registered signature and prove the operand here
+    /// against the checked fact instead of against a wrapper type.
+    fn require_actor_handle_argument(&mut self, ty: &Ty, callee: &str, span: &Span) -> bool {
+        if ty.as_local_actor_ref().is_some() || matches!(ty, Ty::Error | Ty::Var(_)) {
+            return true;
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "`{callee}` expects an actor handle; `{}` is not one",
+                ty.user_facing()
+            ),
+        );
+        false
+    }
+
     /// Whether a source declaration owns `name` in the current scope.
     ///
     /// `fn_def_spans` holds declaration sites, which only source items
@@ -2616,7 +2654,7 @@ impl Checker {
             // the handle's message type (M). The message must be Send (crosses actor boundary).
             Ty::Named {
                 args: ref type_args,
-                builtin: Some(crate::BuiltinType::LambdaPid),
+                builtin: Some(crate::BuiltinType::ActorFn),
                 ..
             } if type_args.len() == 2 => {
                 self.check_lambda_actor_call(&resolved, type_args, args, span, None)
@@ -2627,7 +2665,7 @@ impl Checker {
             Ty::Named { builtin: None, .. }
                 if crate::actor_delivery::sender_parts(&resolved)
                     .or_else(|| crate::actor_delivery::policy_view_parts(&resolved))
-                    .is_some_and(|(target, _)| target.as_lambda_pid().is_some()) =>
+                    .is_some_and(|(target, _)| target.as_actor_fn().is_some()) =>
             {
                 let one_way = crate::actor_delivery::sender_parts(&resolved).is_some();
                 let (target, policy) = crate::actor_delivery::sender_parts(&resolved)

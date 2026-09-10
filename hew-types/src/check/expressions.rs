@@ -2635,11 +2635,11 @@ impl Checker {
                 return Ty::Error;
             }
             if name == "self" {
-                // Inside an actor, bare `self` is the actor's own handle
-                // (`LocalPid<Self>`); actor state is still reached through a
-                // field, as `self.count` or bare `count`.
+                // Inside an actor, bare `self` is the actor's own handle:
+                // `Self` is the actor type. Actor state is still reached
+                // through a field, as `self.count` or bare `count`.
                 if let Some(actor_ty) = &self.current_actor_type {
-                    return Ty::local_pid(actor_ty.clone());
+                    return Ty::actor_handle_of(actor_ty);
                 }
                 self.report_error(
                     TypeErrorKind::UndefinedVariable,
@@ -3261,7 +3261,7 @@ impl Checker {
                 //
                 // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
                 // the runtime dimension of self-escape; this is the static type-level gate.
-                if body_ret.as_lambda_pid().is_some() || body_ret.as_duplex().is_some() {
+                if body_ret.as_actor_fn().is_some() || body_ret.as_duplex().is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -3354,7 +3354,7 @@ impl Checker {
                         ),
                     );
                 }
-                Ty::lambda_pid(msg_ty, reply_ty)
+                Ty::actor_fn(msg_ty, reply_ty)
             }
             Expr::Scope { body: block } => {
                 self.task_scope_depth += 1;
@@ -9133,7 +9133,7 @@ impl Checker {
                     }, span,
                     format!("{owner_kind} `{name}` has {declared_arity} type parameter(s) but {} type argument(s) were supplied", resolved_type_args.len()),
                 );
-                return Ty::local_pid(Ty::Error);
+                return Ty::Error;
             }
             let type_subst: HashMap<_, _> = type_params
                 .iter()
@@ -9151,17 +9151,13 @@ impl Checker {
                     span,
                     format!("cannot infer all type arguments of {owner_kind} `{name}` from its spawn arguments; supply explicit type arguments"),
                 );
-                return Ty::local_pid(Ty::Error);
+                return Ty::Error;
             }
             self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
 
-            Ty::local_pid(Ty::Named {
-                builtin: None,
-                name,
-                args: resolved_type_args,
-            })
+            Ty::actor_handle(name, resolved_type_args)
         } else {
-            Ty::local_pid(Ty::Error)
+            Ty::Error
         }
     }
 

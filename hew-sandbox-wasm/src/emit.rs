@@ -5395,6 +5395,18 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
             params: params.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect(),
             ret: Box::new(ty_from_type_expr(&return_type.0)),
         },
+        hew_parser::ast::TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let resolved: Vec<Ty> = params.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect();
+            let msg = match resolved.len() {
+                0 => Ty::Unit,
+                1 => resolved.into_iter().next().unwrap_or(Ty::Error),
+                _ => Ty::Tuple(resolved),
+            };
+            Ty::actor_fn(msg, ty_from_type_expr(&return_type.0))
+        }
         hew_parser::ast::TypeExpr::Pointer {
             is_mutable,
             pointee,

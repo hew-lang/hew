@@ -361,7 +361,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
-        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
+        Some(BuiltinType::ActorHandle) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
@@ -392,7 +392,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaPid
+            | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification

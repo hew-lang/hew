@@ -865,6 +865,10 @@ impl Builder {
                 params,
                 return_type,
                 ..
+            }
+            | TypeExpr::ActorFn {
+                params,
+                return_type,
             } => {
                 for ty in params {
                     self.refresh_type(ty);

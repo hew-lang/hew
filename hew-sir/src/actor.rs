@@ -118,10 +118,10 @@ impl SemActor {
     /// supervisor on every use, never a cached address.
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
-        let actor_ty = match &self.handle_ty {
-            ResolvedTy::Named { args, .. } => args[0].clone(),
-            _ => unreachable!("actor handle is validated as LocalPid<A>"),
-        };
+        let actor_ty = self
+            .handle_ty
+            .actor_handle_nominal()
+            .expect("actor handle is validated as the actor's own type");
         ResolvedTy::named_builtin(
             hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
@@ -129,7 +129,7 @@ impl SemActor {
         )
     }
 
-    /// Whether this actor's handle is a lambda actor's `LambdaPid<M, R>`.
+    /// Whether this actor's handle is an anonymous actor's `actor(M) -> R`.
     ///
     /// A lambda actor is spawned from an expression, never supervised as a
     /// named role, so it has no `ChildRef` spelling.
@@ -138,7 +138,7 @@ impl SemActor {
         matches!(
             self.handle_ty,
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::LambdaPid),
+                builtin: Some(hew_types::BuiltinType::ActorFn),
                 ..
             }
         )
@@ -256,32 +256,32 @@ impl SemActor {
 
     /// Check the handle spelling this descriptor answers to.
     fn validate_handle(&self) -> Result<(), String> {
-        // A named actor is addressed by `LocalPid<A>` naming its own
-        // declaration. A lambda actor has no source nominal to name, so its
-        // handle is `LambdaPid<Msg, Reply>` and the protocol it must agree
-        // with is its single handler's.
+        // A named actor is addressed by its own type. An anonymous actor has no
+        // source nominal to name, so its handle is `actor(M) -> R` and the
+        // protocol it must agree with is its single handler's.
         match &self.handle_ty {
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::LocalPid),
-                args,
+                builtin: Some(hew_types::BuiltinType::ActorHandle),
                 ..
             } => {
-                if !matches!(args.as_slice(), [ty] if ty.nominal_instance().is_some_and(|instance|
-                    instance.nominal.declaration() == &self.declaration))
+                if !self
+                    .handle_ty
+                    .actor_handle_instance()
+                    .is_some_and(|instance| instance.nominal.declaration() == &self.declaration)
                 {
                     return Err("actor handle refers to another declaration".into());
                 }
             }
             ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::LambdaPid),
+                builtin: Some(hew_types::BuiltinType::ActorFn),
                 args,
                 ..
             } => {
                 let [msg, reply] = args.as_slice() else {
-                    return Err("a lambda actor handle carries its message and reply".into());
+                    return Err("an anonymous actor handle carries its message and reply".into());
                 };
                 let [handler] = self.handlers.as_slice() else {
-                    return Err("a lambda actor declares exactly one handler".into());
+                    return Err("an anonymous actor declares exactly one handler".into());
                 };
                 let expected_msg = match handler.params.as_slice() {
                     [] => ResolvedTy::Unit,
@@ -289,7 +289,7 @@ impl SemActor {
                     many => ResolvedTy::Tuple(many.to_vec()),
                 };
                 if *msg != expected_msg || *reply != handler.return_ty {
-                    return Err("lambda actor handle differs from its handler's protocol".into());
+                    return Err("anonymous actor handle differs from its handler's protocol".into());
                 }
             }
             _ => return Err("actor descriptor requires a typed local handle".into()),
@@ -622,7 +622,7 @@ impl LocalObservationKind {
     ) -> Result<crate::SemSignature, String> {
         let valid_target = match self {
             LocalObservationKind::Demonitor => *target == ResolvedTy::U64,
-            _ => target.to_ty().as_local_pid().is_some(),
+            _ => target.to_ty().as_actor_handle().is_some(),
         };
         let valid_result = match self {
             LocalObservationKind::Link | LocalObservationKind::Monitor => result_parts(result)

@@ -548,7 +548,7 @@ fn collect_actor_refs<'a>(
             args,
             builtin,
         } => {
-            if matches!(builtin, Some(crate::BuiltinType::LocalPid)) {
+            if matches!(builtin, Some(crate::BuiltinType::ActorHandle)) {
                 // LocalPid<X> — record X if it's a known actor
                 if let Some(Ty::Named {
                     name: actor_name, ..

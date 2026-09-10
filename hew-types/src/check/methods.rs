@@ -3232,7 +3232,7 @@ impl Checker {
         // stored handle, not an indirect function call.
         if let Ty::Named {
             args: ref type_args,
-            builtin: Some(crate::BuiltinType::LambdaPid),
+            builtin: Some(crate::BuiltinType::ActorFn),
             ..
         } = resolved_field
         {
@@ -3867,7 +3867,7 @@ impl Checker {
                         Some(
                             crate::BuiltinType::Sender
                                 | crate::BuiltinType::Receiver
-                                | crate::BuiltinType::LocalPid
+                                | crate::BuiltinType::ActorHandle
                                 | crate::BuiltinType::RemotePid
                         )
                     )
@@ -8183,7 +8183,7 @@ impl Checker {
                 let actor_ref_builtin = if resolved.as_child_ref().is_some() {
                     crate::BuiltinType::ChildRef
                 } else {
-                    crate::BuiltinType::LocalPid
+                    crate::BuiltinType::ActorHandle
                 };
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
@@ -8546,7 +8546,7 @@ impl Checker {
             // separate `.recv()`.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::LambdaPid),
+                    builtin: Some(BuiltinType::ActorFn),
                     args: type_args,
                     ..
                 },

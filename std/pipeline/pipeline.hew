@@ -64,7 +64,7 @@ pub actor SinkI64 {
     var third: i64,
     var last_value: i64,
     var last_label: string,
-    let control: LocalPid<AdmissionControlI64>,
+    let control: AdmissionControlI64,
 
     mailbox 1,
 
@@ -124,8 +124,8 @@ pub actor SinkI64 {
 }
 
 pub actor StageI64 {
-    let next: LocalPid<SinkI64>,
-    let control: LocalPid<AdmissionControlI64>,
+    let next: SinkI64,
+    let control: AdmissionControlI64,
 
     mailbox 1,
 
@@ -149,9 +149,9 @@ pub actor StageI64 {
 }
 
 pub actor SourceI64 {
-    let next: LocalPid<StageI64>,
-    let sink: LocalPid<SinkI64>,
-    let control: LocalPid<AdmissionControlI64>,
+    let next: StageI64,
+    let sink: SinkI64,
+    let control: AdmissionControlI64,
 
     mailbox 1,
 
@@ -201,7 +201,7 @@ pub actor SourceI64 {
         let _ = control.release();
     }
 
-    receive fn control_handle() -> LocalPid<AdmissionControlI64> {
+    receive fn control_handle() -> AdmissionControlI64 {
         control
     }
 
@@ -233,7 +233,7 @@ pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
 }
 
 /// Spawn and wire the source, fixed transform stage, sink, and control actor.
-pub fn run(pipeline: PipelineI64TwoStage) -> LocalPid<SourceI64> {
+pub fn run(pipeline: PipelineI64TwoStage) -> SourceI64 {
     let control = spawn AdmissionControlI64(permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0);
     let sink = spawn SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
     let stage = spawn StageI64(next: sink, control: control);

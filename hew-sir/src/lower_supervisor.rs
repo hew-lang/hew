@@ -83,8 +83,8 @@ impl InstanceService<'_> {
         } = ty
         {
             return self.require_supervisor(&ResolvedTy::named_builtin(
-                hew_types::BuiltinType::LocalPid.canonical_name(),
-                hew_types::BuiltinType::LocalPid,
+                hew_types::BuiltinType::ActorHandle.canonical_name(),
+                hew_types::BuiltinType::ActorHandle,
                 args.clone(),
             ));
         }
@@ -514,8 +514,8 @@ impl Builder<'_, '_> {
             return Err("supervisor pool requires its supervisor and member types".into());
         };
         let supervisor = self.service.require_supervisor(&ResolvedTy::named_builtin(
-            hew_types::BuiltinType::LocalPid.canonical_name(),
-            hew_types::BuiltinType::LocalPid,
+            hew_types::BuiltinType::ActorHandle.canonical_name(),
+            hew_types::BuiltinType::ActorHandle,
             vec![supervisor_ty.clone()],
         ))?;
         let mut pools = self.service.supervisors[supervisor.0 as usize]

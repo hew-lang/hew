@@ -406,7 +406,7 @@ fn accessor_wrong_arity_returns_none() {
     // LocalPid with wrong arity — the accessor's arity guard rejects it even
     // when the builtin discriminator is stamped.
     let bad_pid = Ty::Named {
-        builtin: Some(hew_types::BuiltinType::LocalPid),
+        builtin: Some(hew_types::BuiltinType::ActorHandle),
         name: "LocalPid".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };

@@ -207,7 +207,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(HashSet, BuiltinTypeShape::Opaque),
     registration!(CancellationToken, BuiltinTypeShape::Opaque),
     registration!(ChildRef, BuiltinTypeShape::Opaque),
-    registration!(LocalPid, BuiltinTypeShape::Opaque),
+    registration!(ActorHandle, BuiltinTypeShape::Opaque),
     registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
@@ -218,7 +218,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(BoxedActor, BuiltinTypeShape::Opaque),
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
-    registration!(LambdaPid, BuiltinTypeShape::Opaque),
+    registration!(ActorFn, BuiltinTypeShape::Opaque),
     registration!(SendHalf, BuiltinTypeShape::Opaque),
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
@@ -582,7 +582,7 @@ mod tests {
     fn handle_and_project_cap_registrations_carry_shape_marker_and_roles() {
         let expected = [
             (
-                BuiltinType::LocalPid,
+                BuiltinType::ActorHandle,
                 ResourceMarker::Resource,
                 None,
                 BuiltinTypeShape::Opaque,

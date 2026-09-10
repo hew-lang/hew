@@ -1,7 +1,7 @@
 //! Actor monitor and link handle helpers.
 //!
 //! Import `MonitorRef` from this module to name the owned registration returned
-//! by `monitor(LocalPid) -> Result<MonitorRef, LinkError>`. Its consuming close
+//! by `monitor(actor) -> Result<MonitorRef, LinkError>`. Its consuming close
 //! removes the subscription; ordinary resource cleanup closes it at scope exit.
 //! `LinkError` is available from the prelude. Remote monitor delivery failures
 //! use the `MonitorError` vocabulary below.

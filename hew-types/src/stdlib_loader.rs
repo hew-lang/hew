@@ -563,6 +563,10 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => {
             params
                 .iter()
@@ -845,6 +849,31 @@ fn type_expr_to_ty_with_params_and_context(
             )],
         ),
         TypeExpr::Infer => Ty::Error,
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let resolved: Vec<Ty> = params
+                .iter()
+                .map(|(te, _)| {
+                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
+                })
+                .collect();
+            let msg = match resolved.len() {
+                0 => Ty::Unit,
+                1 => resolved.into_iter().next().unwrap_or(Ty::Error),
+                _ => Ty::Tuple(resolved),
+            };
+            Ty::actor_fn(
+                msg,
+                type_expr_to_ty_with_params_and_context(
+                    &return_type.0,
+                    module_short,
+                    type_params,
+                    context,
+                ),
+            )
+        }
         TypeExpr::Function {
             capabilities,
             params,

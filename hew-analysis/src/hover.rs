@@ -1105,6 +1105,18 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
                 .join(", "),
             format_type_expr_hover(&return_type.0)
         ),
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => format!(
+            "actor({}) -> {}",
+            params
+                .iter()
+                .map(|(param, _)| format_type_expr_hover(param))
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_type_expr_hover(&return_type.0)
+        ),
         TypeExpr::Pointer {
             is_mutable,
             pointee,

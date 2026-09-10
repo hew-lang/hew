@@ -14,12 +14,12 @@ pub(super) fn declaration<'a>(
     module: &'a HirModule,
     ty: &ResolvedTy,
 ) -> Option<&'a hew_hir::HirActorDecl> {
-    // A lambda actor's handle is spelled `LambdaPid<M, R>`, not `LocalPid<A>`:
-    // the declaration HIR synthesized for it records the handle it answers to.
+    // An anonymous actor's handle is spelled `actor(M) -> R`, not the actor's
+    // own name: the declaration HIR synthesized for it records that handle.
     if matches!(
         ty,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::LambdaPid),
+            builtin: Some(hew_types::BuiltinType::ActorFn),
             ..
         }
     ) {
@@ -28,18 +28,7 @@ pub(super) fn declaration<'a>(
             _ => None,
         });
     }
-    let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::LocalPid | hew_types::BuiltinType::ChildRef),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [actor_ty] = args.as_slice() else {
-        return None;
-    };
-    let instance = actor_ty.nominal_instance()?;
+    let instance = actor_instance(ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
             if &actor.declaration == instance.nominal.declaration()
@@ -51,6 +40,28 @@ pub(super) fn declaration<'a>(
     })
 }
 
+/// The actor declaration and type arguments a local reference names.
+///
+/// An actor is the type of its handle, so a handle carries its own identity; a
+/// `ChildRef<A>` names the same actor through its role parameter.
+pub(super) fn actor_instance(ty: &ResolvedTy) -> Option<hew_types::resolved_ty::NominalInstance> {
+    if let Some(instance) = ty.actor_handle_instance() {
+        return Some(instance);
+    }
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::ChildRef),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let [actor_ty] = args.as_slice() else {
+        return None;
+    };
+    actor_ty.nominal_instance()
+}
+
 fn actor_substitution(
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
@@ -58,14 +69,7 @@ fn actor_substitution(
     let args = if source.lambda_handle_ty.is_some() {
         Vec::new()
     } else {
-        let ResolvedTy::Named { args, .. } = ty else {
-            return Err("actor instance requires its checked handle type".into());
-        };
-        let [actor] = args.as_slice() else {
-            return Err("actor handle requires one concrete actor type".into());
-        };
-        actor
-            .nominal_instance()
+        actor_instance(ty)
             .ok_or("actor instance lacks its nominal identity")?
             .args
     };
@@ -127,20 +131,22 @@ impl InstanceService<'_> {
         }
         .ok_or("local actor handle lacks its exact declaration")?
         .clone();
-        // A `ChildRef<A>` role and a `LocalPid<A>` handle address one actor, so
-        // the descriptor is keyed by the pid spelling. A lambda actor's handle
-        // is already its own spelling and has no separate role.
+        // A `ChildRef<A>` role and the actor's own handle address one actor, so
+        // the descriptor is keyed by the handle. An anonymous actor's handle is
+        // already its own spelling and has no separate role.
         let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
-        let ty = &lambda_handle.unwrap_or_else(|| {
-            ResolvedTy::named_builtin(
-                hew_types::BuiltinType::LocalPid.canonical_name(),
-                hew_types::BuiltinType::LocalPid,
-                match ty {
-                    ResolvedTy::Named { args, .. } => args.clone(),
-                    _ => unreachable!("declaration() matched a named handle"),
-                },
-            )
-        });
+        let ty = &match lambda_handle {
+            Some(handle) => handle,
+            None => {
+                let instance =
+                    actor_instance(ty).ok_or("declaration() matched a local actor reference")?;
+                ResolvedTy::named_builtin(
+                    instance.nominal.full_path(),
+                    hew_types::BuiltinType::ActorHandle,
+                    instance.args.clone(),
+                )
+            }
+        };
         let substitution = actor_substitution(&source, ty)?;
         for argument in &substitution.args {
             self.require_type_facts(argument)?;
@@ -905,7 +911,7 @@ impl Builder<'_, '_> {
                 // A spawn starts one exact declaration's body, so it selects
                 // by the declaration it names rather than by handle type.
                 let exact = ty
-                    .is_builtin(hew_types::BuiltinType::LambdaPid)
+                    .is_builtin(hew_types::BuiltinType::ActorFn)
                     .then_some(actor_name.as_str());
                 let id = self.service.require_actor_declaration(&ty, exact)?;
                 let declaration_path = self.service.actors[id.0 as usize]

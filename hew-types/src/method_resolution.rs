@@ -85,7 +85,7 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         // receive-fn dispatch — it unwraps to T so e.g. `pid.increment(arg)`
         // resolves against `Counter::increment` in fn_sigs.
         Ty::Named {
-            builtin: Some(BuiltinType::LocalPid),
+            builtin: Some(BuiltinType::ActorHandle),
             args,
             ..
         } if args.len() == 1 => named_receiver_parts(&args[0]),
@@ -262,7 +262,7 @@ pub fn lookup_type_def_for_receiver(
 ) -> Option<TypeDef> {
     // Actor handles have no public fields accessible via the handle.
     if let Ty::Named {
-        builtin: Some(BuiltinType::LocalPid),
+        builtin: Some(BuiltinType::ActorHandle),
         ..
     } = receiver_ty
     {
@@ -345,7 +345,7 @@ pub fn collect_method_sigs_for_receiver(
     // inner actor type T (receive handlers).
     let handle_name = match receiver_ty {
         Ty::Named {
-            builtin: Some(BuiltinType::LocalPid),
+            builtin: Some(BuiltinType::ActorHandle),
             args,
             ..
         } if args.len() == 1 => Some(("LocalPid", &args[0])),

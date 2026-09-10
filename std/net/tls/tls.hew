@@ -134,8 +134,8 @@ trait TlsStreamMethods {
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
-    /// actor type behind the `LocalPid`.
-    fn attach(self, handler: LocalPid<TlsHandler>);
+    /// actor type behind the handle.
+    fn attach(self, handler: TlsHandler);
 }
 
 impl TlsStreamMethods for TlsStream {
@@ -155,7 +155,7 @@ impl TlsStreamMethods for TlsStream {
     /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
     /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
     /// four-argument runtime ABI. This stub is never lowered.
-    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {}
+    fn attach(stream: TlsStream, handler: TlsHandler) {}
 }
 
 impl TlsStream {

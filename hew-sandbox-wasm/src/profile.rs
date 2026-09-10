@@ -1285,6 +1285,10 @@ impl<'a> ProfileChecker<'a> {
                 params,
                 return_type,
                 ..
+            }
+            | TypeExpr::ActorFn {
+                params,
+                return_type,
             } => {
                 for (param, param_span) in params {
                     self.check_type_expr(param, param_span);

@@ -13,7 +13,7 @@ const NAMED_WORKER_MODULE: &str = "services.workers";
 fn child_handle(name: &str) -> hew_types::ResolvedTy {
     hew_types::ResolvedTy::named_builtin(
         "LocalPid",
-        hew_types::BuiltinType::LocalPid,
+        hew_types::BuiltinType::ActorHandle,
         vec![hew_types::ResolvedTy::named_user(name, Vec::new())],
     )
 }

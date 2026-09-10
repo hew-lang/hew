@@ -277,6 +277,28 @@ impl Parser<'_> {
                 };
                 TypeExpr::TraitObject(bounds)
             }
+            Some(Token::Actor) => {
+                // `actor(M) -> R` — the handle type of an anonymous actor.
+                self.advance();
+                self.expect(&Token::LeftParen)?;
+                let mut params = Vec::new();
+                while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                    params.push(self.parse_type_with_context(context)?);
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RightParen)?;
+                let return_type = if self.eat(&Token::Arrow) {
+                    Box::new(self.parse_type_with_context(context)?)
+                } else {
+                    Box::new((TypeExpr::Tuple(Vec::new()), 0..0))
+                };
+                TypeExpr::ActorFn {
+                    params,
+                    return_type,
+                }
+            }
             Some(Token::Fn) => {
                 self.advance();
                 let capabilities = self.parse_callable_capabilities()?;

@@ -102,8 +102,8 @@ trait ConnMethods {
     ///
     /// `handler` is the actor that will receive `on_message` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
-    /// actor type behind the `LocalPid`.
-    fn attach(self, handler: LocalPid<WebSocketHandler>);
+    /// actor type behind the handle.
+    fn attach(self, handler: WebSocketHandler);
 }
 
 impl ConnMethods for Conn {
@@ -151,7 +151,7 @@ impl ConnMethods for Conn {
     /// Every call site is rewritten to `hew_ws_attach_local`; codegen resolves
     /// the concrete actor's `on_message` / `on_close` protocol IDs and emits
     /// the four-argument runtime ABI. This stub is never lowered.
-    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>) {}
+    fn attach(conn: Conn, handler: WebSocketHandler) {}
 }
 
 impl Conn {

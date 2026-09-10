@@ -317,6 +317,49 @@ impl ResolvedTy {
     /// semantic nominal identity. Source-defined builtin records retain their
     /// closed discriminator while selecting their canonical declaration.
     #[must_use]
+    /// The actor declaration an actor-handle type names, with the actor's own
+    /// type arguments.
+    ///
+    /// An actor is the type of its handle, so the handle carries the actor's
+    /// nominal identity directly. This is deliberately separate from
+    /// `nominal_instance`: a handle is an opaque pointer, never a record whose
+    /// fields a consumer may walk.
+    #[must_use]
+    pub fn actor_handle_instance(&self) -> Option<NominalInstance> {
+        match self {
+            Self::Named {
+                name,
+                args,
+                builtin: Some(crate::BuiltinType::ActorHandle),
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id(name.clone()),
+                args: args.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The bare nominal carrier of an actor-handle type: the same name and
+    /// arguments with no handle discriminator.
+    #[must_use]
+    pub fn actor_handle_nominal(&self) -> Option<ResolvedTy> {
+        match self {
+            Self::Named {
+                name,
+                args,
+                builtin: Some(crate::BuiltinType::ActorHandle),
+                ..
+            } => Some(ResolvedTy::Named {
+                name: name.clone(),
+                args: args.clone(),
+                builtin: None,
+                is_opaque: false,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn nominal_instance(&self) -> Option<NominalInstance> {
         match self {
             // The two compiler-owned cursor records. Both are declared in

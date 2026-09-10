@@ -730,7 +730,7 @@ impl TraitRegistry {
             // Local actor references are immutable identities, not resources:
             // Send + Sync + Frozen + Copy + Clone + Debug.
             Ty::Named {
-                builtin: Some(BuiltinType::ChildRef | BuiltinType::LocalPid),
+                builtin: Some(BuiltinType::ChildRef | BuiltinType::ActorHandle),
                 ..
             } => matches!(
                 marker,
@@ -816,7 +816,7 @@ impl TraitRegistry {
             //   cloning; `close(handle)` is how a program stops the actor.
             // Resource: yes — the handle carries the actor's lifecycle.
             Ty::Named {
-                builtin: Some(BuiltinType::LambdaPid),
+                builtin: Some(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => match marker {

@@ -2634,7 +2634,7 @@ fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
             args,
             builtin: Some(builtin),
             ..
-        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid) => {
+        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle) => {
             match args.as_slice() {
                 [Ty::Named { name, args, .. }] if args.is_empty() => Some(name.as_str()),
                 _ => None,

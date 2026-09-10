@@ -621,7 +621,7 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
                 Some(
                     kind @ (BuiltinType::Stream
                     | BuiltinType::Sink
-                    | BuiltinType::LocalPid
+                    | BuiltinType::ActorHandle
                     | BuiltinType::Rc
                     | BuiltinType::Weak),
                 ),
@@ -7711,7 +7711,7 @@ impl RuntimeCallFamily {
                             effect: E::Borrow,
                         },
                         A {
-                            ty: K::Receiver(BuiltinType::LocalPid),
+                            ty: K::Receiver(BuiltinType::ActorHandle),
                             effect: E::Borrow,
                         },
                     ],

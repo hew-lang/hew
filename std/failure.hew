@@ -77,12 +77,12 @@ pub enum CrashAction {
 ///
 /// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
 /// crashed actor's id as a raw `u64`.  Future widening to a typed
-/// `LocalPid<A>` requires the linked actor to know A's static type — a
+/// An actor handle requires the linked actor to know A's static type — a
 /// generics-and-trait-bound enhancement deferred until the spine
 /// supports it.
 pub type CrashNotification {
     /// Numeric identity of the actor that crashed.  Raw `u64` rather
-    /// than `LocalPid<A>` because the linked actor does not in general
+    /// than an actor handle because the linked actor does not in general
     /// know the crashed actor's static type at the hook site.
     actor_id: u64,
     /// Class of the originating crash.  Mirrors the runtime

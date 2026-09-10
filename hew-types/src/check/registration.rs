@@ -1152,33 +1152,25 @@ impl Checker {
         // `close(actor)` requests a cooperative stop and waits for terminal
         // cleanup; `closed(actor)` waits without requesting. Both are ordinary
         // calls, so `fork close(actor)` is the non-waiting request.
-        self.register_builtin_fn(
-            "close",
-            vec![Ty::local_pid(Ty::Var(TypeVar::fresh()))],
-            Ty::Unit,
-        );
-        self.register_builtin_fn(
-            "closed",
-            vec![Ty::local_pid(Ty::Var(TypeVar::fresh()))],
-            Ty::Unit,
-        );
+        // An actor handle is the actor's own type, so these signatures carry a
+        // free variable and the call-site arms in `calls.rs` require an actor
+        // handle by the checked fact rather than by a wrapper type.
+        self.register_builtin_fn("close", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        self.register_builtin_fn("closed", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
         // Link and monitor share the closed LinkError vocabulary. A monitor
         // returns the owned handle used to end its registration.
-        let link_t = TypeVar::fresh();
         self.register_builtin_fn(
             "link",
-            vec![Ty::local_pid(Ty::Var(link_t))],
+            vec![Ty::Var(TypeVar::fresh())],
             Ty::result(Ty::Unit, Ty::link_error()),
         );
-        let unlink_t = TypeVar::fresh();
-        self.register_builtin_fn("unlink", vec![Ty::local_pid(Ty::Var(unlink_t))], Ty::Unit);
-        let monitor_t = TypeVar::fresh();
+        self.register_builtin_fn("unlink", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
         self.register_builtin_fn(
             "monitor",
-            vec![Ty::local_pid(Ty::Var(monitor_t))],
+            vec![Ty::Var(TypeVar::fresh())],
             Ty::result(Ty::monitor_ref(), Ty::link_error()),
         );
         // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
@@ -1205,19 +1197,12 @@ impl Checker {
         );
 
         // Supervisor child access
-        let sup_child_t = TypeVar::fresh();
-        let sup_child_ret = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_child",
-            vec![Ty::local_pid(Ty::Var(sup_child_t)), Ty::I64],
-            Ty::local_pid(Ty::Var(sup_child_ret)),
+            vec![Ty::Var(TypeVar::fresh()), Ty::I64],
+            Ty::Var(TypeVar::fresh()),
         );
-        let sup_stop_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "supervisor_stop",
-            vec![Ty::local_pid(Ty::Var(sup_stop_t))],
-            Ty::Unit,
-        );
+        self.register_builtin_fn("supervisor_stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
 
         // Assertions (test support)
         self.register_builtin_fn("assert", vec![Ty::Bool], Ty::Unit);
@@ -1348,20 +1333,16 @@ impl Checker {
             vec![],
             Ty::option(Ty::builtin_named(BuiltinType::NodeId, vec![])),
         );
-        // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
-        // The second argument is tightened to `LocalPid<T>` so that passing a
-        // `RemotePid<T>` or bare `u64` is caught at the checker rather than
-        // failing with a cryptic codegen error. Codegen already assumes a
-        // `LocalPid<T>` alloca (it calls `hew_actor_pid` to extract the u64
-        // before forwarding to `hew_node_api_register_by_pid`).
-        {
-            let t = TypeVar::fresh();
-            self.register_builtin_fn(
-                "Node::register",
-                vec![Ty::String, Ty::local_pid(Ty::Var(t))],
-                Ty::I32,
-            );
-        }
+        // `Node::register(name: String, actor: A) -> i32`. Codegen assumes a
+        // local actor handle (it calls `hew_actor_pid` to extract the u64 before
+        // forwarding to `hew_node_api_register_by_pid`), so the call-site arm in
+        // `calls.rs` requires one; a `RemotePid<T>` or bare `u64` is caught
+        // there rather than failing with a cryptic codegen error.
+        self.register_builtin_fn(
+            "Node::register",
+            vec![Ty::String, Ty::Var(TypeVar::fresh())],
+            Ty::I32,
+        );
         // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
         // The runtime extern returns a packed `u64` pid (0 == not found); the
         // codegen branch lowers this into a `Result` construction inline.
@@ -9086,7 +9067,7 @@ impl Checker {
                     builtin,
                     BuiltinType::Generator
                         | BuiltinType::ChildRef
-                        | BuiltinType::LocalPid
+                        | BuiltinType::ActorHandle
                         | BuiltinType::RemotePid
                 )
             {
@@ -9109,14 +9090,14 @@ impl Checker {
                         BuiltinType::VecIter
                             | BuiltinType::HashMapIter
                             | BuiltinType::ChildRef
-                            | BuiltinType::LocalPid
+                            | BuiltinType::ActorHandle
                             | BuiltinType::RemotePid
                     )
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::ChildRef | BuiltinType::LocalPid | BuiltinType::RemotePid => {
+                    BuiltinType::ChildRef | BuiltinType::ActorHandle | BuiltinType::RemotePid => {
                         builtin.canonical_name().to_string()
                     }
                     _ => unreachable!("filter admits only compiler carrier builtins"),

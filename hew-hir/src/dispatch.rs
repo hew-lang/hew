@@ -220,7 +220,7 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
                 hew_types::BuiltinType::Vec => "Vec",
                 hew_types::BuiltinType::HashMap => "HashMap",
                 hew_types::BuiltinType::ChildRef => "ChildRef",
-                hew_types::BuiltinType::LocalPid => "LocalPid",
+                hew_types::BuiltinType::ActorHandle => "LocalPid",
                 hew_types::BuiltinType::RemotePid => "RemotePid",
                 hew_types::BuiltinType::NodeId => "NodeId",
                 hew_types::BuiltinType::Location => "Location",

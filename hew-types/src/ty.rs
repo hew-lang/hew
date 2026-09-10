@@ -25,7 +25,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
-        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
+        Some(BuiltinType::ActorHandle) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(
             BuiltinType::Option
@@ -55,7 +55,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaPid
+            | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
@@ -646,6 +646,33 @@ impl Ty {
                 elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
+            // An anonymous actor's handle has no nominal: it reads like the
+            // `fn` type it mirrors.
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorFn),
+                args,
+                ..
+            } if args.len() == 2 => {
+                write!(f, "actor(")?;
+                match &args[0] {
+                    Ty::Unit => {}
+                    Ty::Tuple(items) => {
+                        for (i, item) in items.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            item.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                        }
+                    }
+                    single => single.fmt_with_numeric_names(f, i64_name, f64_name)?,
+                }
+                write!(f, ")")?;
+                if !matches!(args[1], Ty::Unit) {
+                    write!(f, " -> ")?;
+                    args[1].fmt_with_numeric_names(f, i64_name, f64_name)?;
+                }
+                Ok(())
+            }
             Ty::Named { name, args, .. } => {
                 write!(f, "{name}")?;
                 if !args.is_empty() {
@@ -920,10 +947,32 @@ impl Ty {
         Self::builtin_named(BuiltinType::ChildRef, vec![inner])
     }
 
-    /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
+    /// Construct the handle type of actor `name` with its own type arguments.
+    ///
+    /// An actor is the type of its handle (D489): `spawn Orders(...)` has type
+    /// `Orders`, and `Orders` written in a field, parameter, return or element
+    /// position is this type. The actor's declaration name and type arguments
+    /// ride the `Named` carrier, so every consumer that reads a nominal's name
+    /// reads the actor's own identity.
     #[must_use]
-    pub fn local_pid(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::LocalPid, vec![inner])
+    pub fn actor_handle(name: impl Into<String>, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: name.into(),
+            args,
+            builtin: Some(BuiltinType::ActorHandle),
+        }
+    }
+
+    /// The handle type of an actor whose identity is already a `Ty::Named`.
+    ///
+    /// Anything else yields `Ty::Error`, so a caller that lost the actor
+    /// identity fails closed instead of minting a handle over a wrong carrier.
+    #[must_use]
+    pub fn actor_handle_of(actor: &Ty) -> Ty {
+        match actor {
+            Ty::Named { name, args, .. } => Ty::actor_handle(name.clone(), args.clone()),
+            _ => Ty::Error,
+        }
     }
 
     /// Construct `SupervisorPool<supervisor, child>`.
@@ -997,7 +1046,7 @@ impl Ty {
         }
     }
 
-    /// Construct `LambdaPid<M, R>` — the user-visible lambda-actor handle.
+    /// Construct `actor(M) -> R` — the anonymous-actor handle type.
     ///
     /// `M` is the message type (single param, a `Tuple` for multi-param, or
     /// `Unit` for a zero-arg actor); `R` is the reply type (`Unit` for a
@@ -1006,16 +1055,16 @@ impl Ty {
     /// actor boundary). A PID-like handle, distinct from the `Duplex` channel
     /// substrate: it has no `.recv()` / `.send_half()` / `.recv_half()` surface.
     #[must_use]
-    pub fn lambda_pid(msg: Ty, reply: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::LambdaPid, vec![msg, reply])
+    pub fn actor_fn(msg: Ty, reply: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::ActorFn, vec![msg, reply])
     }
 
-    /// Extract `(M, R)` from `LambdaPid<M, R>`, or `None` if not a `LambdaPid`.
+    /// Extract `(M, R)` from `actor(M) -> R`, or `None` if this is not one.
     #[must_use]
-    pub fn as_lambda_pid(&self) -> Option<(&Ty, &Ty)> {
+    pub fn as_actor_fn(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::LambdaPid),
+                builtin: Some(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1228,15 +1277,31 @@ impl Ty {
         }
     }
 
-    /// If this is `LocalPid<T>`, return `Some(&T)`.
+    /// If this is a declared actor's handle type, return it.
+    ///
+    /// The handle IS the actor type, so the returned `Ty` carries the actor's
+    /// own name and type arguments; a consumer that needs the identity reads
+    /// them off the `Named` carrier.
     #[must_use]
-    pub fn as_local_pid(&self) -> Option<&Ty> {
+    pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::LocalPid),
-                args,
+                builtin: Some(BuiltinType::ActorHandle),
                 ..
-            } if args.len() == 1 => Some(&args[0]),
+            } => Some(self),
+            _ => None,
+        }
+    }
+
+    /// The declaration name and type arguments of an actor handle.
+    #[must_use]
+    pub fn actor_handle_identity(&self) -> Option<(&str, &[Ty])> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorHandle),
+                name,
+                args,
+            } => Some((name.as_str(), args.as_slice())),
             _ => None,
         }
     }
@@ -1254,47 +1319,28 @@ impl Ty {
         }
     }
 
-    /// If this is a local actor reference (`ChildRef<T>` or `LocalPid<T>`),
-    /// return the referenced actor type.
+    /// If this names a local actor — a declared actor's handle, or a
+    /// `ChildRef<T>` role reference — return the actor's nominal carrier.
+    ///
+    /// `RemotePid<T>` is intentionally excluded: it is a distinct type that
+    /// does not participate in the local supervisor graph.
     #[must_use]
     pub fn as_local_actor_ref(&self) -> Option<&Ty> {
-        self.as_child_ref().or_else(|| self.as_local_pid())
-    }
-
-    /// If this is a local actor handle (`LocalPid<T>`), return `Some(&T)`.
-    ///
-    /// `LocalPid<T>` is the spawn-return type and the single-argument carrier
-    /// of the `ActorDispatchLocal` role. `RemotePid<T>` is intentionally
-    /// excluded — it is a distinct type that does not participate in the local
-    /// supervisor graph.
-    #[must_use]
-    pub fn as_actor_handle(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(builtin),
-                args,
-                ..
-            } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
-                && args.len() == 1 =>
-            {
-                Some(&args[0])
-            }
-            _ => None,
-        }
+        self.as_child_ref().or_else(|| self.as_actor_handle())
     }
 
     /// Whether this type addresses a local actor for a lifecycle boundary.
     ///
-    /// A lambda actor's handle carries its message and reply rather than the
-    /// actor nominal it has none of, so it is not an `as_actor_handle`, but it
-    /// addresses an actor the same way and closes the same way.
+    /// An anonymous actor's handle carries its message and reply rather than an
+    /// actor nominal it has none of, so it is not an `as_local_actor_ref`, but
+    /// it addresses an actor the same way and closes the same way.
     #[must_use]
     pub fn addresses_local_actor(&self) -> bool {
-        self.as_actor_handle().is_some()
+        self.as_local_actor_ref().is_some()
             || matches!(
                 self,
                 Ty::Named {
-                    builtin: Some(BuiltinType::LambdaPid),
+                    builtin: Some(BuiltinType::ActorFn),
                     ..
                 }
             )

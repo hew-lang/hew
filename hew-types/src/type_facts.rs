@@ -1362,9 +1362,9 @@ mod tests {
                 | BuiltinType::LinkError
                 | BuiltinType::MonitorError
                 | BuiltinType::CloseError
-                | BuiltinType::LocalPid
+                | BuiltinType::ActorHandle
                 // A lambda actor's handle is a pid under another spelling.
-                | BuiltinType::LambdaPid
+                | BuiltinType::ActorFn
                 | BuiltinType::HewActor => Some((ValueClass::BitCopy, CloneKind::Bits)),
                 // `Option<i64>` / `Result<i64, string>` join their payloads.
                 BuiltinType::Option => Some((ValueClass::BitCopy, CloneKind::Bits)),
@@ -1467,8 +1467,8 @@ mod tests {
             // exception rather than a hole the table can grow into.
             if matches!(
                 info.kind,
-                BuiltinType::LocalPid
-                    | BuiltinType::LambdaPid
+                BuiltinType::ActorHandle
+                    | BuiltinType::ActorFn
                     | BuiltinType::HewActor
                     | BuiltinType::BoxedActor
             ) {

@@ -83,7 +83,7 @@ impl Checker {
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
             "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
-            "std.builtins.LocalPid" => Some(BuiltinType::LocalPid),
+            "std.builtins.LocalPid" => Some(BuiltinType::ActorHandle),
             "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;
@@ -2890,7 +2890,79 @@ impl Checker {
                 args.resize_with(args.len().max(2), Ty::never_type);
             }
         }
+        self.canonicalize_actor_handles(&mut ty);
         ty
+    }
+
+    /// Rewrite every written actor name in a resolved type to the actor's
+    /// handle carrier.
+    ///
+    /// An actor is the type of its handle (D489): a field, parameter, return,
+    /// element or type argument written `Orders` holds the actor, so the one
+    /// place that decides it is here, from the declaration the checker already
+    /// registered. Downstream stages read the `ActorHandle` discriminator and
+    /// never re-derive the fact from a name.
+    ///
+    /// A handler-style trait (its methods take no `self` receiver, so an actor
+    /// satisfies it structurally through its `receive fn`s) names an actor the
+    /// same way: `attach(handler: ConnectionHandler)` takes the handle of any
+    /// actor that satisfies the trait.
+    pub(super) fn canonicalize_actor_handles(&self, ty: &mut Ty) {
+        match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                for argument in args.iter_mut() {
+                    self.canonicalize_actor_handles(argument);
+                }
+                if builtin.is_none() && self.name_is_actor_handle_nominal(name) {
+                    *builtin = Some(crate::BuiltinType::ActorHandle);
+                }
+            }
+            Ty::Tuple(items) => {
+                for item in items {
+                    self.canonicalize_actor_handles(item);
+                }
+            }
+            Ty::Array(inner, _) | Ty::Slice(inner) | Ty::Task(inner) => {
+                self.canonicalize_actor_handles(inner);
+            }
+            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => {
+                self.canonicalize_actor_handles(pointee);
+            }
+            Ty::Function { params, ret, .. } => {
+                for param in params {
+                    self.canonicalize_actor_handles(param);
+                }
+                self.canonicalize_actor_handles(ret);
+            }
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+                ..
+            } => {
+                for param in params.iter_mut().chain(captures.iter_mut()) {
+                    self.canonicalize_actor_handles(param);
+                }
+                self.canonicalize_actor_handles(ret);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a written nominal names an actor handle: a declared actor, or a
+    /// handler-style trait an actor satisfies structurally.
+    fn name_is_actor_handle_nominal(&self, name: &str) -> bool {
+        if self
+            .lookup_type_def(name)
+            .is_some_and(|definition| definition.kind == super::types::TypeDefKind::Actor)
+        {
+            return true;
+        }
+        self.trait_is_handler_style(name)
     }
 
     #[expect(
@@ -3129,6 +3201,43 @@ impl Checker {
                 // Guard: if the user declared their own `Task` type in scope,
                 // the reservation does not fire — the user's declaration shadows
                 // the compiler-internal name (local-shadows-global rule).
+                // The retired actor-handle spellings. An actor is the type of
+                // its handle, so `spawn Orders(...)` has type `Orders` and a
+                // field, parameter or element that holds an actor is written
+                // with the actor's own name. A user declaration of the same
+                // name shadows the reservation.
+                if matches!(name.as_str(), "LocalPid" | "Pid" | "LambdaPid")
+                    && !self.local_type_defs.contains(name)
+                    && !self.source_type_defs.contains(name)
+                {
+                    let written_args: Vec<String> = type_args
+                        .iter()
+                        .flatten()
+                        .map(|argument| self.resolve_type_expr(argument).user_facing().to_string())
+                        .collect();
+                    let written = if written_args.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{name}<{}>", written_args.join(", "))
+                    };
+                    let hint = if name == "LambdaPid" {
+                        "write the anonymous actor's type `actor(M) -> R`".to_string()
+                    } else if written_args.len() == 1 {
+                        format!("write the actor's own type `{}`", written_args[0])
+                    } else {
+                        "write the actor's own type".to_string()
+                    };
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::ActorHandleTypeNotNameable,
+                        &te.1,
+                        format!(
+                            "E_ACTOR_HANDLE_TYPE: `{written}` is not a type; an actor is the \
+                             type of its handle"
+                        ),
+                        vec![hint],
+                    );
+                    return Ty::Error;
+                }
                 if name == "Task"
                     && !self.local_type_defs.contains("Task")
                     && !self.source_type_defs.contains("Task")
@@ -3703,6 +3812,30 @@ impl Checker {
                     context,
                 )),
             },
+            TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                let resolved: Vec<Ty> = params
+                    .iter()
+                    .map(|te| {
+                        self.resolve_type_expr_tracking_holes_with_context(te, hole_vars, context)
+                    })
+                    .collect();
+                // An anonymous actor takes one message per turn, so several
+                // written parameters describe one tuple message.
+                let msg = match resolved.len() {
+                    0 => Ty::Unit,
+                    1 => resolved.into_iter().next().unwrap_or(Ty::Error),
+                    _ => Ty::Tuple(resolved),
+                };
+                let reply = self.resolve_type_expr_tracking_holes_with_context(
+                    return_type,
+                    hole_vars,
+                    context,
+                );
+                Ty::actor_fn(msg, reply)
+            }
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,

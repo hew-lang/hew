@@ -134,7 +134,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           t = rx.recv() => {\n\
+         \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   .Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -148,7 +148,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \n\
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
-         \x20   c.run();\n\
+         \x20   let _ = c.run();\n\
          \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
@@ -176,7 +176,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           t = rx.recv() => {\n\
+         \x20           t from rx.recv() => {\n\
          \x20               match t {\n\
          \x20                   .Some(t2) => {\n\
          \x20                       match t2 {\n\
@@ -194,7 +194,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \n\
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
-         \x20   c.run();\n\
+         \x20   let _ = c.run();\n\
          \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
@@ -221,7 +221,7 @@ fn receiver_param_source() -> &'static str {
      \x20   tx.send(\"hello\");\n\
      \x20   tx.close();\n\
      \x20   let obs = spawn Observer;\n\
-     \x20   obs.watch(rx);\n\
+     \x20   let _ = obs.watch(rx);\n\
      \x20   sleep(200ms);\n\
      }\n"
 }
@@ -260,7 +260,7 @@ fn channel_sender_actor_message_arg_transfers_locally() {
          fn main() {\n\
          \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let worker = spawn Worker;\n\
-         \x20   worker.notify(tx);\n\
+         \x20   let _ = worker.notify(tx);\n\
          \x20   match rx.recv() {\n\
          \x20       .Some(value) => println(value),\n\
          \x20       .None => println(\"closed\"),\n\
@@ -363,7 +363,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
-         \x20               t = rx.recv() => {\n\
+         \x20               t from rx.recv() => {\n\
          \x20                   match t {\n\
          \x20                       .Some(tr) => {\n\
          \x20                           println(f\"{tr.from_state} -> {tr.to_state}\");\n\
@@ -393,9 +393,9 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx, done_tx);\n\
+         \x20   let _ = fork obs.watch(rx, done_tx);\n\
          \x20   let svc = spawn Service;\n\
-         \x20   svc.drive(tx);\n\
+         \x20   let _ = svc.drive(tx);\n\
          \x20   let _ = done_rx.recv();\n\
          \x20   done_rx.close();\n\
          }\n",
@@ -419,7 +419,7 @@ fn select_after_genuine_expiry_takes_after_arm() {
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
          \x20       select {\n\
-         \x20           v = rx.recv() => {\n\
+         \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
          \x20                   .Some(_) => println(\"value\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -437,7 +437,7 @@ fn select_after_genuine_expiry_takes_after_arm() {
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx, done_tx);\n\
+         \x20   let _ = obs.watch(rx, done_tx);\n\
          \x20   let _ = done_rx.recv();\n\
          \x20   done_rx.close();\n\
          \x20   tx.close();\n\
@@ -472,7 +472,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
          \x20       select {\n\
-         \x20           v = rx.recv() => {\n\
+         \x20           v from rx.recv() => {\n\
          \x20               match v {\n\
          \x20                   .Some(_) => println(\"value\"),\n\
          \x20                   .None => println(\"closed\"),\n\
@@ -487,7 +487,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          fn main() {\n\
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx);\n\
+         \x20   let _ = obs.watch(rx);\n\
          \x20   tx.close();\n\
          \x20   sleep(20ms);\n\
          }\n",
@@ -598,7 +598,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \n\
          fn main() {\n\
          \x20   let h = spawn Holder;\n\
-         \x20   h.drive();\n\
+         \x20   let _ = h.drive();\n\
          \x20   sleep(150ms);\n\
          }\n",
         "Open\nFailed\nIdle\n",
@@ -711,7 +711,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20       var waiting = true;\n\
          \x20       while waiting {\n\
          \x20           select {\n\
-         \x20               snap = rx.recv() => {\n\
+         \x20               snap from rx.recv() => {\n\
          \x20                   match snap {\n\
          \x20                       .Some(s) => {\n\
          \x20                           match s {\n\
@@ -739,7 +739,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
-         \x20   match await o.run() {\n\
+         \x20   match o.run() {\n\
          \x20       .Ok(_) => {},\n\
          \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\
@@ -830,7 +830,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
-         \x20   w.accept((rx, 42));\n\
+         \x20   let _ = w.accept((rx, 42));\n\
          \x20   rx.close();\n\
          }\n",
     )
@@ -872,7 +872,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
          \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
-         \x20   w.deliver((rx, 99));\n\
+         \x20   let _ = w.deliver((rx, 99));\n\
          \x20   sleep(100ms);\n\
          \x20   println(\"done\");\n\
          }\n",
@@ -885,14 +885,15 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 ///
 /// The composition that fires the defect: an actor `receive fn run() -> i64`
 /// whose body runs a `select`/`after` arm over a channel carrying a `machine`
-/// value with a heap-payload state (`Failed { reason: string }`), invoked with
-/// the idiomatic AWAITED ask form (`await o.run()`). Under `MallocScribble` the
-/// channel's `ChannelCore` is released one time too many on this path — the
-/// receiver reference is lost while a `select`-poll thread and the resumed
-/// handler still hold it — so the next `try_recv` reads a freed core. The same
-/// shape with a plain `enum` element (not a `machine`) stays clean, and the
-/// fire-and-forget form (`o.run(); sleep(...)`) never trips it: the AWAIT that
-/// makes the handler a resumed coroutine is required.
+/// value with a heap-payload state (`Failed { reason: string }`), invoked
+/// with a plain ask (`o.run()`, which suspends the caller on its own — an
+/// explicit `await` is now redundant here and everywhere a plain call
+/// suspends). Under `MallocScribble` the channel's `ChannelCore` is released
+/// one time too many on this path — the receiver reference is lost while a
+/// `select`-poll thread and the resumed handler still hold it — so the next
+/// `try_recv` reads a freed core. The same shape with a plain `enum` element
+/// (not a `machine`) stays clean. A resumed-coroutine handler is required to
+/// trip it; that is now the only ask-call shape, since every ask suspends.
 ///
 /// Root cause (fixed): `Option<Conn>` — the binding the select's channel arm
 /// decodes into — was sized against the machine's still-opaque LLVM struct.
@@ -945,7 +946,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20       tx.send(c);\n\
          \x20       tx.close();\n\
          \x20       select {\n\
-         \x20           snap = rx.recv() => {\n\
+         \x20           snap from rx.recv() => {\n\
          \x20               match snap {\n\
          \x20                   .Some(s) => {\n\
          \x20                       match s {\n\
@@ -966,7 +967,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
-         \x20   match await o.run() {\n\
+         \x20   match o.run() {\n\
          \x20       .Ok(r) => println(f\"r={r}\"),\n\
          \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\

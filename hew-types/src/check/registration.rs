@@ -1861,8 +1861,20 @@ impl Checker {
     /// Their declarations were already registered by
     /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
     /// and must never mint a second synthetic source owner.
+    ///
+    /// The generated enum catalog is the membership authority. Naming a subset
+    /// here left the remaining prelude error enums resolving to their bare
+    /// leaf while their siblings resolved to `std.builtins.<Name>`, so one
+    /// declaration had two identities depending on which enum a program
+    /// happened to name.
     fn register_builtin_error_prelude_bindings(&mut self) {
-        for name in ["LinkError", "LookupError"] {
+        let prelude_error_enums: Vec<&'static str> =
+            crate::builtin_enums::monomorphic_builtin_enums()
+                .iter()
+                .filter(|fact| fact.owner == "std.builtins")
+                .map(|fact| fact.name)
+                .collect();
+        for name in prelude_error_enums {
             let canonical = format!("std.builtins.{name}");
             debug_assert!(
                 self.type_defs.contains_key(&canonical),

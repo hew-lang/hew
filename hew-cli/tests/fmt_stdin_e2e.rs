@@ -84,7 +84,7 @@ fn fmt_stdin_handles_regex_records_and_is_operator() {
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("let updated = Point { x: 3, ..base };"),
+        stdout.contains("let updated = Point { ..base, x: 3 };"),
         "stdout: {stdout}"
     );
     assert!(stdout.contains("if updated.x is i32 {"), "stdout: {stdout}");

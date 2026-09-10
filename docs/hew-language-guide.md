@@ -2890,7 +2890,7 @@ fn main() {
 }
 ```
 
-`sort<T: Ord>` returns a new sorted Vec (ascending) and `reverse<T>` returns a new reversed one; the original is never modified. One generic function covers every element type — the `sort_ints` / `sort_strings` / `sort_floats` family it replaces is listed in [the v0.6.0 migration note](migrations/v0.6.0.md). Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
 ### std.random — pseudo-random number generation
 

@@ -5896,13 +5896,14 @@ fn main() {
     let pi: f64 = 3.14;
     let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
 
-    // Out-of-range and non-finite values saturate instead of producing poison:
+    // Out-of-range and non-finite values are meant to saturate instead of
+    // producing poison (see the known-bug note below the table):
     let big: f64 = 1.0e30;
-    let clamped: i32 = big as i32;      // positive overflow clamps to 2147483647
+    let clamped: i32 = big as i32;      // intended: positive overflow clamps to 2147483647
     let neg_big: f64 = -1.0e30;
     let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
     let nan: f64 = 0.0 / 0.0;
-    let nan_as_int: i32 = nan as i32;       // NaN converts to zero
+    let nan_as_int: i32 = nan as i32;       // intended: NaN converts to zero
 
     println(f"{f} {n} {clamped} {neg_clamped} {nan_as_int}");
 }
@@ -5929,6 +5930,8 @@ fn main() {
 | `NaN`           | `0`                | `0`                        |
 
 These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
+
+> **Known bug (#3367).** Positive overflow and `NaN` both currently produce the target integer's `MIN` instead of `MAX` and `0`; only negative overflow lowers correctly today. The table above states the intended, normative contract.
 
 All numeric types also support exact fallible conversion methods:
 

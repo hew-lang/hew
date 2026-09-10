@@ -360,7 +360,7 @@ fn sum(p: Point) -> i64 {
 }
 ```
 
-Destructure a record by naming every field. There is no `{ .. }` rest pattern; bind fields you do not need to a throwaway name.
+Destructure a record by naming every field, or write `Point { x, .. }` to bind the fields you name and ignore the rest. The dots are the same dots that spread a value into a literal — one idea, read on the pattern side.
 
 ### ranges in for-loops
 
@@ -662,7 +662,7 @@ fn main() {
 }
 ```
 
-`.contains(x)` returns `bool` — works for scalars, strings, and records. `.append(v2)` appends every element of `v2` to `v` in order. `.clear()` empties the Vec without freeing it (you can push again afterward).
+`.contains(x)` returns `bool` — works for scalars, strings, and records. `.append(v2)` appends every element of `v2` to `v` in order; to build a new `Vec` instead of growing one in place, spread the sources into a literal ("Spread in literals"). `.clear()` empties the Vec without freeing it (you can push again afterward).
 
 ### Vec<Vec<T>> — nested Vecs
 
@@ -1131,6 +1131,50 @@ fn main() {
 ```
 
 Bind with `var` to reassign fields; `let` is immutable. Immutability is on the binding, not the type.
+
+### Spread in literals
+
+```hew
+type Point { x: i64, y: i64, label: string, }
+
+fn main() {
+    let low: Vec<i64> = [1, 2];
+    let high: Vec<i64> = [8, 9];
+    let all = [..low, 5, ..high];
+    println(all.len());       // 5
+
+    let origin = Point { x: 0, y: 0, label: "origin" };
+    let shifted = Point { ..origin, x: 3 };
+    println(shifted.x);       // 3
+    println(shifted.label);   // origin
+    println(origin.x);        // 0 — the base is still usable
+}
+```
+
+`..expr` inside a literal splices a value. In a bracket literal each spread operand is a `Vec` of the element type and its elements land where they are written, so `[..low, 5, ..high]` is `[1, 2, 5, 8, 9]`. In a record literal `..base` supplies every field the literal does not name; a named field wins over the base, and a literal takes one base. Write the base first — the value reads in the order it is built.
+
+Spreading reads the operand, it does not consume it: `low` and `origin` are still usable afterwards. When the base is a temporary, a field it owns and the literal does not name is transferred rather than copied, so a `#[resource]` field is closed exactly once.
+
+A machine state literal takes the same spread, which is how a transition writes only the field that changes:
+
+```hew
+machine Till {
+    events { Sale, }
+    state Empty,
+    state Filled { count: i64, label: string, },
+    on Sale: Empty => Filled { Till.Filled { count: 1, label: "open" } }
+    on Sale: Filled => Filled reenter { Till.Filled { ..state, count: state.count + 1 } }
+    default { state }
+}
+fn main() {
+    var till = Till.Empty;
+    let _ = till.step(.Sale);
+    let _ = till.step(.Sale);
+    println(till.state_name());   // Filled
+}
+```
+
+Spread is pure, so it is admitted inside a transition body.
 
 ### Nested record fields
 

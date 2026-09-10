@@ -1,6 +1,6 @@
 [[case]]
 id = "spread-machine-state"
-intent = "A machine state literal in a transition spreads the source state with `..self`, so the transition writes only the fields that change and the rest carry through unchanged."
+intent = "A machine state literal in a transition spreads the source state with `..state`, so the transition writes only the fields that change and the rest carry through unchanged."
 source = "cases/spread-machine-state.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

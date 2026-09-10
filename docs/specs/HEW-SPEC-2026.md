@@ -686,6 +686,54 @@ program is rewritten rather than hand-edited.
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3).
 
+#### Spread in literals (normative)
+
+`..expr` inside a literal splices a value, and the spelling is the same
+wherever splicing makes sense.
+
+In a bracket literal, `..operand` contributes the operand's elements at the
+position it is written. Each operand has type `Vec<T>` for the literal's
+element type `T`, and the result is a `Vec<T>`:
+
+```hew
+fn main() {
+    let low: Vec<i64> = [1, 2];
+    let high: Vec<i64> = [8, 9];
+    let all = [..low, 5, ..high];   // [1, 2, 5, 8, 9]
+    println(all.len());
+}
+```
+
+A fixed-size `[T; N]` literal takes no spread: `N` is part of the type and a
+spread operand's length is a run-time value.
+
+In a record literal, `..base` supplies every field the literal does not name.
+`base` has the literal's own type, a literal takes at most one base, and a
+named field takes precedence over the base regardless of where the base
+appears in the field list. The base written first is the taught spelling:
+
+```hew
+type Point { x: i64, y: i64, label: string, }
+fn main() {
+    let origin = Point { x: 0, y: 0, label: "origin" };
+    let shifted = Point { ..origin, x: 3 };
+    println(shifted.label);
+}
+```
+
+Spread reads its operand rather than consuming it, so the operand remains
+usable afterwards; the ownership of each carried value is the ownership of
+passing that value — a transfer at the operand's last use, a copy otherwise.
+A `Vec` spread is therefore a retain plus the appended pushes.
+
+Spread performs no effects of its own, so it is admitted anywhere a literal
+is, including a machine transition body (§3.11.3).
+
+The same dots spell the rest of a record pattern, `Point { x, .. }`: on the
+pattern side they stand for the fields the pattern does not name, as on the
+expression side they stand for the fields or elements the literal does not
+write.
+
 ### 3.2 Mutability
 
 - Bindings are immutable by default: `let`.
@@ -3640,6 +3688,16 @@ machine Accumulator {
 }
 ```
 
+**Carrying the fields that do not change** — a state literal takes the record
+spread of §3.1, so a transition writes only what it changes and `..state`
+carries the rest:
+
+<!-- doctest: skip -->
+
+```hew
+on Sale: Filled => Filled reenter { Filled { ..state, count: state.count + 1 } }
+```
+
 **Body-less shorthand** — when a transition has no body, the compiler
 constructs the target state's zero-field (unit) variant automatically. Like
 every other bodyless structural member (§ Structural punctuation), a bodyless
@@ -6019,7 +6077,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
-13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)
+13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
 14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.

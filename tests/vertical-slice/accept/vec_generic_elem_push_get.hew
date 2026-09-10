@@ -6,12 +6,12 @@
 // scalar/string ABI plus `set`/`pop`, proving each per-ABI symbol is
 // re-resolved correctly and the exact pushed value is read back.
 
-fn store_and_read<T>(v: Vec<T>, x: T) -> T {
+fn store_and_read<T>(var v: Vec<T>, x: T) -> T {
     v.push(x);
     v[0]
 }
 
-fn set_then_pop<T>(v: Vec<T>, a: T, b: T) -> T {
+fn set_then_pop<T>(var v: Vec<T>, a: T, b: T) -> T {
     v.push(a);
     v.set(0, b);
     v.pop()

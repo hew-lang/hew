@@ -7,7 +7,7 @@ fn triple(x: i64) -> i64 {
 }
 
 fn main() {
-    let fns: Vec<fn(i64) -> i64> = [double, triple];
+    var fns: Vec<fn(i64) -> i64> = [double, triple];
     println(fns.len()); // 2
     let first = fns[0];
     println(first(3)); // 6

@@ -10,7 +10,7 @@ actor Counter {
     receive fn report() { println(n); }
 }
 
-fn store_and_read<T>(v: Vec<T>, x: T) -> T {
+fn store_and_read<T>(var v: Vec<T>, x: T) -> T {
     v.push(x);
     v[0]
 }

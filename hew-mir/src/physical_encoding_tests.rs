@@ -152,7 +152,7 @@ fn encoding_mutation_rejects_wrong_transfers_missing_receiver_result_and_failure
                     *action = PhysicalRuntimeAction::direct(RuntimeCallFamily::Encoding {
                         format: EncodingFormat::Yaml,
                         op,
-                    })
+                    });
                 }
                 _ => unreachable!(),
             }

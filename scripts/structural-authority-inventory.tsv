@@ -47,7 +47,8 @@ lifecycle-identity-authority	lifecycle-candidate-field	hew-types/src/check/types
 lifecycle-identity-authority	lifecycle-conflict-use	hew-types/src/check/registration.rs	stage-2	canonical checker lifecycle identity carrier
 lifecycle-identity-authority	lifecycle-conflict-variant	hew-types/src/check/types.rs	stage-2	canonical checker lifecycle identity carrier
 runtime-call-authority	runtime-call-family-consumer	hew-mir/src/physical.rs	stage-4	physical runtime actions use the shared family contract for argument modes and result effects
-runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_encoding.rs	stage-4	encoding and file adapters consume the selected runtime family and its result effect
+runtime-call-authority	runtime-call-family-consumer	hew-codegen-rs/src/physical.rs	stage-4	the backend reads each operation's row for its symbol, operand contract and C return
+runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical.rs	stage-4	the runtime-call emitter dispatches on the operation carried by its physical action
 runtime-call-authority	runtime-call-family-use	hew-codegen-rs/src/physical_encoding_runtime_cases.rs	stage-4	runtime execution fixtures construct typed encoding operations to verify generated adapters
 runtime-call-authority	runtime-call-family-use	hew-hir/src/lower.rs	stage-4	typed runtime-family dispatch carrier
 runtime-call-authority	runtime-call-family-use	hew-mir/src/physical.rs	stage-4	physical runtime realization maps typed actions to their shared semantic families

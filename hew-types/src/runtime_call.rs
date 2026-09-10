@@ -2391,7 +2391,9 @@ impl RuntimeCallFamily {
     #[must_use]
     #[expect(
         clippy::too_many_lines,
-        reason = "one declarative row per runtime operation is the authority"
+        clippy::match_same_arms,
+        reason = "one declarative row per runtime operation is the authority, and \
+                  two operations that happen to agree today still state their own facts"
     )]
     pub const fn row(self) -> RuntimeOpRow {
         use RuntimeArgumentContract as A;

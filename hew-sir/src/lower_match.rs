@@ -105,9 +105,6 @@ impl Builder<'_, '_> {
         scrutinee_expr: &HirExpr,
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
-        if source_arms.is_empty() {
-            return Err("match has no source arms".to_string());
-        }
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
         let shape = self.resolve_match_shape(&scrutinee_ty, source_arms)?;
 
@@ -248,7 +245,7 @@ impl Builder<'_, '_> {
             }
 
             self.end_loans_since(plan.outer_loans)?;
-            self.select_match_candidate(plan, arm, group.variant, &fields)?;
+            self.select_match_candidate(plan, arm, &fields)?;
             self.acquire_selected_match_bindings(&plan.outer_bindings)?;
             let result = self.lower_selected_body(&arm.body, &plan.result_ty)?;
             if self.is_open() {
@@ -410,7 +407,6 @@ impl Builder<'_, '_> {
         &mut self,
         plan: &MatchPlan,
         arm: &HirMatchArm,
-        variant: Option<u32>,
         fields: &[BlockArg],
     ) -> Result<(), String> {
         match &plan.shape {
@@ -457,7 +453,6 @@ impl Builder<'_, '_> {
                 self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
             }
             MatchShape::Variant { .. } => {
-                let _ = variant;
                 if plan.borrowed {
                     // The payloads name the scrutinee's region: they stay
                     // readable for the arm body, and the candidate cleanup ends
@@ -507,11 +502,42 @@ impl Builder<'_, '_> {
         })
     }
 
+    /// A binding arm names the whole scrutinee, so it names the scrutinee's
+    /// exact type and takes nothing out of it.
+    fn check_whole_scrutinee_binding(
+        &mut self,
+        arm: &HirMatchArm,
+        binding_ty: &ResolvedTy,
+        scrutinee_ty: &ResolvedTy,
+    ) -> Result<(), String> {
+        if self.ty(binding_ty) != *scrutinee_ty {
+            return Err(format!(
+                "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
+                self.ty(binding_ty).user_facing(),
+                scrutinee_ty.user_facing()
+            ));
+        }
+        if !arm.bindings.is_empty()
+            || !arm.payload_predicates.is_empty()
+            || !arm.payload_variant_predicates.is_empty()
+        {
+            return Err(
+                "whole-scrutinee binding arm carries impossible payload metadata".to_string(),
+            );
+        }
+        Ok(())
+    }
+
     fn check_scalar_arms(
         &mut self,
         scrutinee_ty: &ResolvedTy,
         arms: &[HirMatchArm],
     ) -> Result<(), String> {
+        // Only an uninhabited scrutinee can have no arms, and only the variant
+        // shape has one: a scalar always has values to select over.
+        if arms.is_empty() {
+            return Err("scalar match has no source arms".to_string());
+        }
         for arm in arms {
             if !arm.bindings.is_empty()
                 || !arm.payload_predicates.is_empty()
@@ -527,13 +553,7 @@ impl Builder<'_, '_> {
                     }
                 }
                 HirMatchArmPredicate::Binding { ty, .. } => {
-                    if self.ty(ty) != *scrutinee_ty {
-                        return Err(format!(
-                            "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
-                            self.ty(ty).user_facing(),
-                            scrutinee_ty.user_facing()
-                        ));
-                    }
+                    self.check_whole_scrutinee_binding(arm, ty, scrutinee_ty)?;
                 }
                 HirMatchArmPredicate::Regex { captures, .. }
                     if *scrutinee_ty == ResolvedTy::String =>
@@ -562,6 +582,10 @@ impl Builder<'_, '_> {
         recipes: &[AggregateFieldRecipe],
         arms: &[HirMatchArm],
     ) -> Result<(), String> {
+        // A record or tuple always has values, so it always has arms.
+        if arms.is_empty() {
+            return Err("aggregate match has no source arms".to_string());
+        }
         for arm in arms {
             match &arm.predicate {
                 HirMatchArmPredicate::RecordProject { ty } => {
@@ -583,22 +607,7 @@ impl Builder<'_, '_> {
                     }
                 }
                 HirMatchArmPredicate::Binding { ty, .. } => {
-                    if self.ty(ty) != *scrutinee_ty {
-                        return Err(format!(
-                            "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
-                            self.ty(ty).user_facing(),
-                            scrutinee_ty.user_facing()
-                        ));
-                    }
-                    if !arm.bindings.is_empty()
-                        || !arm.payload_predicates.is_empty()
-                        || !arm.payload_variant_predicates.is_empty()
-                    {
-                        return Err(
-                            "whole-scrutinee binding arm carries impossible field metadata"
-                                .to_string(),
-                        );
-                    }
+                    self.check_whole_scrutinee_binding(arm, ty, scrutinee_ty)?;
                 }
                 HirMatchArmPredicate::Wildcard => {
                     if !arm.bindings.is_empty() || !arm.payload_predicates.is_empty() {
@@ -665,22 +674,7 @@ impl Builder<'_, '_> {
                     }
                 }
                 HirMatchArmPredicate::Binding { ty, .. } => {
-                    if self.ty(ty) != *scrutinee_ty {
-                        return Err(format!(
-                            "whole-scrutinee binding has `{}`, its scrutinee is `{}`",
-                            self.ty(ty).user_facing(),
-                            scrutinee_ty.user_facing()
-                        ));
-                    }
-                    if !arm.bindings.is_empty()
-                        || !arm.payload_predicates.is_empty()
-                        || !arm.payload_variant_predicates.is_empty()
-                    {
-                        return Err(
-                            "whole-scrutinee binding arm carries impossible payload metadata"
-                                .to_string(),
-                        );
-                    }
+                    self.check_whole_scrutinee_binding(arm, ty, scrutinee_ty)?;
                 }
                 _ => {
                     return Err(

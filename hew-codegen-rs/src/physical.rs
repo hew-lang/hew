@@ -4259,6 +4259,29 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             {
                 return self.emit_weak_upgrade(option, transfers, required_result()?, normal);
             }
+            PhysicalRuntimeCarrier::Variant(option)
+                if matches!(
+                    action.family,
+                    RuntimeCallFamily::IntArith(
+                        IntArithKind::CheckedAdd
+                            | IntArithKind::CheckedSub
+                            | IntArithKind::CheckedMul,
+                        _
+                    )
+                ) =>
+            {
+                let RuntimeCallFamily::IntArith(kind, width) = action.family else {
+                    unreachable!("matched IntArith above");
+                };
+                return self.emit_checked_int_arith(
+                    (kind, width),
+                    option,
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
             _ => {}
         }
         match action.family {
@@ -5498,6 +5521,22 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         })?;
         let receiver_int = receiver.into_int_value();
         let receiver_ty = receiver_int.get_type();
+        let receiver_bits = receiver_ty.get_bit_width();
+        let width_ok = match width {
+            IntMethodWidth::I8 | IntMethodWidth::U8 => receiver_bits == 8,
+            IntMethodWidth::I16 | IntMethodWidth::U16 => receiver_bits == 16,
+            IntMethodWidth::I32 | IntMethodWidth::U32 => receiver_bits == 32,
+            IntMethodWidth::I64 | IntMethodWidth::U64 => receiver_bits == 64,
+            IntMethodWidth::Isize | IntMethodWidth::Usize => {
+                let target = TargetData::create(&self.module.target.data_layout);
+                receiver_bits == target.get_pointer_byte_size(None) * 8
+            }
+        };
+        if !width_ok {
+            return Err(CodegenError::FailClosed(format!(
+                "integer method `{op:?}` carried width {width:?} but its receiver is {receiver_bits} bits"
+            )));
+        }
         let value = match op {
             IntBitOp::CountOnes => {
                 let popcount = self.call_intrinsic1("llvm.ctpop", receiver_int)?;
@@ -5527,6 +5566,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.narrow_to_u32(ctz)?
             }
+            // A single byte has no other byte to swap with: LLVM's `bswap`
+            // intrinsic requires an even byte count and rejects `i8`.
+            // Rust's `u8`/`i8::swap_bytes` is the identity for the same
+            // reason; match that instead of asking LLVM for an illegal
+            // one-byte swap.
+            IntBitOp::SwapBytes if receiver_bits == 8 => receiver_int.into(),
             IntBitOp::SwapBytes => self.call_intrinsic1("llvm.bswap", receiver_int)?.into(),
             IntBitOp::ReverseBits => self
                 .call_intrinsic1("llvm.bitreverse", receiver_int)?
@@ -5535,14 +5580,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let shift_arg = arguments.get(1).copied().ok_or_else(|| {
                     CodegenError::FailClosed("physical rotate lacks its shift amount".into())
                 })?;
+                // The shift amount is always `u32`; a narrower receiver
+                // (`i8`/`i16`) needs it truncated, not widened, so
+                // `build_int_cast` (trunc/zext/no-op, picked by comparing
+                // the two widths) replaces the widen-only
+                // `..._or_bit_cast` this used before narrow receivers
+                // existed. Truncating is exactly "shift amount mod width".
                 let shift = self
                     .builder
-                    .build_int_z_extend_or_bit_cast(
+                    .build_int_cast(
                         shift_arg.into_int_value(),
                         receiver_ty,
                         "int_method.rotate_shift",
                     )
-                    .llvm_ctx("widen rotate shift amount to the receiver's width")?;
+                    .llvm_ctx("cast rotate shift amount to the receiver's width")?;
                 let name = match op {
                     IntBitOp::RotateLeft => "llvm.fshl",
                     IntBitOp::RotateRight => "llvm.fshr",
@@ -5562,16 +5613,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?
             }
         };
-        let width_ok = match width {
-            IntMethodWidth::I32 | IntMethodWidth::U32 => receiver_ty.get_bit_width() == 32,
-            IntMethodWidth::I64 | IntMethodWidth::U64 => receiver_ty.get_bit_width() == 64,
-        };
-        if !width_ok {
-            return Err(CodegenError::FailClosed(format!(
-                "integer method `{op:?}` carried width {width:?} but its receiver is {} bits",
-                receiver_ty.get_bit_width()
-            )));
-        }
         self.store(result, value)?;
         self.emit_result_edge(Some(result), normal)
     }
@@ -5607,7 +5648,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         };
         let lhs = lhs.into_int_value();
         let rhs = rhs.into_int_value();
-        let signed = matches!(width, IntMethodWidth::I32 | IntMethodWidth::I64);
+        let signed = is_signed_int_width(width);
         let value = match kind {
             IntArithKind::WrappingAdd => self
                 .builder
@@ -5637,8 +5678,151 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 };
                 self.call_intrinsic2(name, lhs, rhs)?
             }
+            IntArithKind::SaturatingMul => self.emit_saturating_mul(lhs, rhs, signed)?,
+            IntArithKind::CheckedAdd | IntArithKind::CheckedSub | IntArithKind::CheckedMul => {
+                return Err(CodegenError::FailClosed(
+                    "checked integer arithmetic reached the non-trapping arith path; it \
+                     needs the `VariantResult` carrier (see `emit_checked_int_arith`)"
+                        .into(),
+                ));
+            }
         };
         self.store(result, value.into())?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// `x.saturating_mul(y)`: no LLVM saturating-multiply intrinsic exists,
+    /// so this builds one from `llvm.{s,u}mul.with.overflow` plus a select
+    /// onto the saturated bound. Unsigned overflow always saturates to the
+    /// all-ones max. Signed overflow saturates to `MIN` when the operands'
+    /// signs differ (the true product is negative) and to `MAX` when they
+    /// match (the true product is positive).
+    fn emit_saturating_mul(
+        &self,
+        lhs: inkwell::values::IntValue<'ctx>,
+        rhs: inkwell::values::IntValue<'ctx>,
+        signed: bool,
+    ) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+        let name = if signed {
+            "llvm.smul.with.overflow"
+        } else {
+            "llvm.umul.with.overflow"
+        };
+        let outcome = self.call_intrinsic_with_overflow(name, lhs, rhs)?;
+        let product = self
+            .builder
+            .build_extract_value(outcome, 0, "int_arith.saturating_mul.product")
+            .llvm_ctx("extract the saturating-multiply product")?
+            .into_int_value();
+        let overflowed = self
+            .builder
+            .build_extract_value(outcome, 1, "int_arith.saturating_mul.overflow")
+            .llvm_ctx("extract the saturating-multiply overflow flag")?
+            .into_int_value();
+        let ty = lhs.get_type();
+        let bound = if signed {
+            let bits = ty.get_bit_width();
+            let max = ty.const_int((1u64 << (bits - 1)) - 1, false);
+            let min = ty.const_int(1u64 << (bits - 1), false);
+            let signs_differ = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::SLT,
+                    self.builder
+                        .build_xor(lhs, rhs, "int_arith.saturating_mul.sign_xor")
+                        .llvm_ctx("compare operand signs for saturating multiply")?,
+                    ty.const_zero(),
+                    "int_arith.saturating_mul.signs_differ",
+                )
+                .llvm_ctx("compare operand signs for saturating multiply")?;
+            self.builder
+                .build_select(signs_differ, min, max, "int_arith.saturating_mul.bound")
+                .llvm_ctx("select the saturating-multiply bound")?
+                .into_int_value()
+        } else {
+            ty.const_all_ones()
+        };
+        Ok(self
+            .builder
+            .build_select(
+                overflowed,
+                bound,
+                product,
+                "int_arith.saturating_mul.result",
+            )
+            .llvm_ctx("select the saturating-multiply result")?
+            .into_int_value())
+    }
+
+    /// `x.checked_add/sub/mul(y)`: the ordinary `Option<T>` `VariantResult`
+    /// carrier, backed by `llvm.{s,u}{add,sub,mul}.with.overflow`. `None` on
+    /// overflow, `Some(v)` otherwise — the same two-block shape as
+    /// `emit_weak_upgrade`.
+    fn emit_checked_int_arith(
+        &self,
+        (kind, width): (IntArithKind, IntMethodWidth),
+        option: hew_mir::physical::PhysicalVariantId,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        if failure.is_some() {
+            return Err(CodegenError::FailClosed(
+                "checked integer arithmetic carries a failure edge; overflow is `None`, not \
+                 a failure"
+                    .into(),
+            ));
+        }
+        let arguments = transfers
+            .iter()
+            .map(|transfer| self.load(argument_source(transfer), "int_arith.argument"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let (Some(lhs), Some(rhs)) = (arguments.first(), arguments.get(1)) else {
+            return Err(CodegenError::FailClosed(
+                "physical checked integer arithmetic lacks an operand".into(),
+            ));
+        };
+        let lhs = lhs.into_int_value();
+        let rhs = rhs.into_int_value();
+        let signed = is_signed_int_width(width);
+        let name = match (kind, signed) {
+            (IntArithKind::CheckedAdd, true) => "llvm.sadd.with.overflow",
+            (IntArithKind::CheckedAdd, false) => "llvm.uadd.with.overflow",
+            (IntArithKind::CheckedSub, true) => "llvm.ssub.with.overflow",
+            (IntArithKind::CheckedSub, false) => "llvm.usub.with.overflow",
+            (IntArithKind::CheckedMul, true) => "llvm.smul.with.overflow",
+            (IntArithKind::CheckedMul, false) => "llvm.umul.with.overflow",
+            _ => {
+                return Err(CodegenError::FailClosed(format!(
+                    "`{kind:?}` is not checked integer arithmetic"
+                )));
+            }
+        };
+        let outcome = self.call_intrinsic_with_overflow(name, lhs, rhs)?;
+        let sum = self
+            .builder
+            .build_extract_value(outcome, 0, "int_arith.checked.value")
+            .llvm_ctx("extract the checked-arithmetic result")?;
+        let overflowed = self
+            .builder
+            .build_extract_value(outcome, 1, "int_arith.checked.overflow")
+            .llvm_ctx("extract the checked-arithmetic overflow flag")?
+            .into_int_value();
+        let some_block = self
+            .ctx
+            .append_basic_block(self.value, "int_arith.checked.some");
+        let none_block = self
+            .ctx
+            .append_basic_block(self.value, "int_arith.checked.none");
+        self.builder
+            .build_conditional_branch(overflowed, none_block, some_block)
+            .llvm_ctx("select the checked-arithmetic outcome")?;
+        self.builder.position_at_end(none_block);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.emit_result_edge(Some(result), normal)?;
+        self.builder.position_at_end(some_block);
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[sum], option)?;
         self.emit_result_edge(Some(result), normal)
     }
 
@@ -5658,6 +5842,26 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(self
             .runtime_call_value(declaration, &[lhs.into(), rhs.into()], "int_arith.result")?
             .into_int_value())
+    }
+
+    /// Declare (if needed) and call a two-operand `llvm.{s,u}{add,sub,mul}
+    /// .with.overflow` intrinsic, returning its `{ iN, i1 }` aggregate
+    /// (the arithmetic result and the overflow flag) unpacked by the
+    /// caller with `build_extract_value`.
+    fn call_intrinsic_with_overflow(
+        &self,
+        name: &str,
+        lhs: inkwell::values::IntValue<'ctx>,
+        rhs: inkwell::values::IntValue<'ctx>,
+    ) -> CodegenResult<inkwell::values::StructValue<'ctx>> {
+        let declaration = Intrinsic::find(name)
+            .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[lhs.get_type().into()]))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("LLVM intrinsic `{name}` is unavailable"))
+            })?;
+        Ok(self
+            .runtime_call_value(declaration, &[lhs.into(), rhs.into()], "int_arith.overflow")?
+            .into_struct_value())
     }
 
     /// `f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).
@@ -5854,9 +6058,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .into_int_value())
     }
 
-    /// Truncate an intrinsic result (the receiver's own width) down to the
-    /// `u32` that every `count_ones`/`count_zeros`/`leading_zeros`/
-    /// `trailing_zeros` method returns, regardless of receiver width.
+    /// Cast an intrinsic result (the receiver's own width) to the `u32`
+    /// that every `count_ones`/`count_zeros`/`leading_zeros`/
+    /// `trailing_zeros` method returns, regardless of receiver width:
+    /// truncated down from `i64`/pointer width, widened up from `i8`/`i16`.
     fn narrow_to_u32(
         &self,
         value: inkwell::values::IntValue<'ctx>,
@@ -5866,8 +6071,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         Ok(self
             .builder
-            .build_int_truncate(value, self.ctx.i32_type(), "int_method.narrow")
-            .llvm_ctx("narrow bit-count result to u32")?
+            .build_int_cast(value, self.ctx.i32_type(), "int_method.narrow")
+            .llvm_ctx("cast bit-count result to u32")?
             .into())
     }
 
@@ -8195,6 +8400,17 @@ fn is_signed(ty: &ResolvedTy) -> bool {
             | ResolvedTy::I64
             | ResolvedTy::Isize
             | ResolvedTy::Duration
+    )
+}
+
+fn is_signed_int_width(width: IntMethodWidth) -> bool {
+    matches!(
+        width,
+        IntMethodWidth::I8
+            | IntMethodWidth::I16
+            | IntMethodWidth::I32
+            | IntMethodWidth::I64
+            | IntMethodWidth::Isize
     )
 }
 

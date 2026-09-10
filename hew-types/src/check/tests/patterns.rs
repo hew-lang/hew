@@ -1263,6 +1263,108 @@ fn main() -> i64 {
     assert_eq!(inner_ok.bindings[0].field_idx, 0);
 }
 
+/// A variant pattern in a tuple element is recorded as a
+/// `PayloadVariantPattern` on the tuple arm, keyed by element position, and
+/// the element does not also become a plain payload binding.
+#[test]
+fn tuple_element_nested_ctor_is_accepted_and_recorded() {
+    let output = check_source(
+        r"
+fn pair() -> (Option<i64>, i64) {
+    (Some(1), 2)
+}
+fn main() -> i64 {
+    match pair() {
+        (.Some(n), m) => n + m,
+        (_, m) => m,
+    }
+}",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a variant pattern in a tuple element must be accepted; got errors: {:#?}",
+        output.errors
+    );
+    let nested: Vec<_> = output
+        .pattern_resolutions
+        .values()
+        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+        .collect();
+    assert_eq!(nested.len(), 1, "one tuple arm carries a nested variant");
+    let pvp = nested[0];
+    assert_eq!(pvp.field_idx, 0, "element position keys the nested check");
+    assert_eq!(pvp.variant_match.variant_name, "Some");
+    assert_eq!(pvp.bindings.len(), 1);
+    assert_eq!(pvp.bindings[0].binding_name, "n");
+    let tuple_arm = output
+        .pattern_resolutions
+        .values()
+        .find(|resolution| !resolution.payload_variant_patterns.is_empty())
+        .expect("the nested arm has a resolution");
+    assert!(
+        tuple_arm
+            .payload_bindings
+            .iter()
+            .all(|binding| binding.field_idx != 0),
+        "element 0 is a nested variant, not a payload binding: {:#?}",
+        tuple_arm.payload_bindings
+    );
+}
+
+/// A variant pattern in a plain record field is recorded against that
+/// field's declaration-order index.
+#[test]
+fn record_field_nested_ctor_is_accepted_and_recorded() {
+    let output = check_source(
+        r"
+type Slot { tag: i64, load: Option<i64> }
+fn main() -> i64 {
+    let slot = Slot { tag: 1, load: Some(2) };
+    match slot {
+        Slot { tag: tag, load: .Some(v) } => tag + v,
+        Slot { tag: tag, load: _ } => tag,
+    }
+}",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a variant pattern in a record field must be accepted; got errors: {:#?}",
+        output.errors
+    );
+    let pvp = output
+        .pattern_resolutions
+        .values()
+        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+        .find(|pvp| pvp.variant_match.variant_name == "Some")
+        .expect("the `load: .Some(v)` field records a nested variant");
+    assert_eq!(pvp.field_idx, 1, "`load` is the second declared field");
+    assert_eq!(pvp.bindings.len(), 1);
+    assert_eq!(pvp.bindings[0].binding_name, "v");
+}
+
+/// A nested variant of the wrong enum in a tuple element is a type error,
+/// not a silently ignored predicate.
+#[test]
+fn tuple_element_nested_ctor_of_wrong_enum_errors() {
+    let output = check_source(
+        r"
+enum Other { Raw(i64), Gone }
+fn pair() -> (Option<i64>, i64) {
+    (Some(1), 2)
+}
+fn main() -> i64 {
+    match pair() {
+        (.Raw(n), m) => n + m,
+        (_, m) => m,
+    }
+}",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "`.Raw` is not a variant of `Option<i64>` and must be rejected"
+    );
+}
+
 /// Tuple destructure inside tuple-variant payload position is admitted for HIR lowering.
 #[test]
 fn constructor_payload_tuple_destructure_is_accepted() {

@@ -1,0 +1,141 @@
+//! Variant patterns nested inside tuple and record patterns, in every
+//! pattern position. A nested tag test only reads the projected field: when
+//! it fails the aggregate is whole for the next candidate, and every owned
+//! payload the failing candidate probed is released exactly once.
+
+type Slot {
+    tag: string,
+    load: Option<string>,
+}
+
+enum Reading {
+    Value(string),
+    Absent,
+}
+
+fn pair(k: i64) -> (Option<string>, string) {
+    if k == 0 {
+        (.Some(f"payload {k}"), f"side {k}")
+    } else {
+        (.None, f"side {k}")
+    }
+}
+
+// A nested tag test on element 0. Both arms own the tuple's second string, so
+// the fall-through path must release the first arm's probe without touching
+// it.
+fn describe(k: i64) -> string {
+    match pair(k) {
+        (.Some(text), side) => text + "/" + side,
+        (_, side) => "absent/" + side,
+    }
+}
+
+// A guard on a nested arm. The guard runs with the nested payload bound, and
+// a false guard falls through to a candidate that binds nothing from the
+// nested enum — its owned payload joins the arm's cleanup set.
+fn guarded(k: i64) -> string {
+    match pair(k) {
+        (.Some(text), side) if text.len() > 100 => text + "/long/" + side,
+        (.Some(_), side) => "short/" + side,
+        (_, side) => "absent/" + side,
+    }
+}
+
+fn slot(k: i64) -> Slot {
+    Slot {
+        tag: f"tag {k}",
+        load: if k == 0 { .Some(f"load {k}") } else { .None },
+    }
+}
+
+// A record field holding a variant pattern. The unmatched field's owned
+// string still moves into its binding on the selected arm.
+fn field(k: i64) -> string {
+    match slot(k) {
+        Slot { tag: tag, load: .Some(load) } => tag + "/" + load,
+        Slot { tag: tag, load: _ } => tag + "/empty",
+    }
+}
+
+fn deep(k: i64) -> (Result<Reading, string>, string) {
+    if k == 0 {
+        (.Ok(.Value(f"deep {k}")), f"note {k}")
+    } else if k == 1 {
+        (.Ok(.Absent), f"note {k}")
+    } else {
+        (.Err(f"bad {k}"), f"note {k}")
+    }
+}
+
+// Two levels of nesting: a variant inside a variant inside a tuple. The
+// inner tag test runs only after the outer one passes, and the owned string
+// in the `Err` payload is never bound — both `Ok` candidates fail their tag
+// test and the wildcard arm's cleanup set is what releases it.
+fn two_levels(k: i64) -> string {
+    match deep(k) {
+        (.Ok(.Value(text)), note) => text + "/" + note,
+        (.Ok(.Absent), note) => "empty/" + note,
+        (_, note) => "other/" + note,
+    }
+}
+
+fn conditional(k: i64) -> string {
+    if let (.Some(text), side) = pair(k) {
+        text + "/if/" + side
+    } else {
+        "absent/if"
+    }
+}
+
+fn escaping(k: i64) -> string {
+    let (.Some(text), side) = pair(k) else {
+        return "absent/else";
+    };
+    text + "/else/" + side
+}
+
+fn drained() -> i64 {
+    var round = 0;
+    var total = 0;
+    while let (.Some(text), side) = pair(if round < 3 { 0 } else { 1 }) {
+        total = total + text.len() + side.len();
+        round = round + 1;
+    }
+    total
+}
+
+// The same shapes under repetition: a leaked nested payload shows up as
+// growth, and a double release as a fault.
+fn churn() -> i64 {
+    var i = 0;
+    var seen = 0;
+    while i < 5000 {
+        seen = seen + describe(i % 2).len();
+        seen = seen + guarded(i % 2).len();
+        seen = seen + field(i % 2).len();
+        seen = seen + two_levels(i % 3).len();
+        seen = seen + conditional(i % 2).len();
+        seen = seen + escaping(i % 2).len();
+        i = i + 1;
+    }
+    seen
+}
+
+fn main() {
+    println(describe(0));
+    println(describe(1));
+    println(guarded(0));
+    println(guarded(1));
+    println(field(0));
+    println(field(1));
+    println(two_levels(0));
+    println(two_levels(1));
+    println(two_levels(2));
+    println(conditional(0));
+    println(conditional(1));
+    println(escaping(0));
+    println(escaping(1));
+    println(f"drained {drained()}");
+    println(f"churn {churn()}");
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "pattern-nested-variants"
+intent = "A variant pattern nested inside a tuple element or a record field selects an arm in `match`, `if let`, `while let` and `let … else`, including a variant inside a variant inside a tuple and a guard on a nested arm. A failed nested tag test leaves the aggregate whole for the next candidate and releases every owned payload the failing candidate probed, which the repetition loop turns into a leak or double-release signal."
+source = "cases/pattern-nested-variants.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "payload 0/side 0\nabsent/side 1\nshort/side 0\nabsent/side 1\ntag 0/load 0\ntag 1/empty\ndeep 0/note 0\nempty/note 1\nother/note 2\npayload 0/if/side 0\nabsent/if\npayload 0/else/side 0\nabsent/else\ndrained 45\nchurn 404167\n"
+exit = 0

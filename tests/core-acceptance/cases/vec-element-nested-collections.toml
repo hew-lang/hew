@@ -1,10 +1,10 @@
 [[case]]
 id = "vec-element-nested-collections"
-intent = "Nested collections, a tuple with an owned field and a record holding a collection are all admitted by the same value-class rule, stored by copy and released once."
+intent = "Nested collections, a set, a tuple with an owned field, a record holding a collection and a machine value are all admitted by the same value-class rule, stored by copy and released once."
 source = "cases/vec-element-nested-collections.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
 [case.expected]
-stdout = "rows=2 row0=2 row1=1\ncounters=1 hits=3\npairs=2 name=two value=2\nholders=1 tags=2 copy=2\nwalked=3\n"
+stdout = "rows=2 row0=2 row1=1\ncounters=1 hits=3\npairs=2 name=two value=2\nholders=1 tags=2 copy=2\nsets=1 members=2\nmeters=2\nwalked=3\n"
 exit = 0

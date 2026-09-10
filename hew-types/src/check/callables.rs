@@ -241,6 +241,23 @@ impl Checker {
         }
     }
     /// Match the independent entry copy required for mutable Borrow parameters.
+    /// A function that yields a value with no copy operation transfers it out,
+    /// so the expression it returns consumes what it names. A parameter the
+    /// declaration only borrows cannot be that source: the caller keeps it and
+    /// releases it after the call.
+    pub(super) fn reject_borrowed_return_transfer(&mut self, value: &Spanned<Expr>, declared: &Ty) {
+        // Only a POSITIVE affine classification refuses. A type the classifier
+        // cannot decide - an abstract type parameter, an unresolved variable -
+        // proves nothing about its copy operation, and refusing it would
+        // reject every generic identity function.
+        if self.parameter_clone_kind(&self.subst.resolve(declared))
+            != Some(crate::type_facts::CloneKind::None)
+        {
+            return;
+        }
+        self.reject_borrowed_consumption(&value.0, &value.1);
+    }
+
     pub(super) fn parameter_has_independent_clone(&self, ty: &Ty) -> bool {
         self.parameter_clone_kind(ty)
             .is_some_and(|clone| clone != crate::type_facts::CloneKind::None)

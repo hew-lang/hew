@@ -646,6 +646,9 @@ impl Checker {
         if self.checking_actor_init {
             self.require_deferred_fields_initialized("return");
         }
+        if let (Some(value), Some(expected)) = (value, self.current_return_type.clone()) {
+            self.reject_borrowed_return_transfer(value, &expected);
+        }
         if let Some(expected) = self.current_return_type.clone() {
             // Inside a gen{} body, `current_return_type` is shaped as
             // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
@@ -1136,10 +1139,11 @@ impl Checker {
                             );
                         }
                     }
-                    // Track let-bound numeric literals for later coercion at use
-                    // sites. Only unannotated immutable bindings preserve the
-                    // literal kind/value; explicit annotations and mutable vars
-                    // materialize immediately.
+                    // Track let-bound numeric literals for later coercion at
+                    // use sites. Only an unannotated immutable binding records
+                    // its literal value here; an annotated binding already has
+                    // its width, and a `var` takes the width its first
+                    // arithmetic use requires.
                     if ty.is_none() {
                         if let Some((val, _)) = value {
                             if is_integer_literal(val) {

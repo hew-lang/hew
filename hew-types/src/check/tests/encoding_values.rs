@@ -227,7 +227,7 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
         );
     }
     let output = check_source(
-        "#[resource] #[opaque] type Value {}\nfn identity(value: Value) -> Value { value }",
+        "#[resource] #[opaque] type Value {}\nfn identity(consume value: Value) -> Value { value }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let ty = &output.fn_sigs["identity"].return_type;
@@ -365,7 +365,7 @@ fn encoding_value_import_alias_cannot_promote_a_same_named_user_resource() {
     };
     import.resolved_items = Some(parsed_items("#[resource] #[opaque] pub type Value {}").into());
     items.extend(parsed_items(
-        "fn identity(value: json.Value) -> json.Value { value }",
+        "fn identity(consume value: json.Value) -> json.Value { value }",
     ));
     let output = check_items(items);
     assert!(output.errors.is_empty(), "{:?}", output.errors);

@@ -579,7 +579,7 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
         "import std.stream;\n",
         "import std.channel as channel_api;\n",
         "\n",
-        "fn stream_id(s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
+        "fn stream_id(consume s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
         "fn close_sender(tx: channel_api.Sender<string>) {\n",
         "    tx.close();\n",
         "}\n",

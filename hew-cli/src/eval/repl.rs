@@ -968,13 +968,10 @@ impl ReplSession {
 
         let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
         let stopped = state.stopped;
-        let tco = match state.typecheck_result.and_then(|result| result.tco) {
-            Some(tco) => tco,
-            // The run never reached the checker: report why, not "no type
-            // information".
-            None => {
-                return Err(stopped.map_or(TypeQueryFailure::NoTypeInfo, TypeQueryFailure::Frontend))
-            }
+        // A run that never reached the checker reports why, not "no type
+        // information".
+        let Some(tco) = state.typecheck_result.and_then(|result| result.tco) else {
+            return Err(stopped.map_or(TypeQueryFailure::NoTypeInfo, TypeQueryFailure::Frontend));
         };
 
         let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);

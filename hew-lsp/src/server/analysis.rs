@@ -169,7 +169,7 @@ fn dependency_uris(program: &hew_parser::ast::Program) -> Option<Vec<Url>> {
         .modules
         .values()
         .flat_map(|module| module.source_paths.iter())
-        .filter_map(|path| Url::from_file_path(path))
+        .filter_map(Url::from_file_path)
         .collect();
     uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     uris.dedup();
@@ -454,6 +454,96 @@ fn type_related_information(
     })
 }
 
+fn parse_lsp_diagnostic(error: &hew_parser::ParseError, target: &DiagnosticTarget) -> Diagnostic {
+    Diagnostic {
+        range: target.range(&error.span),
+        severity: Some(match error.severity {
+            hew_parser::Severity::Error => DiagnosticSeverity::ERROR,
+            hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
+        }),
+        code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
+        source: Some("hew-parser".to_string()),
+        message: error.hint.as_ref().map_or_else(
+            || error.message.clone(),
+            |hint| format!("{}\n\nhint: {hint}", error.message),
+        ),
+        data: Some(parse_diagnostic_data(&error.kind)),
+        ..Default::default()
+    }
+}
+
+fn type_lsp_diagnostic(
+    error: &hew_types::TypeError,
+    note_sources: &[Option<(String, String)>],
+    target: &DiagnosticTarget,
+) -> Diagnostic {
+    Diagnostic {
+        range: target.range(&error.span),
+        severity: Some(severity_to_lsp(error.severity)),
+        code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
+        tags: unnecessary_diagnostic_tags(&error.kind),
+        source: Some("hew-types".to_string()),
+        message: if error.suggestions.is_empty() {
+            error.message.clone()
+        } else {
+            format!(
+                "{}\n\nDid you mean: {}",
+                error.message,
+                error.suggestions.join(", ")
+            )
+        },
+        related_information: type_related_information(error, note_sources, target),
+        data: Some(diagnostic_data(&error.kind, &error.suggestions)),
+        ..Default::default()
+    }
+}
+
+fn message_lsp_diagnostic(
+    message: &hew_compile::FrontendMessageDiagnostic,
+    target: &DiagnosticTarget,
+    root_uri: &Url,
+    root_source: &str,
+    root_line_offsets: &[usize],
+) -> Diagnostic {
+    Diagnostic {
+        range: message
+            .span
+            .as_ref()
+            .map_or_else(zero_range, |span| target.range(span)),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(message.code.clone())),
+        source: Some("hew-compile".to_string()),
+        message: if message.help.is_empty() {
+            message.message.clone()
+        } else {
+            format!("{}\n\n{}", message.message, message.help.join("\n"))
+        },
+        related_information: (!message.notes.is_empty()).then(|| {
+            message
+                .notes
+                .iter()
+                .map(|note| {
+                    let note_target = diagnostic_target(
+                        Some(&note.filename),
+                        Some(&note.source),
+                        root_uri,
+                        root_source,
+                        root_line_offsets,
+                    );
+                    DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: note_target.uri.clone(),
+                            range: note_target.range(&note.span),
+                        },
+                        message: note.message.clone(),
+                    }
+                })
+                .collect()
+        }),
+        ..Default::default()
+    }
+}
+
 /// Route the shared frontend's diagnostics to the files they belong to.
 ///
 /// The LSP publishes exactly what `hew check` reports for the same source,
@@ -484,81 +574,13 @@ fn build_frontend_diagnostics_by_uri(
         );
 
         let lsp_diagnostic = match &diagnostic.kind {
-            FrontendDiagnosticKind::Parse(error) => Diagnostic {
-                range: target.range(&error.span),
-                severity: Some(match error.severity {
-                    hew_parser::Severity::Error => DiagnosticSeverity::ERROR,
-                    hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
-                }),
-                code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
-                source: Some("hew-parser".to_string()),
-                message: error.hint.as_ref().map_or_else(
-                    || error.message.clone(),
-                    |hint| format!("{}\n\nhint: {hint}", error.message),
-                ),
-                data: Some(parse_diagnostic_data(&error.kind)),
-                ..Default::default()
-            },
-            FrontendDiagnosticKind::Type(error) => Diagnostic {
-                range: target.range(&error.span),
-                severity: Some(severity_to_lsp(error.severity)),
-                code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
-                tags: unnecessary_diagnostic_tags(&error.kind),
-                source: Some("hew-types".to_string()),
-                message: if error.suggestions.is_empty() {
-                    error.message.clone()
-                } else {
-                    format!(
-                        "{}\n\nDid you mean: {}",
-                        error.message,
-                        error.suggestions.join(", ")
-                    )
-                },
-                related_information: type_related_information(
-                    error,
-                    &diagnostic.note_sources,
-                    &target,
-                ),
-                data: Some(diagnostic_data(&error.kind, &error.suggestions)),
-                ..Default::default()
-            },
-            FrontendDiagnosticKind::Message(message) => Diagnostic {
-                range: message
-                    .span
-                    .as_ref()
-                    .map_or_else(zero_range, |span| target.range(span)),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String(message.code.clone())),
-                source: Some("hew-compile".to_string()),
-                message: if message.help.is_empty() {
-                    message.message.clone()
-                } else {
-                    format!("{}\n\n{}", message.message, message.help.join("\n"))
-                },
-                related_information: (!message.notes.is_empty()).then(|| {
-                    message
-                        .notes
-                        .iter()
-                        .map(|note| {
-                            let note_target = diagnostic_target(
-                                Some(&note.filename),
-                                Some(&note.source),
-                                root_uri,
-                                root_source,
-                                root_line_offsets,
-                            );
-                            DiagnosticRelatedInformation {
-                                location: Location {
-                                    uri: note_target.uri.clone(),
-                                    range: note_target.range(&note.span),
-                                },
-                                message: note.message.clone(),
-                            }
-                        })
-                        .collect()
-                }),
-                ..Default::default()
-            },
+            FrontendDiagnosticKind::Parse(error) => parse_lsp_diagnostic(error, &target),
+            FrontendDiagnosticKind::Type(error) => {
+                type_lsp_diagnostic(error, &diagnostic.note_sources, &target)
+            }
+            FrontendDiagnosticKind::Message(message) => {
+                message_lsp_diagnostic(message, &target, root_uri, root_source, root_line_offsets)
+            }
             FrontendDiagnosticKind::Hir(_) => continue,
         };
 

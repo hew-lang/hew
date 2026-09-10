@@ -1197,19 +1197,18 @@ fn load_project_context(
     // reaching this point gets a real diagnostic rather than the raw
     // `Is a directory` OS error a bare read would surface.
     let documents = options.map_or(&EMPTY_DOCUMENTS, |options| &options.documents);
-    let source = match source_override {
-        Some(source) => source.to_string(),
-        None => {
-            if Path::new(input).is_dir() {
-                return Err(FrontendFailure::message_only(format!(
-                    "Error: {input} is a directory, not a .hew source file\n  \
-                     hint: a package directory is built with `hew build {input}`"
-                )));
-            }
-            read_source(documents, Path::new(input)).map_err(|e| {
-                FrontendFailure::message_only(format!("Error: cannot read {input}: {e}"))
-            })?
+    let source = if let Some(source) = source_override {
+        source.to_string()
+    } else {
+        if Path::new(input).is_dir() {
+            return Err(FrontendFailure::message_only(format!(
+                "Error: {input} is a directory, not a .hew source file\n  \
+                 hint: a package directory is built with `hew build {input}`"
+            )));
         }
+        read_source(documents, Path::new(input)).map_err(|e| {
+            FrontendFailure::message_only(format!("Error: cannot read {input}: {e}"))
+        })?
     };
     let input_dir = Path::new(input).parent().unwrap_or(Path::new("."));
     let project_dir = options
@@ -2224,6 +2223,13 @@ fn flatten_file_import_items(program: &mut Program) {
     program.items.extend(extra);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one module-graph frame: the source being walked, its directory, \
+              the root it belongs to, the open documents, and the graph and \
+              seen-id state the walk threads; grouping them would hide which \
+              of the three paths each argument comes from"
+)]
 fn extract_module_info(
     items: &[Spanned<Item>],
     current_source: &Path,

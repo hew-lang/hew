@@ -9,20 +9,20 @@
 # into platform-specific rows); never delete the row wholesale until every
 # selected platform has recovered.
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
-linux,macos,freebsd	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3079 derives unwind cleanup from exact live owner states
-*	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
-*	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
-linux,macos,freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
-linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
-linux,macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
-linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
-linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
-linux,macos	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
-linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_over_release	#3079 transfers one live Rc aggregate generation
-linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_reassign_does_not_over_release	#3079 transfers one live Weak aggregate generation
-linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_over_release	#3079 ends the prior aggregate generation before reassignment
-linux,macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
-linux,macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
+macos,freebsd	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3079 derives unwind cleanup from exact live owner states
+macos,windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
+macos,windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
+macos,freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
+macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
+macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
+macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
+macos	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
+macos	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
+macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_over_release	#3079 transfers one live Rc aggregate generation
+macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_reassign_does_not_over_release	#3079 transfers one live Weak aggregate generation
+macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_over_release	#3079 ends the prior aggregate generation before reassignment
+macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
+macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
 macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::arena_stdlib_leak_oracle	stdlib_arena_holder_insert_remove_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
 macos	failure	hew-cli::bytes_drop_leak_oracle	bytes_field_load_share_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
@@ -108,9 +108,128 @@ macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consum
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_no_per_frame_leak_slope	#3095 emits one Vec index ownership handoff
 macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
-linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	P4-CONCURRENCY: fork bodies run on OS threads until CORO lands
-linux,macos,windows	failure	hew-cli::run_e2e	run_record_resource_fields_both_closed_close_once_each	#3070 closes a composite's resource leaf exactly once
-linux,macos,windows	failure	hew-cli::run_e2e	run_record_resource_field_partial_close_leaks_the_sibling	#3070 closes a composite's resource leaf exactly once
-linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_field_read_closes_once	#3070 closes a composite's resource leaf exactly once
-linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_untouched_binder_closes_once	#3070 closes a composite's resource leaf exactly once
-linux,macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_wildcard_arm_closes_once	#3070 closes a composite's resource leaf exactly once
+macos,windows	failure	hew-cli::run_e2e	run_record_resource_fields_both_closed_close_once_each	#3070 closes a composite's resource leaf exactly once
+macos,windows	failure	hew-cli::run_e2e	run_record_resource_field_partial_close_leaks_the_sibling	#3070 closes a composite's resource leaf exactly once
+macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_field_read_closes_once	#3070 closes a composite's resource leaf exactly once
+macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_untouched_binder_closes_once	#3070 closes a composite's resource leaf exactly once
+macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_wildcard_arm_closes_once	#3070 closes a composite's resource leaf exactly once
+linux	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
+linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	builtin_cancellation_token_actor_state_uses_runtime_release	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	user_monitor_ref_resource_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	user_receiver_resource_shadow_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_resource_opaque_state	wrapped_resource_actor_state_still_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_state_resource_field_leak_oracle	actor_state_resource_reassign_refused	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_state_resource_field_leak_oracle	positive_control_ir_single_close_in_state_drop	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::actor_state_resource_field_leak_oracle	unreassigned_resource_field_closes_once	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
+linux	failure	hew-cli::affine_resource_carrier_boundaries	resource_parameter_reuse_after_collection_transfer_is_rejected	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::channel_send_shutdown_e2e	full_send_at_shutdown_fails_closed_with_named_channel	#3380 enforces bounded channel capacity on the send path
+linux	failure	hew-cli::check_deep_gates_e2e	check_fails_on_codegen_front_gate_before_ok_without_artifacts	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::check_deep_gates_e2e	check_fails_on_hir_gate_before_ok	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::check_deep_gates_e2e	show_stack_hints_render_before_later_hir_failure	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_retain_and_release_are_balanced_in_ir	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::compile_wasm_parity	non_duplex_program_emits_wasm	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
+linux	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section
+linux	failure	hew-cli::diagnostic_source_e2e	imported_hir_diagnostic_rendered_with_imported_source_context	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::diagnostic_source_e2e	mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::diagnostic_source_e2e	root_hir_diagnostic_rendered_with_source_context	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_reads_shadowed_local_by_innermost_binding	#3369 implements native debug metadata on the physical path
+linux	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_renders_only_active_enum_variant_payload	#3369 implements native debug metadata on the physical path
+linux	failure	hew-cli::eval_e2e	eval_std_observe_scrape_and_series_include_actor_attribution	#3382 emits the target-walked constructor section
+linux	failure	hew-cli::eval_e2e	eval_wasm_file_runtime_failure_preserves_pre_failure_stdout	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_file_succeeds	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_hashmap_record_key_uses_thunk_values_correctly	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_hashmap_string_i64_values_are_correct	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_hashset_string_values_are_correct	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_inline_expression_succeeds	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_integer_overflow_exits_with_trap_code_201	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_json_ok_inline_expression	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_json_runtime_failure_captures_stderr_without_leaking	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::eval_e2e	eval_wasm_timeout_is_reported	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::explain_cow_e2e	explain_cow_no_sends_produces_no_send_lines	#3383 makes hew check --explain-cow report what it explains
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_container_over_a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hashmap_insert_of_a_wrapped_extern_record_is_refused	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_domestic_record_still_releases_once_per_frame	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_domestic_enum_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_wrapped_extern_enum_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_embedding_a_direct_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_of_a_domestic_field_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_returned_string_interpolation_releases_exactly_once	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_sink_that_retains_a_payload_sees_no_caller_release	#3389 keeps an extern's string argument owned after the handle is retained
+linux	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::generic_monomorphization_e2e	generic_record_with_inline_owned_enum_drops_on_all_exits	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
+linux	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
+linux	failure	hew-cli::json_diagnostics_e2e	check_not_yet_implemented_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::json_diagnostics_e2e	compile_mir_gate_failure_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
+linux	failure	hew-cli::machine_e2e	machine_commands_succeed_on_every_compiling_machine_example	#3379 evaluates const parameters and generic fallbacks in a pure machine
+linux	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
+linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_reenter_carrying_resource_is_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
+linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_state_resource_release_paths_are_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
+linux	failure	hew-cli::machine_transition_watch_e2e	select_on_transition_example_runs_clean	#3392 waits out a select's after arm inside an actor handler
+linux	failure	hew-cli::machine_transition_watch_e2e	supervisor_child_with_machine_state_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	unsupported_live_alias_shapes_reject_instead_of_leaking	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::opaque_resource_close_counterfactual	opaque_close_with_extra_side_effect_is_not_a_canonical_release	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::opaque_resource_vec_containment	vec_of_exact_imported_opaque_resources_uses_exact_drop_only_descriptor	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::param_record_field_loop_drop_leak_oracle	projection_store_mid_loop_rejects_at_check_time	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	loop_backedge_cannot_reread_the_cleared_field	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	whole_tuple_escape_after_projection_transfer_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_actor_shutdown_drop_spine_reaches_close	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_admitted_no_w3_029	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_closes_once_on_scope_exit	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_extraction_via_bind_rejected	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_extraction_via_method_rejected	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_overwrite_rejected	#3371 admits an opaque resource whose close is declared
+linux	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
+linux	failure	hew-cli::record_builtin_handle_overwrite_failclosed	ordinary_record_builtin_handle_overwrites_are_refused	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::run_e2e	blocking_remote_ask_in_main_keeps_blocking_terminator	#3373 lowers a remote actor ask
+linux	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
+linux	failure	hew-cli::run_e2e	check_carrier_conditional_consume_shared_exit_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::run_e2e	check_generator_iter_map_owned_handle_aggregate_fails_closed	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::run_e2e	cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented	#3377 reports an ownership refusal as a source diagnostic
+linux	failure	hew-cli::run_e2e	for_range_mixed_width_bounds_runs_and_returns_correct_value	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 gives an imported declaration its exact SIR identity
+linux	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 gives an imported declaration its exact SIR identity
+linux	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
+linux	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
+linux	failure	hew-cli::run_e2e	suspended_actor_fresh_state_handoff_closes_each_child_once	#3370 gives every type the checker admits a SIR value contract
+linux	failure	hew-cli::run_e2e	suspending_remote_ask_flip_in_execution_context	#3373 lowers a remote actor ask
+linux	failure	hew-cli::run_e2e	vec_pipeline_map_filter_reduce_runs	#3375 roots a captured-closure Vec pipeline in a mutable place
+linux	failure	hew-cli::sort_complexity_e2e	sort_merge_authority_runs_under_wasmtime	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
+linux	failure	hew-cli::unicode_punctuation_wasi_e2e	hew_wasi_unicode_is_punct_matches_all_unicode_17_punctuation_scalars	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	hybrid_enum_text_transfer_drops_once_on_native_and_wasm	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	owned_carrier_cancel_exit_drops_once_on_native_and_wasm	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	reusable_callable_parameter_invocation_compiles_native_and_wasm	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	curated_playground_examples_run_under_wasi	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	json_value_implicit_close_runs_once_under_wasi	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	toml_encoding_round_trips_under_wasi	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasi_run_timeout_terminates_a_non_terminating_program	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasm_actor_periodic_timer_fires_but_never_reaches_quiescence	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasm_channel_send_full_traps_instead_of_dropping	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasm_cooperative_sleep_parks_and_resumes	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasm_hashmap_hashset_layout_ownership_run_pass	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	wasm_hashmap_hashset_layout_run_pass	#3368 implements sandbox emission on the physical path
+linux	failure	hew-cli::wasi_run_e2e	yaml_bytes_ffi_return_runs_natively_and_under_wasi	#3368 implements sandbox emission on the physical path
+linux	failure	hew-types	check::tests::basic::reserved_type_names_fail_closed_across_declaration_kinds	#3388 fails closed once on a reserved type name in a machine
+linux	failure	hew-types::e2e_typecheck	http_client_module_helpers_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm
+linux	failure	hew-types::e2e_typecheck	http_client_response_methods_rejected_on_wasm	#3386 gates std.net.http.http_client as the HTTP client on wasm

@@ -1080,7 +1080,31 @@ mod tests {
                 ..DeclaredType::default()
             },
         );
+        decls.insert(
+            "std.builtins.HashMapIter".to_string(),
+            hashmap_iter_declared_type(),
+        );
         decls
+    }
+
+    /// `std/builtins.hew::HashMapIter<K, V> { ks: Vec<K>, vs: Vec<V>, idx: i64 }`.
+    /// Split out of `declarations()` to keep that function under the line cap.
+    fn hashmap_iter_declared_type() -> DeclaredType {
+        let vec_of_param = |name: &str| {
+            ResolvedTy::named_builtin(
+                "Vec",
+                BuiltinType::Vec,
+                vec![ResolvedTy::TypeParam {
+                    name: name.to_string(),
+                }],
+            )
+        };
+        DeclaredType {
+            builtin: None,
+            type_params: vec!["K".to_string(), "V".to_string()],
+            members: vec![vec_of_param("K"), vec_of_param("V"), ResolvedTy::I64],
+            ..DeclaredType::default()
+        }
     }
 
     fn facts(ty: &ResolvedTy) -> (ValueClass, CloneKind) {

@@ -21343,10 +21343,12 @@ impl LowerCtx {
     /// own. The operand is therefore a retain, not a transfer — the value stays
     /// usable after the literal, exactly as passing it to a call would leave it.
     ///
-    /// A place operand (identifier, field, index) is re-read on each iteration
-    /// rather than bound to a temp: a `Read`-load of an owned place would give
-    /// the temp a second owner of the same heap. A value-producing operand
-    /// keeps an eval-once temp so a side-effecting source runs once.
+    /// A place operand is re-read on each iteration rather than bound to a
+    /// temp: a `Read`-load of an owned place would give the temp a second
+    /// owner of the same heap. A value-producing operand keeps an eval-once
+    /// temp so a side-effecting source runs once. The place question is the
+    /// one [`Self::for_in_iterable_is_place`] already answers for the same
+    /// reason on the `for`-in path.
     #[expect(
         clippy::too_many_lines,
         reason = "the spread desugar is a single ownership-sensitive expansion; splitting it would obscure the temp binding's lifetime"
@@ -21360,10 +21362,7 @@ impl LowerCtx {
     ) -> HirStmt {
         let (vec_name, vec_id, vec_ty) = target;
         let operand_span = operand.1.clone();
-        let source_is_place = matches!(
-            operand.0,
-            Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. }
-        );
+        let source_is_place = Self::for_in_iterable_is_place(&operand.0);
 
         let source_ty = self
             .expr_types

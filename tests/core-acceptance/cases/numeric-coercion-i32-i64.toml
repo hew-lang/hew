@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-coercion-i32-i64"
+intent = "An `i32` operand widens to its `i64` peer in arithmetic, and a binding whose type is still an integer literal takes the concrete width its use requires so the declaration and every reference agree."
+source = "cases/numeric-coercion-i32-i64.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "accumulated 42\nwide 142\ncall 50\nproduct 6\nsum 60\n"
+exit = 42

@@ -991,10 +991,35 @@ impl Checker {
             } else {
                 // The operand has already been checked. Rechecking an await
                 // or call would repeat its ownership effects.
+                self.promote_literal_binding(operand_ty, common_ty);
                 self.expect_type(common_ty, operand_ty, &operand.1);
                 self.record_type(&operand.1, common_ty);
             }
         }
+    }
+
+    /// Give a binding whose type is still a defaulting integer literal the
+    /// concrete width its arithmetic requires.
+    ///
+    /// `expect_type` cannot do this: `IntLiteral` already unifies with every
+    /// integer type, so the variable keeps the literal kind, the operand site
+    /// alone records the narrower width, and the declaration exports the
+    /// `i64` default. HIR then reads an `i64` binding under an `i32`
+    /// expression, which no later stage can reconcile. Promoting the variable
+    /// keeps the declaration and every reference on one type.
+    fn promote_literal_binding(&mut self, operand_ty: &Ty, common_ty: &Ty) {
+        let Ty::Var(var) = operand_ty else {
+            return;
+        };
+        if !common_ty.is_integer() || common_ty.is_integer_literal() {
+            return;
+        }
+        if !self.subst.resolve(&Ty::Var(*var)).is_integer_literal() {
+            return;
+        }
+        self.subst.insert(*var, common_ty).expect(
+            "promoting a literal-defaulting binding to a concrete integer width stays acyclic",
+        );
     }
 
     /// Integer arithmetic whose own checked type is still a literal type, so

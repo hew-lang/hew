@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 fn numbers() -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
     channel.new(2)

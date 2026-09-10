@@ -12,7 +12,7 @@
 // machine fires immediately.
 import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
-import std.channel.channel;
+import std.channel;
 
 /// One observed transition, with the previous and next state names.
 type Transition {

@@ -1,6 +1,6 @@
 // The timer arm wins over an idle channel, and disarming the selection leaves
 // the receiver untouched: the very next send is still received.
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     // No annotation: the element type is inferred from the arm bodies, so this

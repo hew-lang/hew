@@ -26,11 +26,11 @@ more sections in this document into normative status. Within edition
 
 ## 1. Concurrency surfaces
 
-### 1.1 Channels (`std::channel::channel`)
+### 1.1 Channels (`std::channel`)
 
 **[Landed in v0.5; not deferred]**
 
-The v0.5 stdlib ships `std::channel::channel.new(capacity)` returning a
+The v0.5 stdlib ships `std::channel.new(capacity)` returning a
 typed `(Sender<T>, Receiver<T>)` pair. `rx.recv()` is a plain suspending
 call that parks its execution context worker-free and returns `Option<T>`;
 `rx.try_recv()` is non-suspending. A channel receive can also participate

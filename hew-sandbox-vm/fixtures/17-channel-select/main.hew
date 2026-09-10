@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (tx, rx) = match channel.new(1) {

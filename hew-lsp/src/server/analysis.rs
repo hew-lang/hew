@@ -1499,7 +1499,7 @@ pub(super) mod tests {
 
     #[test]
     fn coverage_channel_recv_surface() {
-        let source = "import std.channel.channel;\n\
+        let source = "import std.channel;\n\
                       actor Worker {\n\
                       \x20   receive fn run(unused: i64) {\n\
                       \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\

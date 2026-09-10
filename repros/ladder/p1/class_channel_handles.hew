@@ -2,7 +2,7 @@
 // stdlib declarations that carry a close method, so both are `AffineResource`
 // with no clone. The verdict comes from the builtin row, and the declaration
 // lookup answering for a contentless declaration must not take it away.
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };

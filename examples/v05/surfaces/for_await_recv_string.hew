@@ -1,7 +1,7 @@
 //! Status: runnable (v0.5 ordinary for over Receiver<string>)
 //! Description: Drains a channel receiver with `for`.
 
-import std.channel.channel;
+import std.channel;
 
 actor DrainStrings {
     receive fn run(unused: i64) {

@@ -4,7 +4,7 @@
 //! the loser arm's poll is cancelled at the dispatch site, and the after-timer
 //! never fires. A correct run prints the winning channel's value.
 
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     receive fn run() {

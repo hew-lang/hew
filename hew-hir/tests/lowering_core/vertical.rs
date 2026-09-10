@@ -53,7 +53,7 @@ fn duration_scaling_and_ratio_preserve_checked_operand_types() {
 fn channel_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r#"
-        import std.channel.channel;
+        import std.channel;
 
         fn make_channel_result()
             -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {

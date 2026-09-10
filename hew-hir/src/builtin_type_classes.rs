@@ -299,7 +299,7 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// builtins return `Ty::Duplex { .. }` which crosses the checker boundary as
 /// `ResolvedTy::Named { name: "Duplex", .. }`.  `Sink<T>` and `Stream<T>` have
 /// no builtin constructors (the `channel()` builtin was retired in favour of
-/// `std::channel::channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
+/// `std.channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
 /// still registered here so that `ValueClass::of_ty` resolves them correctly for
 /// drop elaboration when they appear as values from std / runtime surfaces.
 /// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every

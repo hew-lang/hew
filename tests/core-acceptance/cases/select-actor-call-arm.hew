@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     receive fn combine(first: string, second: string) -> string { (first + " " + second).to_upper() }

@@ -1,7 +1,7 @@
 // Two channels selected in one loop. Source order takes the first ready arm, so
 // the loop drains the first channel then the second, and each close arrives as
 // its own `None`.
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) =

@@ -2,7 +2,7 @@
 // task sleeps well past the channel's readiness, so the channel arm wins even
 // though the task arm is written first; the loser is neither cancelled nor
 // consumed, and the scope joins it on exit.
-import std.channel.channel;
+import std.channel;
 
 fn slow() -> i64 {
     sleep(60ms);

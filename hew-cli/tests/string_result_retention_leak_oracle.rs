@@ -112,7 +112,7 @@ fn main() {
 }
 
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
-import std.channel.channel;
+import std.channel;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;

@@ -17,7 +17,7 @@ use std::process::Command;
 use support::{hew_binary, repo_root, require_codegen};
 
 /// A periodic handler filling a one-slot channel that `main` reads once.
-const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.channel.channel;
+const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.channel;
 
 actor Pulse {
     let ready: channel.Sender<i64>,
@@ -85,7 +85,7 @@ fn full_send_with_draining_receiver_still_backpressures() {
     let source = dir.path().join("full_send_backpressure.hew");
     fs::write(
         &source,
-        r#"import std.channel.channel;
+        r#"import std.channel;
 
 actor Pump {
     let out: channel.Sender<i64>,

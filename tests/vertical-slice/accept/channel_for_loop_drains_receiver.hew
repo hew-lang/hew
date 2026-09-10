@@ -1,7 +1,7 @@
 // Accept + run: `for item in rx` drains the channel and closes the read half
 // when the loop ends, so the program neither closes the receiver again nor
 // leaks it.
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (tx, rx) = match channel.new(2) {

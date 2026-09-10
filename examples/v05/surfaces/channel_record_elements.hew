@@ -10,7 +10,7 @@
 //! `break` below exercises that queue-drop path: two `Tagged` envelopes are
 //! still queued when `rx` goes out of scope.
 
-import std.channel.channel;
+import std.channel;
 
 type Tagged {
     label: string,

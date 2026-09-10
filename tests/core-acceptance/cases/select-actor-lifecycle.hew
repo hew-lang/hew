@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     mailbox 1,

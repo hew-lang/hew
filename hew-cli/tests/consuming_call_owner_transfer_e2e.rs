@@ -39,7 +39,7 @@ fn main() {
 "#;
 
 const CHANNEL_PAIR_SOURCE: &str = r#"
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };

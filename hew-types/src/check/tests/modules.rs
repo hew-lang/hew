@@ -1567,7 +1567,7 @@ mod module_body_diagnostic_envelope {
     fn deferred_channel_rewrite_retains_selected_endpoints() {
         let parsed = hew_parser::parse(
             r#"
-                import std.channel.channel;
+                import std.channel;
 
                 fn relay() {
                     let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };

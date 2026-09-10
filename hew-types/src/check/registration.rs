@@ -1386,7 +1386,7 @@ impl Checker {
         // WHY: `duplex_pair` and `duplex` are constructor-only surfaces with no
         //   stdlib module equivalent yet; they must remain resolvable without an
         //   explicit import. The former `channel` builtin constructor was removed;
-        //   callers use `std::channel::channel.new` instead.
+        //   callers use `std.channel.new` instead.
         //
         // `duplex_pair<S: Send, R: Send>(capacity: int) -> (Duplex<S, R>, Duplex<R, S>)`
         // Returns a cross-wired pair of Duplex handles backed by a shared buffer.

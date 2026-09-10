@@ -398,7 +398,7 @@ fn wasm_channel_send_full_traps_instead_of_dropping() {
     let source = dir.path().join("channel_send_full_traps_wasi.hew");
     fs::write(
         &source,
-        r#"import std.channel.channel;
+        r#"import std.channel;
 
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -810,7 +810,7 @@ fn main() {
 // runner. Guarding the send keeps first delivery a precondition for main
 // returning while leaving quiescence dependent only on shutdown cancelling the
 // periodic timer, which is the property under test.
-const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel;
 
 actor Pulse {
     let ready: channel.Sender<i64>,

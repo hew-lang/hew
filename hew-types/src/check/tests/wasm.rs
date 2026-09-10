@@ -237,7 +237,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_bounded_channel_subset() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
@@ -265,7 +265,7 @@ mod wasm_rejects {
     #[test]
     fn native_channel_new_no_platform_error() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let pair = channel.new(0);\n",
             "}\n",
@@ -288,7 +288,7 @@ mod wasm_rejects {
     #[test]
     fn native_channel_receive_does_not_warn_worker_blocking() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
             "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
@@ -322,7 +322,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_channel_recv() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let (_tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    let _ = rx.recv();\n",
@@ -352,7 +352,7 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_receiver() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
@@ -419,7 +419,7 @@ mod wasm_rejects {
     #[test]
     fn native_for_await_receiver_no_platform_error() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",

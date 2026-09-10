@@ -12,7 +12,7 @@
 
 import std.encoding.utf8;
 
-import std.channel.channel;
+import std.channel;
 
 import std.io;
 

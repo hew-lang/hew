@@ -1773,7 +1773,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
     std::fs::write(
         &path,
         concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",

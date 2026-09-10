@@ -5,7 +5,7 @@
 // binding seam is unreachable for this element class. The guard exists so a
 // future weakening of the witness cannot silently open the recv path
 // without a release seam behind it.
-import std.channel.channel;
+import std.channel;
 
 indirect enum Wrapped {
     Val(i64),

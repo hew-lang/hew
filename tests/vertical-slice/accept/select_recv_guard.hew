@@ -2,7 +2,7 @@
 // channel-receive arm (`pat from rx.recv()`) is valid and must keep
 // checking OK independently of batch fork's actor-ask-only branch
 // enforcement.
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     #[on(start)]

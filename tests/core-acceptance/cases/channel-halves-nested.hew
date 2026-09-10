@@ -3,7 +3,7 @@
 // one spelling, a half stored in either container failed physical lowering
 // because the declared member type and the constructor's own result keyed
 // different glue recipes for the same pointer word.
-import std.channel.channel;
+import std.channel;
 
 type Halves {
     tx: channel.Sender<string>,

@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     receive fn delayed(value: string, consume entered: channel.Sender<i64>, consume gate: channel.Receiver<i64>) -> string {

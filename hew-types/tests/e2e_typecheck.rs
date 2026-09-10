@@ -1229,7 +1229,7 @@ fn channel_dot_receiver_annotation_typechecks() {
 fn for_receiver_string_ok() {
     let output = typecheck_inline(
         r#"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -1253,7 +1253,7 @@ fn for_receiver_string_ok() {
 fn for_receiver_int_ok() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -1278,7 +1278,7 @@ fn for_receiver_int_ok() {
 fn for_receiver_missing_element_type_errors() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -1305,7 +1305,7 @@ fn for_receiver_missing_element_type_errors() {
 fn for_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         type Foo { x: i64 }
 
@@ -1332,7 +1332,7 @@ fn for_receiver_record_element_admitted() {
 fn for_receiver_container_element_errors() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
@@ -5558,7 +5558,7 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn take_one() -> Option<i64> {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5600,7 +5600,7 @@ fn deferred_channel_recv_int_constrained_after_call() {
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn take_one() -> Option<string> {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5632,7 +5632,7 @@ fn deferred_channel_recv_string_constrained_after_call() {
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn try_take() -> Option<i64> {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5665,7 +5665,7 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn relay() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5699,7 +5699,7 @@ fn deferred_channel_send_int_constrained_after_call() {
 fn deferred_channel_unresolved_inner_fails_closed() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn untyped() {
             let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5909,7 +5909,7 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 fn monomorphic_machine_channel_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         machine Light {
             events {
@@ -5949,7 +5949,7 @@ fn generic_machine_instantiation_channel_element_refused() {
     let output = typecheck_inline(
         r"
         import std.concurrency.lifecycle;
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
@@ -5976,7 +5976,7 @@ fn generic_machine_instantiation_channel_element_refused() {
 fn container_bearing_machine_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         machine Buffered {
             events {
@@ -6017,7 +6017,7 @@ fn container_bearing_machine_channel_element_refused() {
 fn remote_receive_fn_dispatch_with_channel_handle_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         actor Observer {
             receive fn watch(rx: channel.Receiver<string>) {

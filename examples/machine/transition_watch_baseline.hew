@@ -10,7 +10,7 @@
 // the same shape.
 import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
-import std.channel.channel;
+import std.channel;
 
 actor Combined {
     receive fn run() {

@@ -2,7 +2,7 @@
 //
 // The function intentionally does not call tx.close() or rx.close(); the
 // elaborated MIR must emit scope-exit channel close drops for both handles.
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {

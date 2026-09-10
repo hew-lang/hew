@@ -92,7 +92,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
 | Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo`                             | `std.io`, `std.fs`, `std.path`, `std.os`, `std.string`, `std.text.regex`      | CLI I/O, files, paths, env access, and text scanning                       |
 | Root-level networking examples such as `http_server`, `static_server`, `curl_client`, `http_json_demo`, and `chat_*` | `std.net`, `std.net.http`, `std.net.mime`, `std.net.url`, `std.encoding.json` | TCP, HTTP, content types, URLs, and JSON client payloads                   |
 | `smtp_client.hew` (requires a real SMTP server; see file header)                                                     | `std.net.smtp`                                                                | Connecting via STARTTLS or implicit TLS, sending plain-text and HTML email |
-| Root-level async/concurrency examples such as `async_demo` and `scope_*`                                             | `std.stream`, `std.channel.channel`, `std.semaphore`                          | Stream pipelines, MPSC channels, and coordination primitives               |
+| Root-level async/concurrency examples such as `async_demo` and `scope_*`                                             | `std.stream`, `std.channel`, `std.semaphore`                                  | Stream pipelines, MPSC channels, and coordination primitives               |
 | `benchmark_demo.hew` and `benchmarks/`                                                                               | `std.bench`, `std.net.http`                                                   | Benchmark harness plus the HTTP surfaces used in the server comparison     |
 
 ### Topic Collections

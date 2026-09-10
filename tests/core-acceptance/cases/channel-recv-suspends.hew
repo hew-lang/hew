@@ -1,4 +1,4 @@
-import std.channel.channel;
+import std.channel;
 
 /// Fills a capacity-2 channel with six owned strings, so the producer parks on
 /// capacity while the consumer parks on the empty queue.

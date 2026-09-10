@@ -2,7 +2,7 @@
 //! Calls wait directly. This example exercises the ready and closed paths;
 //! it does not demonstrate suspension on an empty channel with a live sender.
 
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     receive fn run() {

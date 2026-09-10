@@ -18,7 +18,7 @@
 //                     each and both must be released
 //   record_frames   - a heap-owning record payload released through the
 //                     carrier's in-place thunk
-import std.channel.channel;
+import std.channel;
 
 type Frame {
     name: string,

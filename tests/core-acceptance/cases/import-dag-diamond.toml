@@ -1,0 +1,10 @@
+[[case]]
+id = "import-dag-diamond"
+intent = "A diamond import graph compiles in time proportional to its modules, not to its import paths. Fifty-one modules at depth 24 are reachable by exponentially many paths; every walk over the resolved import graph is bounded by the module it reaches."
+source = "fixtures/import-dag-diamond/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\n"
+exit = 0

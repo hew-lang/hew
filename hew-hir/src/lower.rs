@@ -1691,18 +1691,51 @@ fn plan_imported_impl_bodies(
 /// Multiple inherent impls declaring `close` on the same nominal would be a
 /// duplicate-symbol error caught downstream; this collector keeps the first
 /// occurrence and ignores any later ones.
+/// The item list of every module a program's imports reach, each list once.
+///
+/// The module graph is the authority when a program has one: it holds a single
+/// node per module however many import paths reach it. A program assembled
+/// without a graph carries its modules only on the import declarations, and
+/// shared imports retain one `Arc` body per module, so the fallback walks those
+/// bodies keyed by identity.
+///
+/// Following the declarations by recursion instead expands a shared descendant
+/// once per import path, which is exponential in the number of paths: a depth-24
+/// diamond of 51 modules never finishes.
+fn imported_module_item_lists(program: &Program) -> Vec<&[(Item, Span)]> {
+    if let Some(graph) = &program.module_graph {
+        return graph
+            .topo_order
+            .iter()
+            .filter(|module_id| **module_id != graph.root)
+            .filter_map(|module_id| graph.modules.get(module_id))
+            .map(|module| module.items.as_slice())
+            .collect();
+    }
+    let mut seen: HashSet<*const Vec<Spanned<Item>>> = HashSet::new();
+    let mut out: Vec<&[(Item, Span)]> = Vec::new();
+    let mut queue: Vec<&[(Item, Span)]> = vec![program.items.as_slice()];
+    while let Some(items) = queue.pop() {
+        for (item, _) in items {
+            let Item::Import(decl) = item else { continue };
+            let Some(resolved) = decl.resolved_items.as_ref() else {
+                continue;
+            };
+            if !seen.insert(std::sync::Arc::as_ptr(resolved)) {
+                continue;
+            }
+            out.push(resolved.as_slice());
+            queue.push(resolved.as_slice());
+        }
+    }
+    out
+}
+
 fn collect_inherent_impl_close_methods(program: &Program) -> HashMap<String, ImplCloseSignature> {
     let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
     collect_inherent_impl_close_methods_from_items(&program.items, &mut out);
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
-                continue;
-            }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                collect_inherent_impl_close_methods_from_items(&module.items, &mut out);
-            }
-        }
+    for items in imported_module_item_lists(program) {
+        collect_inherent_impl_close_methods_from_items(items, &mut out);
     }
     out
 }
@@ -1712,12 +1745,6 @@ fn collect_inherent_impl_close_methods_from_items(
     out: &mut HashMap<String, ImplCloseSignature>,
 ) {
     for (item, _item_span) in items {
-        if let Item::Import(import_decl) = item {
-            if let Some(resolved_items) = &import_decl.resolved_items {
-                collect_inherent_impl_close_methods_from_items(resolved_items, out);
-            }
-            continue;
-        }
         let Item::Impl(impl_decl) = item else {
             continue;
         };
@@ -1767,15 +1794,8 @@ fn collect_inherent_impl_close_methods_from_items(
 fn collect_inherent_impl_consuming_methods(program: &Program) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     collect_inherent_impl_consuming_methods_from_items(&program.items, &mut out);
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
-                continue;
-            }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                collect_inherent_impl_consuming_methods_from_items(&module.items, &mut out);
-            }
-        }
+    for items in imported_module_item_lists(program) {
+        collect_inherent_impl_consuming_methods_from_items(items, &mut out);
     }
     out
 }
@@ -1785,12 +1805,6 @@ fn collect_inherent_impl_consuming_methods_from_items(
     out: &mut HashSet<String>,
 ) {
     for (item, _item_span) in items {
-        if let Item::Import(import_decl) = item {
-            if let Some(resolved_items) = &import_decl.resolved_items {
-                collect_inherent_impl_consuming_methods_from_items(resolved_items, out);
-            }
-            continue;
-        }
         let Item::Impl(impl_decl) = item else {
             continue;
         };

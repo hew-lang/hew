@@ -1,0 +1,127 @@
+pub fn value0() -> i64 {
+    return 1;
+}
+
+pub fn value1() -> i64 {
+    return 2;
+}
+
+pub fn value2() -> i64 {
+    return 3;
+}
+
+pub fn value3() -> i64 {
+    return 4;
+}
+
+pub fn value4() -> i64 {
+    return 5;
+}
+
+pub fn value5() -> i64 {
+    return 6;
+}
+
+pub fn value6() -> i64 {
+    return 7;
+}
+
+pub fn value7() -> i64 {
+    return 8;
+}
+
+pub fn value8() -> i64 {
+    return 9;
+}
+
+pub fn value9() -> i64 {
+    return 10;
+}
+
+pub fn value10() -> i64 {
+    return 11;
+}
+
+pub fn value11() -> i64 {
+    return 12;
+}
+
+pub fn value12() -> i64 {
+    return 13;
+}
+
+pub fn value13() -> i64 {
+    return 14;
+}
+
+pub fn value14() -> i64 {
+    return 15;
+}
+
+pub fn value15() -> i64 {
+    return 16;
+}
+
+pub fn value16() -> i64 {
+    return 17;
+}
+
+pub fn value17() -> i64 {
+    return 18;
+}
+
+pub fn value18() -> i64 {
+    return 19;
+}
+
+pub fn value19() -> i64 {
+    return 20;
+}
+
+pub fn value20() -> i64 {
+    return 21;
+}
+
+pub fn value21() -> i64 {
+    return 22;
+}
+
+pub fn value22() -> i64 {
+    return 23;
+}
+
+pub fn value23() -> i64 {
+    return 24;
+}
+
+pub fn value24() -> i64 {
+    return 25;
+}
+
+pub fn value25() -> i64 {
+    return 26;
+}
+
+pub fn value26() -> i64 {
+    return 27;
+}
+
+pub fn value27() -> i64 {
+    return 28;
+}
+
+pub fn value28() -> i64 {
+    return 29;
+}
+
+pub fn value29() -> i64 {
+    return 30;
+}
+
+pub fn value30() -> i64 {
+    return 31;
+}
+
+pub fn value31() -> i64 {
+    return 32;
+}

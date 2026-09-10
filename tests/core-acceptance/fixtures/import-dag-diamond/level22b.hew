@@ -1,0 +1,10 @@
+import level21a;
+import level21b;
+
+pub fn value0() -> i64 {
+    return level21a.value0();
+}
+
+pub fn value1() -> i64 {
+    return level21b.value0();
+}

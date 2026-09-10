@@ -1,7 +1,9 @@
 // One structure: a unit target is body-less, a fielded target writes the field
 // list with the target elided, and an expression body stays for the computed
 // (`_`) target, for a rule that emits, and for the `{ state }` identity. The
-// body reads the source state through `state` and the input through `event`.
+// field list is a record literal's field list, so `..state` carries the fields
+// the rule does not change. The body reads the source state through `state`
+// and the input through `event`.
 machine Session {
     events {
         Open { user: string },
@@ -31,7 +33,7 @@ machine Session {
         emit Trace { text: "spent:" + state.user };
         Spent
     }
-    on Touch: Live => Live reenter { user: state.user, weight: state.weight + event.weight }
+    on Touch: Live => Live reenter { ..state, weight: state.weight + event.weight }
     on Close: Live => Idle,
     on Close: Spent => Idle,
     on Open: Spent => Spent { state }

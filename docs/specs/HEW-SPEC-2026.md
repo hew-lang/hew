@@ -3701,6 +3701,33 @@ fn main() {
 }
 ```
 
+**The field list takes the record spread of §3.1**, so a transition writes only
+what it changes and `..state` carries the rest:
+
+```hew
+machine Till {
+    events { Sale }
+
+    state Empty,
+    state Filled { count: i64, label: string },
+
+    on Sale: Empty => Filled { count: 1, label: "open" }
+    on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
+
+    default { state }
+}
+
+fn main() {
+    var till: Till = .Empty;
+    let _ = till.step(.Sale);
+    let _ = till.step(.Sale);
+    match till {
+        .Filled { count, label } => println(f"{label}={count}"),   // open=2
+        .Empty => println("empty"),
+    }
+}
+```
+
 **An expression body computes the state value.** This is the form for a
 wildcard target (§3.11.4), for a rule that also emits outputs, and for the
 identity `{ state }` that keeps a fielded state unchanged. The body's final

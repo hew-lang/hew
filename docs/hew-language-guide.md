@@ -1155,15 +1155,15 @@ fn main() {
 
 Spreading reads the operand, it does not consume it: `low` and `origin` are still usable afterwards. When the base is a temporary, a field it owns and the literal does not name is transferred rather than copied, so a `#[resource]` field is closed exactly once.
 
-A machine state literal takes the same spread, which is how a transition writes only the field that changes:
+A transition's field list is a record literal's field list, so it takes the same spread — which is how a transition writes only the field that changes:
 
 ```hew
 machine Till {
     events { Sale, }
     state Empty,
     state Filled { count: i64, label: string, },
-    on Sale: Empty => Filled { Till.Filled { count: 1, label: "open" } }
-    on Sale: Filled => Filled reenter { Till.Filled { ..state, count: state.count + 1 } }
+    on Sale: Empty => Filled { count: 1, label: "open" }
+    on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
     default { state }
 }
 fn main() {

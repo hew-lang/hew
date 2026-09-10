@@ -563,17 +563,9 @@ impl Parser<'_> {
         } else if target_state != "_" && self.is_struct_init_body() {
             let bs = self.peek_span().start;
             self.expect(&Token::LeftBrace)?;
-            let mut fields = Vec::new();
-            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                let fname = self.expect_ident()?;
-                self.expect(&Token::Colon)?;
-                let fval = self.parse_expr()?;
-                fields.push((fname, fval));
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
-            }
-            self.expect(&Token::RightBrace)?;
+            // The head already named the target, so the braces hold exactly a
+            // record literal's field list — `..base` included.
+            let (fields, base) = self.parse_struct_init_fields()?;
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
@@ -581,14 +573,14 @@ impl Parser<'_> {
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state.clone(),
-                    record: Some(Box::new(ContextVariantRecord { fields, base: None })),
+                    record: Some(Box::new(ContextVariantRecord { fields, base })),
                 })
             } else {
                 Expr::StructInit {
                     name: target_state.clone(),
                     fields,
                     type_args: None,
-                    base: None,
+                    base,
                 }
             };
             (payload, MachineTransitionBodyForm::PayloadShorthand, bs, be)
@@ -1094,15 +1086,18 @@ impl Parser<'_> {
         if self.peek() != Some(&Token::LeftBrace) {
             return false;
         }
-        // Look ahead: tokens[pos+1] should be Identifier, tokens[pos+2] should be Colon
+        // Look ahead: tokens[pos+1] should be Identifier, tokens[pos+2] should
+        // be Colon — or tokens[pos+1] is `..`, the record spread that supplies
+        // the fields the list does not name (§3.1).
         let pos = self.pos;
         if pos + 2 >= self.tokens.len() {
             return false;
         }
-        matches!(
-            (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
-            (Token::Identifier(_), Token::Colon)
-        )
+        matches!(&self.tokens[pos + 1].0, Token::DotDot)
+            || matches!(
+                (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
+                (Token::Identifier(_), Token::Colon)
+            )
     }
 
     #[expect(

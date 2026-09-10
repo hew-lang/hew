@@ -1482,16 +1482,28 @@ impl<'a> Formatter<'a> {
                 // Bare targets carry a `StructInit`, contextual ones a
                 // `ContextVariant` record — both name the target state.
                 let payload = match body_expr {
-                    Expr::StructInit { name, fields, .. } if name == &transition.target_state => {
-                        Some(fields)
-                    }
+                    Expr::StructInit {
+                        name, fields, base, ..
+                    } if name == &transition.target_state => Some((fields, base.as_deref())),
                     Expr::ContextVariant(context) if context.name == transition.target_state => {
-                        context.record.as_ref().map(|record| &record.fields)
+                        context
+                            .record
+                            .as_ref()
+                            .map(|record| (&record.fields, record.base.as_deref()))
                     }
                     _ => None,
                 };
-                if let Some(fields) = payload {
+                if let Some((fields, base)) = payload {
                     self.write(" { ");
+                    // The base comes first, so the fields that override it read
+                    // after the value they override (D488).
+                    if let Some(base) = base {
+                        self.write("..");
+                        self.format_expr(&base.0);
+                        if !fields.is_empty() {
+                            self.write(", ");
+                        }
+                    }
                     for (i, (fname, fval)) in fields.iter().enumerate() {
                         if i > 0 {
                             self.write(", ");

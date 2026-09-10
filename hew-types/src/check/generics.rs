@@ -1484,6 +1484,19 @@ impl Checker {
             }
         };
 
+        // A trait that declares no methods of its own - `trait Error: Display {}`
+        // - is a marker over its super-traits. Having the super-trait's methods
+        // says nothing about the marker, so it still needs an explicit impl.
+        // The empty-surface guard below sees the whole chain and would not
+        // catch this.
+        if self
+            .trait_defs
+            .get(&trait_name)
+            .is_some_and(|info| info.methods.is_empty())
+        {
+            return false;
+        }
+
         // Collect required methods across the full super-trait chain.
         // Returns None if any E1 guard triggers anywhere in the chain.
         let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())

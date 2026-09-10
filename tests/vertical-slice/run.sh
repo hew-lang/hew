@@ -1293,6 +1293,18 @@ expect_check_fail_contains \
     "machine_state_resource_payload_heap_sibling"
 [[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_state_resource_payload_heap_sibling (reject)"
 
+# A machine member is separated by `,`, so the legacy `;` body-less transition
+# is refused at the parser with the fix-it that names the separator (D480). The
+# checker never sees the machine, so this shape cannot share a source file with
+# the checker's own machine refusals.
+_fcb=${fail_count}
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/machine_semicolon_body.hew" \
+    'replace `;` with `,`' \
+    "machine_semicolon_body"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_semicolon_body (reject)"
+
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
 # from the shared MIR->LLVM lower; this gate pins that the wasm target

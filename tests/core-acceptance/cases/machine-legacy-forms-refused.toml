@@ -1,0 +1,25 @@
+[[case]]
+id = "machine-legacy-forms-refused"
+intent = "The spellings the one structure replaces are refused where they are written: `self` in a machine body names a binding that does not exist there, and a body that is only the target the head already named repeats it, in both the bare and the contextual spelling."
+source = "cases/machine-legacy-forms-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 11
+column = 43
+message = "E_MACHINE_SELF: `self` is not bound inside a machine body"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 20
+column = 27
+message = "E_MACHINE_REDUNDANT_TARGET: the body of a transition to `Ajar` repeats `Ajar`"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 30
+column = 24
+message = "E_MACHINE_REDUNDANT_TARGET: the body of a transition to `On` repeats `On`"

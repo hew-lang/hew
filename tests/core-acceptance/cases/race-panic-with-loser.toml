@@ -1,0 +1,11 @@
+[[case]]
+id = "race-panic-with-loser"
+intent = "A trapping race operand is not a completion: the trap propagates and the other operand is cancelled and drained through its defer before the fault reaches the caller."
+source = "cases/race-panic-with-loser.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "slow cleanup\n"
+stderr = "hew: failure: UserPanic (212): boom\n"
+exit = 1

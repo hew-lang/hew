@@ -17,8 +17,21 @@ impl Checker {
         }
         let mut output = Ty::Never;
         for branch in branches {
+            // `await` is never written on a race operand: the `race` is what
+            // waits (spec 4.11.2), mirroring `select`'s own arm-source rule.
+            // Keep synthesizing the inner operand so the branch's other
+            // diagnostics still report, but refuse the spelling.
             let call = match &branch.0 {
-                Expr::Await(inner) => inner.as_ref(),
+                Expr::Await(inner) => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &branch.1,
+                        "a race operand never writes `await` - the `race` is \
+                         what waits; delete `await`"
+                            .to_string(),
+                    );
+                    inner.as_ref()
+                }
                 _ => branch,
             };
             if !matches!(call.0, Expr::Call { .. } | Expr::MethodCall { .. }) {

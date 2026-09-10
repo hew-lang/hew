@@ -1,0 +1,10 @@
+[[case]]
+id = "race-err-wins"
+intent = "An ordinary Err completing first wins the race exactly as an Ok would, with no Result flattening."
+source = "cases/race-err-wins.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "err fast failure\n"
+exit = 0

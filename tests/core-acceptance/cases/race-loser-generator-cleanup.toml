@@ -1,0 +1,10 @@
+[[case]]
+id = "race-loser-generator-cleanup"
+intent = "A losing generator operand is cancelled and closed through its own defer before the race returns, and the winning generator stays usable afterward."
+source = "cases/race-loser-generator-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "closed loser\nselected\ndone\nclosed winner\n"
+exit = 0

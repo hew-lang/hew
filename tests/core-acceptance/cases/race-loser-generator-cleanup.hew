@@ -1,0 +1,21 @@
+// The losing generator operand is cancelled and closed, observed through its
+// own `defer`, before the race expression returns. The winner stays usable.
+gen fn holds(label: string) -> string {
+    defer println("closed " + label);
+    yield label;
+    yield "done";
+}
+fn produce(label: string, delay: duration) -> Generator<string, ()> {
+    let values = holds(label);
+    let _first = values.next();
+    sleep(delay);
+    values
+}
+fn main() {
+    let winner = race { produce("loser", 5s), produce("winner", 20ms) };
+    println("selected");
+    match winner.next() {
+        .Some(value) => println(value),
+        .None => panic("winner generator was closed"),
+    }
+}

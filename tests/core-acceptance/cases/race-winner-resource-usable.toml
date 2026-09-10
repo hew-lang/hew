@@ -1,0 +1,10 @@
+[[case]]
+id = "race-winner-resource-usable"
+intent = "A winning race operand's resource handle stays usable in the enclosing scope and is closed exactly once by the caller."
+source = "cases/race-winner-resource-usable.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "used fast\nclosed fast\n"
+exit = 0

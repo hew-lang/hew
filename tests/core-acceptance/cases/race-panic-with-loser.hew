@@ -1,0 +1,15 @@
+// A trapping operand is not a completion: the trap propagates to the
+// enclosing context and the other operand is cancelled and drained first.
+fn boom() -> i64 {
+    panic("boom");
+}
+fn slow() -> i64 {
+    defer println("slow cleanup");
+    sleep(5s);
+    println("unreachable");
+    1
+}
+fn main() {
+    race { boom(), slow() };
+    println("unreachable");
+}

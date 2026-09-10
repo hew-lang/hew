@@ -4017,7 +4017,9 @@ let fastest = race {
 ```
 
 Operands are plain calls (§4.0). `await` is never written on a `race`
-operand; the `race` is what waits.
+operand; the `race` is what waits. The spelling is refused at check time
+with a fix-it that deletes it, matching `select`'s own arm-source rule
+(§4.11.1).
 
 **Type rule:**
 

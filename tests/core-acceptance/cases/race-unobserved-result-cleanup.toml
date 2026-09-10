@@ -1,0 +1,10 @@
+[[case]]
+id = "race-unobserved-result-cleanup"
+intent = "A losing operand with no safepoint to observe cancellation at runs to completion after the race already has a winner; its unobserved owned result is released exactly once."
+source = "cases/race-unobserved-result-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "fast done\nslow done 449999994\nclosed slow\npicked fast\nclosed fast\n"
+exit = 0

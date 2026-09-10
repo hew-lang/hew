@@ -1,0 +1,17 @@
+// An ordinary Err completing first wins the race exactly as an Ok would:
+// completion is completion, and there is no Result flattening.
+fn fails(delay: duration) -> Result<i64, string> {
+    sleep(delay);
+    Result.Err("fast failure")
+}
+fn succeeds(delay: duration) -> Result<i64, string> {
+    sleep(delay);
+    Result.Ok(7)
+}
+fn main() {
+    let result = race { fails(20ms), succeeds(5s) };
+    match result {
+        .Ok(value) => println("ok " + to_string(value)),
+        .Err(message) => println("err " + message),
+    }
+}

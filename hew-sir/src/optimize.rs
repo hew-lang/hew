@@ -405,21 +405,29 @@ fn transferable_roots(
     plan: &crate::PlacePlan,
     facts: &TypeFactTable,
 ) -> BTreeSet<crate::PlaceId> {
+    // A loan of any leaf reads the root's contents, so the root's eligibility
+    // follows the loan's root rather than the borrowed place itself.
+    let local_root = |place: crate::PlaceId| match plan.projection(place).map(|found| found.root) {
+        Some(crate::OwnerRoot::Local(root)) => Some(root),
+        _ => None,
+    };
     let mut open_borrows: BTreeSet<crate::PlaceId> = BTreeSet::new();
     let mut closed = BTreeSet::new();
-    let mut borrow_places = BTreeMap::new();
+    let mut borrow_roots = BTreeMap::new();
     for operation in function.blocks.iter().flat_map(|block| &block.ops) {
         match (&operation.kind, operation.results.as_slice()) {
-            (SemOpKind::LoadBorrow { place }, [result]) => {
-                borrow_places.insert(result.id, *place);
-                open_borrows.insert(*place);
-            }
-            (SemOpKind::LoadBorrow { place }, _) => {
-                open_borrows.insert(*place);
+            (SemOpKind::LoadBorrow { place }, results) => {
+                let Some(root) = local_root(*place) else {
+                    continue;
+                };
+                if let [result] = results {
+                    borrow_roots.insert(result.id, root);
+                }
+                open_borrows.insert(root);
             }
             (SemOpKind::EndBorrow { borrow }, _) => {
-                if let Some(place) = borrow_places.get(&borrow.value) {
-                    closed.insert(*place);
+                if let Some(root) = borrow_roots.get(&borrow.value) {
+                    closed.insert(*root);
                 }
             }
             _ => {}

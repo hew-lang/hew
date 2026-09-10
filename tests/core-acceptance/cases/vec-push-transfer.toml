@@ -1,10 +1,10 @@
 [[case]]
 id = "vec-push-transfer"
-intent = "A runtime operation that adopts its operand transfers a fresh temporary and a dead-after local instead of cloning them, a local the caller reads afterwards keeps its own independent value, and a map adopts an owned value beside a cloned key."
+intent = "A runtime operation that adopts its operand transfers a fresh temporary and a dead-after local instead of cloning them, a local the caller reads afterwards keeps its own independent value, a replaced element releases the old one, and a map adopts an owned value beside a cloned key."
 source = "cases/vec-push-transfer.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
 [case.expected]
-stdout = "depth=8000 root=1\nkept=2 stored=1\nmap=1 parts=2 name=entry\n"
+stdout = "depth=8000 root=1\nkept=2 stored=1\nswapped=swapped parts=0\nmap=1 parts=2 name=entry\n"
 exit = 0

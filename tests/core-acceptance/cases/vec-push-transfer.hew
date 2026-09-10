@@ -31,6 +31,10 @@ fn main() {
   kept.parts.push(2);
   println(f"kept={kept.parts.len()} stored={bag[0].parts.len()}");
 
+  // Replacing an element adopts the new one and releases the old.
+  bag.set(0, Item { name: "swapped", parts: Vec.new() });
+  println(f"swapped={bag[0].name} parts={bag[0].parts.len()}");
+
   // A map adopts an owned value beside a cloned key; both read back intact.
   var index: HashMap<Key, Item> = HashMap.new();
   let key = Key { name: "first" };

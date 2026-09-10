@@ -2847,10 +2847,33 @@ fn main() {
     println(math.abs(-5.0));       // 5
     println(math.max(3.0, 7.0));   // 7
     println(math.min(3.0, 7.0));   // 3
+    println(math.hypot(3.0, 4.0)); // 5
+    println(math.fma(2.0, 3.0, 1.0)); // 7
 }
 ```
 
-`abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
+`abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round`/`trunc` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
+
+The trigonometric, hyperbolic, exponential and rounding family also takes `f64`: `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `exp2`, `log2`, `log10`, `log1p`, `expm1`, `cbrt`, `hypot(x, y)`, `fma(a, b, c)`, `copysign(x, y)`, `powi(x, n)` (integer exponent `n: i32`), and `from_bits(bits: u64)` (the inverse of `.to_bits()`; spelled as a module function because a bare type name such as `f64` cannot be used as a call receiver). Each lowers to the matching LLVM intrinsic where one exists, or to the C library implementation otherwise (`log1p`, `expm1`, `cbrt`, `hypot`).
+
+Integer types (`i8`..`i64`, `u8`..`u64`) support bit-manipulation and overflow-policy methods directly, without importing `std.math`:
+
+```hew
+fn main() {
+    let n: i32 = 0b1011;
+    println(n.count_ones());        // 3
+    println(n.leading_zeros());     // 28
+    println(n.rotate_left(4));      // 176
+
+    let max: i32 = 2147483647;
+    println(max.wrapping_add(1));   // -2147483648 (wraps)
+    println(max.saturating_add(1)); // 2147483647 (clamps)
+}
+```
+
+`count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `swap_bytes`, `reverse_bits`, `rotate_left(n)` and `rotate_right(n)` are implemented for `i32`, `i64`, `u32` and `u64` (the widths the runtime's value-kind vocabulary carries a physical form for). `wrapping_add`/`sub`/`mul` and `saturating_add`/`sub` are implemented the same way for those four widths; `checked_add`/`sub`/`mul`, `saturating_mul`, and the same methods at `i8`/`i16`/`u8`/`u16`/`isize`/`usize` still type-check but hit a separate, pre-existing lowering gap (`E_SIR_UNSUPPORTED`) — a known limitation, not new surface.
+
+`f64` also has classification and bit methods: `to_bits() -> u64`, `is_nan()`, `is_finite()`, `is_infinite()`, `is_sign_negative()`, and `abs()` (equivalent to `math.abs`). `math.from_bits(bits)` is the inverse of `.to_bits()`.
 
 ### std.iter — lazy iterator combinators
 
@@ -2914,6 +2937,31 @@ fn main() {
 ```
 
 Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produces the same sequence as CPython's `random` module. Call `seed(n)` first for reproducible output; without a seed, the state is initialised from OS entropy. `randint(lo, hi)` returns in the half-open range `[lo, hi)`.
+
+The functions above share one implicit generator per thread. `random.Rng` is a plain value instead, so a caller can hold several independent streams at once:
+
+```hew
+import std.random;
+fn main() {
+    let rng = random.Rng.new(42);
+    println(rng.next_u64());
+    println(rng.next_f64());     // f64 in [0.0, 1.0)
+    println(rng.range(1, 7));    // i64 in [1, 7)
+
+    var hand: Vec<i64> = [1, 2, 3, 4, 5];
+    rng.shuffle(hand);
+}
+```
+
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
+
+```hew
+import std.random;
+fn main() {
+    let key = random.crypto_bytes(32);  // bytes, always freshly drawn
+    let token = random.crypto_u64();
+}
+```
 
 ### std.time.datetime — timestamps and date arithmetic
 

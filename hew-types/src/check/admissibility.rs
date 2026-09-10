@@ -15,8 +15,8 @@ fn class_description(class: ValueClass) -> &'static str {
         ValueClass::BitCopy => "a bit-copyable value",
         ValueClass::View => "a non-owning view",
         ValueClass::CowValue => "a heap value",
-        ValueClass::PersistentShare => "a shared value with no clone slot",
-        ValueClass::AffineResource => "a resource with no copy operation",
+        ValueClass::PersistentShare => "a shared value whose descriptor carries no copy slot",
+        ValueClass::AffineResource => "an affine resource",
         ValueClass::Linear => "a linear value that must be consumed",
     }
 }
@@ -939,13 +939,17 @@ impl Checker {
     /// growing instantiation, and a spelling with no declaration behind it. An
     /// abstract parameter is substituted before the element ABI is chosen, so
     /// it refuses nothing here.
-    pub(super) fn element_admission_refusal(&self, ty: &Ty) -> Option<String> {
+    pub(super) fn element_admission_refusal(&self, ty: &Ty) -> Option<(TypeErrorKind, String)> {
         match self.element_value_facts(ty) {
             Ok(_) | Err(ClassError::TypeParam { .. }) => None,
-            Err(error @ ClassError::RecursiveInstantiation { .. }) => {
-                Some(format!("E_LIMIT_CLASS_RECURSION: {error}"))
-            }
-            Err(error) => Some(error.to_string()),
+            // A declaration with no finite member walk is the class rule's own
+            // limit, and it keeps that kind wherever it surfaces so one
+            // declaration produces one named refusal.
+            Err(error @ ClassError::RecursiveInstantiation { .. }) => Some((
+                TypeErrorKind::ClassRecursion,
+                format!("E_LIMIT_CLASS_RECURSION: {error}"),
+            )),
+            Err(error) => Some((TypeErrorKind::InvalidOperation, error.to_string())),
         }
     }
 
@@ -977,7 +981,7 @@ impl Checker {
     pub(super) fn element_clone_blocker(&self, ty: &Ty) -> Option<String> {
         match self.element_value_facts(ty) {
             Ok((class, CloneKind::None)) => Some(format!(
-                "`{}`, {}",
+                "`{}` ({})",
                 self.subst
                     .resolve(ty)
                     .materialize_literal_defaults()
@@ -1143,9 +1147,9 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`{operation}` copies each value out of the map, but value type `{}` is \
-                     {blocker} with no copy operation; read it with `get(k)`, which borrows, \
-                     or move it out with `remove(k)`",
+                    "`{operation}` copies each value out of the map, but value type `{}` \
+                     is {blocker} and has no copy operation; read it with `get(k)`, which \
+                     borrows, or move it out with `remove(k)`",
                     resolved.user_facing(),
                 ),
             );

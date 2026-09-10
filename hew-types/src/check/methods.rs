@@ -5056,6 +5056,13 @@ impl Checker {
         reason: crate::vec_authority::VecUnsupported,
         span: &Span,
     ) {
+        // A class-rule refusal keeps its own kind and message: the element has
+        // no class at all, so naming the runtime symbol it would have selected
+        // would blame the method for the declaration's limit.
+        if let Some((kind, refusal)) = self.element_admission_refusal(elem_ty) {
+            self.report_error(kind, span, refusal);
+            return;
+        }
         let message = match reason {
             crate::vec_authority::VecUnsupported::FunctionGet => {
                 "`Vec.get` on a function/closure element is not supported under \
@@ -5075,14 +5082,12 @@ impl Checker {
                 bitcopy_supported,
             } => {
                 if bitcopy_supported {
-                    let why = self.element_admission_refusal(elem_ty).unwrap_or_else(|| {
-                        "its value class carries no copy operation this method needs".to_string()
-                    });
                     format!(
-                        "`{}` cannot be a `Vec` element for `Vec.{}`: {why} \
-                         (runtime symbol `{expected_symbol}`)",
-                        elem_ty.user_facing(),
-                        method.name()
+                        "`Vec.{}` on `{}` is not runtime-backed: its value class needs a copy \
+                         this operation has no symbol for (runtime symbol \
+                         `{expected_symbol}`)",
+                        method.name(),
+                        elem_ty.user_facing()
                     )
                 } else {
                     format!(
@@ -6002,8 +6007,10 @@ impl Checker {
                     has no per-message release for one"
                 .to_string();
         }
-        self.element_admission_refusal(elem_ty)
-            .unwrap_or_else(|| "it has no value class the queue witness can describe".to_string())
+        self.element_admission_refusal(elem_ty).map_or_else(
+            || "it has no value class the queue witness can describe".to_string(),
+            |(_, refusal)| refusal,
+        )
     }
 
     /// True when `ty` (or a transitive record/enum member) is — or holds a

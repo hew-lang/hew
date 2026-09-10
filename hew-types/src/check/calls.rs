@@ -766,9 +766,9 @@ impl Checker {
                 // descriptor whose clone and destroy actions come from the same
                 // class row. Only a type the class rule refuses outright has no
                 // element ABI at all.
-                if let Some(reason) = self.element_admission_refusal(&elem_ty) {
+                if let Some((kind, reason)) = self.element_admission_refusal(&elem_ty) {
                     self.report_error(
-                        TypeErrorKind::InvalidOperation,
+                        kind,
                         span,
                         format!(
                             "`{}` cannot be a `Vec` element: {reason}",
@@ -1811,9 +1811,9 @@ impl Checker {
                 {
                     // Same single authority as the expected-type constructor
                     // path above: the element's value class.
-                    if let Some(reason) = self.element_admission_refusal(&resolved_elem) {
+                    if let Some((kind, reason)) = self.element_admission_refusal(&resolved_elem) {
                         self.report_error(
-                            TypeErrorKind::InvalidOperation,
+                            kind,
                             span,
                             format!(
                                 "`{}` cannot be a `Vec` element: {reason}",

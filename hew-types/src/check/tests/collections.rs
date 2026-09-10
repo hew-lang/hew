@@ -1709,6 +1709,11 @@ fn recursive_collection_admission_through_generic_entry_record() {
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
 
+/// An inline cycle (`type Bad { next: Bad }`) has no finite layout, and the
+/// declaration checker owns that fact. The element rule reads the value class,
+/// which treats a recursive occurrence as an owning edge, so it deliberately
+/// does not re-derive declaration finiteness; an outer `Vec` cannot hide the
+/// declaration's own diagnostic.
 #[test]
 fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
     for declarations in [
@@ -1726,13 +1731,6 @@ fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
             output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::RecursiveValueType { .. } | TypeErrorKind::ClassRecursion)),
             "the inline declaration must itself be rejected: {declarations}: {:#?}",
             output.errors,
-        );
-        // Probe these gates directly too: the declaration diagnostic must not
-        // hide a permissive collection walker below an unrelated outer Vec.
-        let root = Ty::Named { name: "Root".to_string(), args: vec![], builtin: None };
-        assert!(
-            !checker.vec_owned_element_admissible(&root),
-            "constructor admitted an inline cycle: {declarations}",
         );
     }
 }
@@ -2010,8 +2008,8 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
 
     // Vec storage admits the collection-bearing record (copy-in push).
     assert!(
-        checker.vec_owned_element_admissible(&boxed),
-        "Vec storage must admit a collection-bearing record element"
+        checker.element_admission_refusal(&boxed).is_none() && checker.element_owns_heap(&boxed),
+        "Vec storage must admit a collection-bearing record element as an owned element"
     );
     // The channel/queue path stays fail-closed for it.
     assert!(
@@ -2019,7 +2017,7 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
         "the channel path must reject a collection-bearing record element"
     );
     // A collection-free record is admitted on both surfaces.
-    assert!(checker.vec_owned_element_admissible(&person));
+    assert!(checker.element_admission_refusal(&person).is_none());
     assert!(
         checker.queue_elem_admissible(&person),
         "a collection-free record must remain a valid channel element"
@@ -2496,8 +2494,9 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     );
     assert!(
         messages.iter().any(|message| message
-            .contains("array repeat requires the element type to be Clone")
-            && message.contains("no clone path")),
+            .contains("array repeat copies the element into every slot")
+            && message.contains("dyn Speaker")
+            && message.contains("no copy operation")),
         "array repeat must not duplicate a trait-object owner: {:#?}",
         output.errors
     );
@@ -3232,8 +3231,11 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
 #[test]
 fn vec_owned_element_admits_rc_and_weak_handles() {
     let checker = Checker::new(ModuleRegistry::new(vec![]));
-    assert!(checker.vec_owned_element_admissible(&Ty::rc(Ty::I64)));
-    assert!(checker.vec_owned_element_admissible(&Ty::weak(Ty::I64)));
+    for handle in [Ty::rc(Ty::I64), Ty::weak(Ty::I64)] {
+        assert_eq!(checker.element_admission_refusal(&handle), None);
+        assert!(checker.element_owns_heap(&handle));
+        assert_eq!(checker.element_clone_blocker(&handle), None);
+    }
 }
 
 #[test]

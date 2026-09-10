@@ -83,8 +83,8 @@ actor ProbeSink {
 fn main() -> i64 {
     let sink = spawn ProbeSink;
     let token = Token { id: 77 };
-    sink.take(token);
-    match await sink.fence() {
+    let _ = sink.take(token);
+    match sink.fence() {
         .Ok(_) => 0,
         .Err(_) => 2,
     }

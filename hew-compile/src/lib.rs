@@ -2240,13 +2240,6 @@ fn flatten_file_import_items(program: &mut Program) {
     program.items.extend(extra);
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one module-graph frame: the source being walked, its directory, \
-              the root it belongs to, the open documents, and the graph and \
-              seen-id state the walk threads; grouping them would hide which \
-              of the three paths each argument comes from"
-)]
 /// The graph node already assembled from `source`, if the walk reached that
 /// file under an earlier spelling. Paths are compared canonically because the
 /// two spellings arrive through different candidate roots.
@@ -2266,6 +2259,13 @@ fn graph_module_for_source(
         .map(|(module_id, _)| module_id.clone())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one module-graph frame: the source being walked, its directory, \
+              the root it belongs to, the open documents, and the graph and \
+              seen-id state the walk threads; grouping them would hide which \
+              of the three paths each argument comes from"
+)]
 fn extract_module_info(
     items: &[Spanned<Item>],
     current_source: &Path,

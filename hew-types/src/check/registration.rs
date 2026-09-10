@@ -10316,8 +10316,13 @@ impl Checker {
                     let registry_source_items = info.source_items.clone();
 
                     let requested_owner = module_path.clone();
-                    let registry_module = self.identity.mint_module(
-                        &resolved_source_path.as_ref().map_or_else(
+                    // The resolved import is the authority for which module
+                    // this is: the registry's own `source_path` can be one PEER
+                    // file of a directory module, and that file has its own
+                    // per-file identity, so minting from it would answer with
+                    // the file rather than the module it assembles into.
+                    let canonical_owner = resolved_module_owner.clone().unwrap_or_else(|| {
+                        resolved_source_path.as_ref().map_or_else(
                             || requested_owner.clone(),
                             |source_path| {
                                 crate::module_registry::canonical_source_module_identity(
@@ -10325,11 +10330,11 @@ impl Checker {
                                     std::slice::from_ref(source_path),
                                 )
                             },
-                        ),
-                        resolved_source_path.as_slice(),
-                    );
-                    // As above: the interned render, not the requested spelling.
-                    let canonical_owner = self.identity.module_path(registry_module).to_string();
+                        )
+                    });
+                    let registry_module = self
+                        .identity
+                        .mint_module(&canonical_owner, resolved_source_path.as_slice());
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,

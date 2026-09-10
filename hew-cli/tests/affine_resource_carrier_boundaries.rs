@@ -31,7 +31,7 @@ impl Token {
 "#;
 
 const IDENTITY_BODY: &str = r"
-fn identity<T>(value: T) -> T {
+fn identity<T>(consume value: T) -> T {
     value
 }
 
@@ -47,7 +47,7 @@ type Wrap {
     token: Token,
 }
 
-fn identity<T>(value: T) -> T {
+fn identity<T>(consume value: T) -> T {
     value
 }
 
@@ -92,7 +92,7 @@ fn main() -> i64 {
 ";
 
 const PARAMETER_ORDER_BODY: &str = r"
-fn store_or_drop(items: Vec<Token>, value: Token, store: bool) -> Vec<Token> {
+fn store_or_drop(consume var items: Vec<Token>, consume value: Token, store: bool) -> Vec<Token> {
     if store {
         items.push(value);
     }
@@ -108,7 +108,7 @@ fn main() -> i64 {
 ";
 
 const PARAMETER_REUSE_BODY: &str = r"
-fn store_then_reuse(items: Vec<Token>, value: Token) -> Vec<Token> {
+fn store_then_reuse(consume var items: Vec<Token>, consume value: Token) -> Vec<Token> {
     items.push(value);
     value.close();
     items
@@ -407,10 +407,10 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
         "a reusable closure must not byte-copy and consume its environment-owned resource"
     );
     assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("whole-value move of captured generator/closure value `value`")
-            && stderr.contains("cannot be moved out of the generator/closure environment"),
-        "closure consumption must fail at the captured-resource authority:\n{stderr}"
+        stderr.contains("E_OWN_CONSUME_BORROWED")
+            && stderr.contains("cannot consume a value through borrowed parameter `value`")
+            && stderr.contains("declare the parameter `consume value:"),
+        "closure consumption must fail at the borrowed-parameter authority:\n{stderr}"
     );
     assert!(
         !contains_native_artifact(&emit_dir),

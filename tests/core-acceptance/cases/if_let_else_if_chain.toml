@@ -1,0 +1,13 @@
+[[case]]
+id = "if_let_else_if_chain"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/if_let_else_if_chain.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n14\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "self_value_outside_actor"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/self_value_outside_actor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedVariable"
+line = 5
+column = 14
+message = "`self` is the actor's own handle and exists only inside an actor body"

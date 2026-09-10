@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_generic_key_missing_bounds"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/hashmap_generic_key_missing_bounds.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 4
+column = 5
+message = "does not satisfy the required bounds for `Map.contains_key`"

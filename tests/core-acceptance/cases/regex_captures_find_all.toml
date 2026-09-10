@@ -1,0 +1,13 @@
+[[case]]
+id = "regex_captures_find_all"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/regex_captures_find_all.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ab,cd\nmisses=0\nabc\n123\nmissing-index\nmissing-name\nfirst_rows=1 first_width=3\nabc-123\nrows=2 width=3\n22\nmissing-row\n"
+exit = 0

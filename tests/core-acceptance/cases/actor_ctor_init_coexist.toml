@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_ctor_init_coexist"
+intent = "The fixture runs to completion and exits 110."
+source = "../vertical-slice/accept/actor_ctor_init_coexist.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 110

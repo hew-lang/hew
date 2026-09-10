@@ -1,0 +1,13 @@
+[[case]]
+id = "for_in_block_wrapped_array_repeat"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/for_in_block_wrapped_array_repeat.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n7\n7\n"
+exit = 0

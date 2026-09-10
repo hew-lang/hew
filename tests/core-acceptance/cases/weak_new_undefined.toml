@@ -1,0 +1,12 @@
+[[case]]
+id = "weak_new_undefined"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/weak_new_undefined.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UndefinedFunction"
+line = 2
+column = 13

@@ -1,0 +1,13 @@
+[[case]]
+id = "channel_recv_match_result_survives"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/channel_recv_match_result_survives.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "direct: [direct]\nvia local: [via local]\ntry: [try]\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_self_unknown_field"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/actor_self_unknown_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UndefinedField"
+line = 10
+column = 9
+message = "actor state has no field `counts`"

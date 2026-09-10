@@ -1,0 +1,13 @@
+[[case]]
+id = "example-basics-float_nonfinite_compare"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/basics/float_nonfinite_compare.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "nan==nan false\nnan==inf false\ninf==inf true\nneg_inf==inf false\nneg_zero==zero true\nnan!=nan true\nnan!=inf true\ninf!=neg_inf true\n"
+exit = 0

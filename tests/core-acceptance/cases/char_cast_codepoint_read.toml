@@ -1,0 +1,13 @@
+[[case]]
+id = "char_cast_codepoint_read"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/char_cast_codepoint_read.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "65\n101\n12345\n"
+exit = 0

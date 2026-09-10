@@ -1,0 +1,13 @@
+[[case]]
+id = "break_control_flow_only"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/break_control_flow_only.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "multiple=9\nhit=11\narm=3\n"
+exit = 0

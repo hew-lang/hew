@@ -1,0 +1,14 @@
+[[case]]
+id = "defer_panic_live_cursor_trailing_stmt"
+intent = "The panic is reported as Hew's own typed failure and the process exits 1."
+source = "../vertical-slice/accept/defer_panic_live_cursor_trailing_stmt.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "x\n"
+stderr = "hew: failure: UserPanic (212): cleanup\n"
+exit = 1

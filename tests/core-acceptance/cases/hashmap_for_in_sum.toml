@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_for_in_sum"
+intent = "The fixture runs to completion and exits 66."
+source = "../vertical-slice/accept/hashmap_for_in_sum.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 66

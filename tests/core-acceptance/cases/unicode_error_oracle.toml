@@ -1,0 +1,13 @@
+[[case]]
+id = "unicode_error_oracle"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/unicode_error_oracle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "unicode.codepoint_at: index out of bounds\nunicode.codepoint_at: index out of bounds\nunicode.rune_len: invalid rune\nunicode.rune_len: invalid rune\nsentinels=-1,-1\n"
+exit = 0

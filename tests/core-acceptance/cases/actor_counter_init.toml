@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_counter_init"
+intent = "The fixture runs to completion and exits 42."
+source = "../vertical-slice/accept/actor_counter_init.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 42

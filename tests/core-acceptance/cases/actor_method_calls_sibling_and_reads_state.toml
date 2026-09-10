@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_method_calls_sibling_and_reads_state"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_method_calls_sibling_and_reads_state.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n15\nledger\n"
+exit = 0

@@ -1,0 +1,12 @@
+[[case]]
+id = "rc_get_non_copy"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/rc_get_non_copy.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 5
+column = 13

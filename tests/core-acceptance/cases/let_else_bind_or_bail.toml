@@ -1,0 +1,13 @@
+[[case]]
+id = "let_else_bind_or_bail"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/let_else_bind_or_bail.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ok: 42\nerr: invalid\n"
+exit = 0

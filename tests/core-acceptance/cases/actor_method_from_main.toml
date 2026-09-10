@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_method_from_main"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_method_from_main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_ACTOR_METHOD_OUTSIDE"
+line = 19
+column = 13
+message = "E_ACTOR_METHOD_OUTSIDE"

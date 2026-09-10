@@ -1,0 +1,13 @@
+[[case]]
+id = "result_ok_string_payload"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/result_ok_string_payload.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "payload body\nerr\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "unannotated_vec_new_never_used"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/unannotated_vec_new_never_used.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InferenceFailed"
+line = 5
+column = 5
+message = "cannot infer type for local binding `pending`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "structural_clone_rc_member"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/structural_clone_rc_member.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\ntag\n"
+exit = 0

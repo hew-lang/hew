@@ -1,0 +1,13 @@
+[[case]]
+id = "const_arithmetic_overflow"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/const_arithmetic_overflow.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_CONST_INITIALIZER"
+line = 3
+column = 17
+message = "constant initializer arithmetic overflows declared type `i8`"

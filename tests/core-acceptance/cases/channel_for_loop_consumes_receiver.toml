@@ -1,0 +1,13 @@
+[[case]]
+id = "channel_for_loop_consumes_receiver"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/channel_for_loop_consumes_receiver.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 16
+column = 5
+message = "use of moved value `rx`"

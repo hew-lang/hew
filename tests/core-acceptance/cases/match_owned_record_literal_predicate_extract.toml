@@ -1,0 +1,13 @@
+[[case]]
+id = "match_owned_record_literal_predicate_extract"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/match_owned_record_literal_predicate_extract.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "9\n20\n4\n30\n4\n5\n4\n40\n"
+exit = 0

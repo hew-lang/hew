@@ -1,0 +1,13 @@
+[[case]]
+id = "dir_module_peer_span_identity"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/dir_module_peer_span_identity/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Rex says woof\nTom says meow\n101\n202\n"
+exit = 0

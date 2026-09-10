@@ -1,0 +1,13 @@
+[[case]]
+id = "imported_shadow_variant_call"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/imported_shadow_variant_call.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "gone\n"
+exit = 0

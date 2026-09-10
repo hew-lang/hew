@@ -1,0 +1,13 @@
+[[case]]
+id = "example-basics-stmt_match"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/basics/stmt_match.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "red\ngreen\nblue\ngo\n"
+exit = 0

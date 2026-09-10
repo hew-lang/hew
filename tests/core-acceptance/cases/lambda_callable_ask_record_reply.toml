@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_callable_ask_record_reply"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/lambda_callable_ask_record_reply.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ok\n"
+exit = 0

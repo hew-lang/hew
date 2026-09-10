@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_capture_owned_value"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/gen_fn_capture_owned_value.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "5\n5\n"
+exit = 0

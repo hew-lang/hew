@@ -1,0 +1,13 @@
+[[case]]
+id = "let_else_non_diverging"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/let_else_non_diverging.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_LET_ELSE_FALLTHROUGH"
+line = 13
+column = 37
+message = "must diverge"

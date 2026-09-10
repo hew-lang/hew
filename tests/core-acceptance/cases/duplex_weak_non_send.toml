@@ -1,0 +1,13 @@
+[[case]]
+id = "duplex_weak_non_send"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/duplex_weak_non_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 2
+column = 19
+message = "E_DUPLEX_NON_SEND"

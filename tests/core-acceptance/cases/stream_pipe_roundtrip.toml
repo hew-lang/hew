@@ -1,0 +1,13 @@
+[[case]]
+id = "stream_pipe_roundtrip"
+intent = "The fixture runs to completion and exits 5."
+source = "../vertical-slice/accept/stream_pipe_roundtrip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 5

@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_state_record_projection_write"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_state_record_projection_write.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "n=3\nlabel=relabelled\nchurned_n=19\nchurned_label=churned\nreplaced_n=100\nreplaced_label=replaced\n"
+exit = 0

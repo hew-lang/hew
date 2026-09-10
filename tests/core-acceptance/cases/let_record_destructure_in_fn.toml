@@ -1,0 +1,13 @@
+[[case]]
+id = "let_record_destructure_in_fn"
+intent = "The fixture runs to completion and exits 25."
+source = "../vertical-slice/accept/let_record_destructure_in_fn.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 25

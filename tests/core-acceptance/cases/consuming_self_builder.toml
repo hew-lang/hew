@@ -1,0 +1,13 @@
+[[case]]
+id = "consuming_self_builder"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/consuming_self_builder.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "5\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_self_state_field_consumed"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_self_state_field_consumed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterConsume"
+line = 20
+column = 16
+message = "actor state `sock` is consumed here and never re-initialised"

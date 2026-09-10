@@ -1,0 +1,13 @@
+[[case]]
+id = "result_unwrap_or_f64"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/result_unwrap_or_f64.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1.5-9.5\n"
+exit = 0

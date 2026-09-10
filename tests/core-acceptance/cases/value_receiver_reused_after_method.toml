@@ -1,0 +1,13 @@
+[[case]]
+id = "value_receiver_reused_after_method"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/value_receiver_reused_after_method.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "nm\nnm\n1\nbare\nbare\n4\n1\nbare\n"
+exit = 0

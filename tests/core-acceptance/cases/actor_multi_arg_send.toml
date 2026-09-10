@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_multi_arg_send"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_multi_arg_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first: count=5 total=5\nsecond: count=7 total=12\nnote: alpha/beta\nfence total=12\n"
+exit = 0

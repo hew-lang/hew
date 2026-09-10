@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_index_assign_round_trip"
+intent = "The fixture runs to completion and exits 24."
+source = "../vertical-slice/accept/vec_index_assign_round_trip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 24

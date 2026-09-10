@@ -1,0 +1,14 @@
+[[case]]
+id = "vec_index_oob_traps"
+intent = "The guard traps: the fixture reports IndexOutOfBounds and exits 1 under the one exit rule."
+source = "../vertical-slice/accept/vec_index_oob_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_generic_nested_wrap_layout"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_generic_nested_wrap_layout.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "nested-wrap-total=1100\n"
+exit = 0

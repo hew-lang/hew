@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-wire_types"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/wire_types.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Wire types define serialization schemas.\nFields have explicit tags (@1, @2) for\nbackwards-compatible binary encoding.\n"
+exit = 0

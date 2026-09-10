@@ -1,0 +1,13 @@
+[[case]]
+id = "json_try_parse_direct_match_payload"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/json_try_parse_direct_match_payload.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ok=100 err=200\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "let_refutable_pattern_rejected"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/let_refutable_pattern_rejected.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_REFUTABLE_LET"
+line = 11
+column = 9
+message = "if let"

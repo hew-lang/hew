@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_arg_field_projection_whole_use"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/actor_arg_field_projection_whole_use.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 35
+column = 30
+message = "use of `holder` after its field `holder.sock` was moved out"

@@ -1,0 +1,13 @@
+[[case]]
+id = "unknown_attribute_on_field_reject"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/unknown_attribute_on_field_reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 6
+column = 5
+message = "unrecognised attribute `#[bogus]` in this position [E_UNKNOWN_ATTRIBUTE]"

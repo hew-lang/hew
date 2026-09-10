@@ -1,0 +1,14 @@
+[[case]]
+id = "on_crash_escalate_root"
+intent = "The fixture prints exactly its recorded output and exits 1."
+source = "../vertical-slice/accept/on_crash_escalate_root.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "PROBE:0\n"
+stderr = "hew: failure: UserPanic (212): forced crash to fire on(crash)\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 1

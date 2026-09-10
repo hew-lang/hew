@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_nested_handle_tuple_transfer"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_nested_handle_tuple_transfer.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "worker got payload: hello\ndone\n"
+exit = 0

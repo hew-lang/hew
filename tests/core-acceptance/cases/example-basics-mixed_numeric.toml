@@ -1,0 +1,13 @@
+[[case]]
+id = "example-basics-mixed_numeric"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/basics/mixed_numeric.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "int product 21\nint square 49\nfloat product 10\nfloat square 6.25\nint compare true\nfloat compare true\n"
+exit = 0

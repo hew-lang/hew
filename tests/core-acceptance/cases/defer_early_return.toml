@@ -1,0 +1,13 @@
+[[case]]
+id = "defer_early_return"
+intent = "The fixture runs to completion and exits 42."
+source = "../vertical-slice/accept/defer_early_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 42

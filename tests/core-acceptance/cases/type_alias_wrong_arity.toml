@@ -1,0 +1,13 @@
+[[case]]
+id = "type_alias_wrong_arity"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/type_alias_wrong_arity.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ArityMismatch"
+line = 4
+column = 15
+message = "type alias `Pair` expects 1 type argument(s), found 2"

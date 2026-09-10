@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_named_await_unit"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/fork_named_await_unit.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ping ran\nscope done\n"
+exit = 0

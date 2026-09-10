@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_local_pid_send_envelope_no_handler"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_local_pid_send_envelope_no_handler.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+line = 28
+column = 5
+message = "no `send` handler on `Adder` — declare `receive fn send(...)` to accept it, or call a named handler"

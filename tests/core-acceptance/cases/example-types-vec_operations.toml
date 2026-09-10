@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-vec_operations"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/vec_operations.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "contains beta:  true\ncontains zeta:  false\nslice length:   2\nslice[0]:       beta\nslice[1]:       gamma\ncontains 20:    true\ncontains 99:    false\nnum slice len:  2\nnum slice[0]:   10\n"
+exit = 0

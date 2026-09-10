@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-structural_bounds"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/structural_bounds.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "d² from origin: 25\nquadrant of a: Q1\nquadrant of b: Q2\n"
+exit = 0

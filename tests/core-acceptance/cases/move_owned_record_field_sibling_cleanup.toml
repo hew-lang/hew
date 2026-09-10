@@ -1,0 +1,13 @@
+[[case]]
+id = "move_owned_record_field_sibling_cleanup"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/move_owned_record_field_sibling_cleanup.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "11\n"
+exit = 0

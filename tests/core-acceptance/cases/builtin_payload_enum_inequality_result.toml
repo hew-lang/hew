@@ -1,0 +1,13 @@
+[[case]]
+id = "builtin_payload_enum_inequality_result"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/builtin_payload_enum_inequality_result.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "true\nfalse\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "resource_marker_on_fn_reject"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/resource_marker_on_fn_reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 4
+column = 1
+message = "unrecognised attribute `#[resource]` in this position [E_UNKNOWN_ATTRIBUTE]"

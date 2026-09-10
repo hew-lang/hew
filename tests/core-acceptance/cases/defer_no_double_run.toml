@@ -1,0 +1,13 @@
+[[case]]
+id = "defer_no_double_run"
+intent = "The fixture runs to completion and exits 5."
+source = "../vertical-slice/accept/defer_no_double_run.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 5

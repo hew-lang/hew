@@ -1,0 +1,14 @@
+[[case]]
+id = "on_crash_action_restart_real_crash"
+intent = "The fixture runs to completion and exits 42."
+source = "../vertical-slice/accept/on_crash_action_restart_real_crash.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): forced crash to fire on(crash)\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 42

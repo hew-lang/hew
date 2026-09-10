@@ -1,0 +1,14 @@
+[[case]]
+id = "join_branch_trap"
+intent = "The fixture runs to completion and exits 19."
+source = "../vertical-slice/accept/join_branch_trap.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: 5\n  right: 6\nhew: actor crash in Actor (actor 2): UserPanic\n"
+exit = 19

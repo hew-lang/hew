@@ -1,0 +1,13 @@
+[[case]]
+id = "record_clone_basic"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/record_clone_basic.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10\n20\n"
+exit = 0

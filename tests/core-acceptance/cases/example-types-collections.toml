@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-collections"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/collections.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "length: 5\nfirst:  10\nthird:  30\nsum:    150\n"
+exit = 0

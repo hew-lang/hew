@@ -1,0 +1,13 @@
+[[case]]
+id = "loop_breakless_if_branch"
+intent = "The fixture runs to completion and exits 6."
+source = "../vertical-slice/accept/loop_breakless_if_branch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 6

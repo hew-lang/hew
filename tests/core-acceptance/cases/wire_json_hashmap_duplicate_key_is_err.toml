@@ -1,0 +1,13 @@
+[[case]]
+id = "wire_json_hashmap_duplicate_key_is_err"
+intent = "The fixture runs to completion and exits 42."
+source = "../vertical-slice/accept/wire_json_hashmap_duplicate_key_is_err.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 42

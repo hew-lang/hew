@@ -1,0 +1,13 @@
+[[case]]
+id = "var_record_reassigned_in_loop"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/var_record_reassigned_in_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "boomx\nunavailableboom\npassingok\npassing\n"
+exit = 0

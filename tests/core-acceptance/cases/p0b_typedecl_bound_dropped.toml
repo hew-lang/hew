@@ -1,0 +1,13 @@
+[[case]]
+id = "p0b_typedecl_bound_dropped"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/p0b_typedecl_bound_dropped.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 6
+column = 13
+message = "type `NoDisplay` does not implement trait `Display` required by `T`"

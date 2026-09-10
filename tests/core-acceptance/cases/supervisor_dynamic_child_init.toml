@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_dynamic_child_init"
+intent = "The fixture runs to completion and exits 37."
+source = "../vertical-slice/accept/supervisor_dynamic_child_init.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 37

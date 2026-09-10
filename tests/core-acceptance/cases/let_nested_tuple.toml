@@ -1,0 +1,13 @@
+[[case]]
+id = "let_nested_tuple"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/let_nested_tuple.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "6\n22\n"
+exit = 0

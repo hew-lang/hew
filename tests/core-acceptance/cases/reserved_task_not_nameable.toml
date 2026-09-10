@@ -1,0 +1,13 @@
+[[case]]
+id = "reserved_task_not_nameable"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/reserved_task_not_nameable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TaskNotNameable"
+line = 8
+column = 13
+message = "compiler-internal type"

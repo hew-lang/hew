@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor_lifecycle_fires"
+intent = "The fixture runs to completion and exits 220."
+source = "../vertical-slice/accept/supervisor_lifecycle_fires.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): supervised lifecycle restart trigger\nhew: actor crash in Actor (actor 1): UserPanic\n"
+exit = 220

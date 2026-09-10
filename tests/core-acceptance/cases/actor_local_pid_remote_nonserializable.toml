@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_local_pid_remote_nonserializable"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_local_pid_remote_nonserializable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 28
+column = 49
+message = "must implement Serializable before it can cross a RemotePid boundary"

@@ -1,0 +1,13 @@
+[[case]]
+id = "p0c_method_value_failclosed"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/p0c_method_value_failclosed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_TYPE_USED_AS_VALUE"
+line = 6
+column = 37
+message = "type `Option` cannot be used as a value"

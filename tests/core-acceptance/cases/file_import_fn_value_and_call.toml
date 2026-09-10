@@ -1,0 +1,13 @@
+[[case]]
+id = "file_import_fn_value_and_call"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/file_import_fn_value_and_call.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "6\n10\n8\n"
+exit = 0

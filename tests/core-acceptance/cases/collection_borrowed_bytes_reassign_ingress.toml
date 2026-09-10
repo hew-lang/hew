@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_borrowed_bytes_reassign_ingress"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/collection_borrowed_bytes_reassign_ingress.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "value=40 reassign=40\nborrowed-ingress-ok\n"
+exit = 0

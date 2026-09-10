@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_state_field_reinit_one_branch"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/actor_state_field_reinit_one_branch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UseAfterConsume"
+line = 19
+column = 18
+message = "actor state `sock` is consumed here and never re-initialised"

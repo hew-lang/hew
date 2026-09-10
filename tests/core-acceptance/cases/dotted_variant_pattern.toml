@@ -1,0 +1,13 @@
+[[case]]
+id = "dotted_variant_pattern"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/dotted_variant_pattern.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n9\n0\n0\n1\n"
+exit = 0

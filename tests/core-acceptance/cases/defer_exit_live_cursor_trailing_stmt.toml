@@ -1,0 +1,13 @@
+[[case]]
+id = "defer_exit_live_cursor_trailing_stmt"
+intent = "The fixture runs to completion and exits 42."
+source = "../vertical-slice/accept/defer_exit_live_cursor_trailing_stmt.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "x\n"
+exit = 42

@@ -1,0 +1,13 @@
+[[case]]
+id = "iflet_nested_ctor"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/iflet_nested_ctor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n8\n"
+exit = 0

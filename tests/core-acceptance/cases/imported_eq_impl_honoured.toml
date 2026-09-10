@@ -1,0 +1,13 @@
+[[case]]
+id = "imported_eq_impl_honoured"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/imported_eq_impl_honoured.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "true\n"
+exit = 0

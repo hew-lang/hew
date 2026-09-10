@@ -1,0 +1,13 @@
+[[case]]
+id = "contextual_variant_resolution"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/contextual_variant_resolution.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\n0\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "receive_gen_fn_string_yield"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/receive_gen_fn_string_yield.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "len=5 val=alpha\nlen=4 val=beta\nlen=5 val=gamma\n"
+exit = 0

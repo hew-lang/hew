@@ -1,0 +1,13 @@
+[[case]]
+id = "dotted_bare_type_value"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/dotted_bare_type_value.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_TYPE_USED_AS_VALUE"
+line = 6
+column = 19
+message = "type `Choice` cannot be used as a value"

@@ -1,0 +1,13 @@
+[[case]]
+id = "example-basics-if_let_value"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/basics/if_let_value.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n0\n42\n99\n10\n0\n"
+exit = 0

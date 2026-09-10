@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_get_borrow_consume"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/collection_get_borrow_consume.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "is borrowed here"

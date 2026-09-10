@@ -1,0 +1,13 @@
+[[case]]
+id = "out_of_scope_type_param_type_method"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/out_of_scope_type_param_type_method.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 19
+column = 26
+message = "unknown type `T`"

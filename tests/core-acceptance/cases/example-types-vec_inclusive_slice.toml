@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-vec_inclusive_slice"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/vec_inclusive_slice.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "inclusive slice len: 3\nslice[0]: beta\nslice[1]: gamma\nslice[2]: delta\nnum inclusive len: 3\nns[0]: 10\nns[2]: 30\nsingle-elem len: 1\nsingle-elem[0]: 30\n"
+exit = 0

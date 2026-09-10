@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_pool_count_clause_missing"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/supervisor_pool_count_clause_missing.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "SupervisorPoolCountMissing"
+line = 13
+column = 1
+message = "E_SUPERVISOR_POOL_COUNT_MISSING"

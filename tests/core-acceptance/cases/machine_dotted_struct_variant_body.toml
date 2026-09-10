@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_dotted_struct_variant_body"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/machine_dotted_struct_variant_body.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "StateB\nStateB\n"
+exit = 0

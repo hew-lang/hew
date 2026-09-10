@@ -1,0 +1,17 @@
+[[case]]
+id = "stream_lazy_adapter_unsupported"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/stream_lazy_adapter_unsupported.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "StreamAdapterNotSupported"
+line = 14
+column = 14
+
+[[case.expected.diagnostics]]
+code = "dead_code"
+line = 13
+column = 1

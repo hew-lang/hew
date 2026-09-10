@@ -1,0 +1,13 @@
+[[case]]
+id = "match_diverging_arm_result_type"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/match_diverging_arm_result_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hello\nok\n"
+exit = 0

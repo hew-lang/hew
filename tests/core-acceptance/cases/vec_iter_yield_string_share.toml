@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_iter_yield_string_share"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_iter_yield_string_share.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "kept=2\nbest=rent-heap\nmatch=zeta-heap\nbreak=beta-heap\nreturn=rent-heap\nyield-share-ok\n"
+exit = 0

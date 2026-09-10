@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_transfer_weak_handle"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/fork_transfer_weak_handle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 14
+column = 33
+message = "fork cannot transfer `Weak<i64>`: the value is not proven Send"

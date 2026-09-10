@@ -1,0 +1,13 @@
+[[case]]
+id = "std_net_mime_execution"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/std_net_mime_execution.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "mime:application/json:text/css:text\n"
+exit = 0

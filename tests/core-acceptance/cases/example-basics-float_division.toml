@@ -1,0 +1,13 @@
+[[case]]
+id = "example-basics-float_division"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/basics/float_division.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "quotient 2.5\nremainder 2\nhalf of nine 4.5\nscaled 7.5\n"
+exit = 0

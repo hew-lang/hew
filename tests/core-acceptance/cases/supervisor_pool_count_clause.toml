@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_pool_count_clause"
+intent = "The fixture runs to completion and exits 20."
+source = "../vertical-slice/accept/supervisor_pool_count_clause.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 20

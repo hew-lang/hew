@@ -51,6 +51,13 @@ EXAMPLES_MANIFEST = ROOT / "examples/playground/manifest.json"
 FIXTURE_ENV = {"HEW_WORKERS": "4"}
 TIMEOUT_SECONDS = 30
 
+# Fixtures that reach outside their own run. run.sh cleans their fixed paths
+# through an EXIT trap; a case has no equivalent, so a leftover from a crashed
+# run would fail the next one for a reason that is not the fixture's semantics.
+EXTERNAL_STATE = {
+    "node_config_atomic_lifecycle",
+}
+
 RUN_HELPERS = {
     "run_accept_expect_status",
     "run_accept_expect_stdout",
@@ -189,47 +196,92 @@ def parse_calls(lines: list[str]) -> tuple[list[Call], list[str]]:
             declined.append(f"run.sh:{first + 1} {helper}: expands a shell variable")
             continue
         args = [unescape(argument.replace("${ROOT}", str(ROOT))) for argument in args]
-        calls.append(Call(helper, args, first, last))
+        calls.append(Call(helper, args, *bracket(lines, first, last)))
     return calls, declined
+
+
+def bracket(lines: list[str], first: int, last: int) -> tuple[int, int]:
+    """Widen a call to the failure-count idiom that guards it.
+
+    Several call sites are wrapped in `_fcb=${fail_count}` ... `[[ ... ]] &&
+    mark_pass`, which exists only to report that one call. Left behind, it
+    would print an unconditional PASS for a fixture run.sh no longer runs.
+    """
+    if first > 0 and lines[first - 1].strip() == "_fcb=${fail_count}":
+        first -= 1
+    if last + 1 < len(lines) and lines[last + 1].startswith(
+        '[[ "${fail_count}" == "${_fcb}" ]]'
+    ):
+        last += 1
+    return first, last
+
+
+def case_id(fixture: str) -> str:
+    """A case id for a fixture name.
+
+    Some fixtures live in their own directory because they are multi-file
+    (`dir_module_peer_span_identity/main.hew`); the directory is the fixture,
+    so the case is named for it, not for every one of them being `main`.
+    """
+    name = fixture.removesuffix(".hew")
+    if name.endswith("/main"):
+        name = name[: -len("/main")]
+    return name.replace("/", "-")
 
 
 # ----------------------------------------------------------- observation ----
 
 
 def observe_run(hew: str, source: Path, env: dict[str, str], work: Path):
-    """Compile at O0 and run the binary twice; None when either step is unusable."""
-    emit = work / "emit"
-    emit.mkdir(parents=True, exist_ok=True)
-    compiled = subprocess.run(
-        [hew, "compile", "--emit-dir", str(emit), "--opt-level", "0", str(source)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_SECONDS * 4,
-    )
-    if compiled.returncode != 0:
-        return None, f"compile exited {compiled.returncode}"
-    binary = emit / source.stem
-    if not binary.is_file():
-        return None, "compiler produced no binary"
+    """Compile and run at every profile the acceptance runner uses.
+
+    A migrated case is run at O0 and O2, and each is run twice: an expectation
+    that only one profile reproduces, or that a rerun does not, is not an
+    observation the runner can hold.
+    """
     environment = dict(os.environ)
     environment.update(env)
     observations = []
-    for _ in range(2):
-        try:
-            done = subprocess.run(
-                [str(binary)],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT_SECONDS,
-                env=environment,
-            )
-        except subprocess.TimeoutExpired:
-            return None, "fixture timed out"
-        observations.append((done.returncode, done.stdout, done.stderr))
-    if observations[0] != observations[1]:
-        return None, "output differs between two runs"
+    for level in ("0", "2"):
+        emit = work / f"emit-O{level}"
+        emit.mkdir(parents=True, exist_ok=True)
+        compiled = subprocess.run(
+            [
+                hew,
+                "compile",
+                "--emit-dir",
+                str(emit),
+                "--opt-level",
+                level,
+                str(source),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS * 4,
+        )
+        if compiled.returncode != 0:
+            return None, f"compile at O{level} exited {compiled.returncode}"
+        binary = emit / source.stem
+        if not binary.is_file():
+            return None, f"compiler produced no binary at O{level}"
+        for _ in range(2):
+            try:
+                done = subprocess.run(
+                    [str(binary)],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=TIMEOUT_SECONDS,
+                    env=environment,
+                )
+            except subprocess.TimeoutExpired:
+                return None, f"fixture timed out at O{level}"
+            observations.append((done.returncode, done.stdout, done.stderr))
+    if len(set(observations)) != 1:
+        if observations[0] != observations[1] or observations[2] != observations[3]:
+            return None, "output differs between two runs of the same binary"
+        return None, "O0 and O2 disagree"
     return observations[0], None
 
 
@@ -296,6 +348,12 @@ def run_case_from(call: Call, observed) -> tuple[Case | None, str | None]:
             return None, f"stderr is missing the panic message {call.args[1]!r}"
         if "panicked at" in stderr:
             return None, "stderr carries Rust's default panic hook output"
+        if len(call.args) > 2:
+            recorded = Path(call.args[2])
+            if not recorded.is_file():
+                return None, f"expected-stdout file {recorded.name} is missing"
+            if recorded.read_text() != stdout:
+                return None, f"stdout does not match {recorded.name}"
         intent = (
             "The panic is reported as Hew's own typed failure and the process exits 1."
         )
@@ -324,7 +382,7 @@ def run_case_from(call: Call, observed) -> tuple[Case | None, str | None]:
 
     return (
         Case(
-            identifier=fixture,
+            identifier=case_id(fixture),
             kind="run",
             source=os.path.relpath(source, CASE_BASE),
             intent=intent,
@@ -343,15 +401,24 @@ def check_case_from(
 ) -> tuple[Case | None, str | None]:
     """Turn every assertion on one reject fixture into a single case."""
     path = Path(calls[0].args[0])
-    identifier = path.stem
-    if identifier == "main" and path.parent.name:
-        identifier = path.parent.name
+    identifier = case_id(
+        str(path.relative_to(path.parent.parent))
+        if path.parent.name not in ("accept", "reject")
+        else path.stem
+    )
     if status == 0:
         return None, "hew check accepts this fixture today"
     if not diagnostics:
         return None, "hew check reports no structured diagnostic"
 
     counted = [c for c in calls if c.helper.startswith("expect_check_fail_error_count")]
+    if not counted and any(
+        c.helper == "expect_check_fail_contains_without" for c in calls
+    ):
+        # The point of that helper is a substring that must be ABSENT, and a
+        # reject case says nothing about diagnostics it did not name, so
+        # migrating it would drop the control silently.
+        return None, "asserts an absent substring, which reject cannot express"
     substrings = [
         c.args[1]
         for c in calls
@@ -379,7 +446,10 @@ def check_case_from(
             )
         entries = []
         claimed = set()
-        for diagnostic in errors:
+        # The count assertion is about errors, but a `check` case pins the
+        # exact set `hew check` reports — a warning it drops would be an
+        # unnamed extra diagnostic and fail the case.
+        for diagnostic in diagnostics:
             message = None
             for substring in substrings:
                 if substring not in claimed and substring in diagnostic["message"]:
@@ -415,9 +485,9 @@ def check_case_from(
         if match is None:
             match = next((d for d in diagnostics if substring in d["message"]), None)
         if match is None:
-            if len(diagnostics) == 1:
-                entries.append(entry(diagnostics[0]))
-                continue
+            # Pinning code and position instead would turn a text assertion
+            # that fails today into a case that passes, which is exactly the
+            # silent weakening this migration must not do.
             return None, f"the named text {substring!r} is in no structured message"
         claimed.add(id(match))
         entries.append(entry(match, substring))
@@ -441,34 +511,35 @@ def example_cases(hew: str, jobs: int, work: Path) -> tuple[list[Case], list[str
     if not EXAMPLES_MANIFEST.is_file():
         return [], ["examples/playground/manifest.json is missing"]
     entries = json.loads(EXAMPLES_MANIFEST.read_text())
-    runnable = [e for e in entries if e.get("runnable") and e.get("path")]
+    manifest_dir = EXAMPLES_MANIFEST.parent
+    runnable = [e for e in entries if e["capabilities"]["wasi"] == "runnable"]
     cases: list[Case] = []
     skipped: list[str] = []
 
     def observe(entry):
-        source = ROOT / entry["path"]
-        expected = source.with_suffix(".expected")
+        source = manifest_dir / entry["source_path"]
+        expected = manifest_dir / entry["expected_path"]
         if not source.is_file():
             return entry, None, "source is missing"
         if not expected.is_file():
             return entry, None, "no .expected file"
         observed, why = observe_run(
-            hew, source, FIXTURE_ENV, work / f"example-{source.stem}"
+            hew, source, FIXTURE_ENV, work / entry["id"].replace("/", "-")
         )
         return entry, observed, why
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         for entry, observed, why in pool.map(observe, runnable):
-            source = ROOT / entry["path"]
-            name = f"example-{source.stem}".replace("_", "-")
+            source = manifest_dir / entry["source_path"]
+            name = f"example-{entry['id'].replace('/', '-')}"
             if observed is None:
-                skipped.append(f"{entry['path']}: {why}")
+                skipped.append(f"{entry['id']}: {why}")
                 continue
             status, stdout, stderr = observed
-            expected = source.with_suffix(".expected").read_text()
+            expected = (manifest_dir / entry["expected_path"]).read_text()
             if status != 0 or stdout != expected:
                 skipped.append(
-                    f"{entry['path']}: exits {status} and does not match its .expected file"
+                    f"{entry['id']}: exits {status}, or its output does not match its .expected file"
                 )
                 continue
             cases.append(
@@ -520,6 +591,13 @@ def main() -> int:
             source = ACCEPT / f"{fixture}.hew"
             if not source.is_file():
                 return fixture, fixture_calls, None, "fixture source is missing"
+            if fixture in EXTERNAL_STATE:
+                return (
+                    fixture,
+                    fixture_calls,
+                    None,
+                    "owns state at a fixed path that only run.sh's trap cleans",
+                )
             env = dict(FIXTURE_ENV)
             if fixture_calls[0].helper == "run_accept_expect_status":
                 for assignment in fixture_calls[0].args[2:]:

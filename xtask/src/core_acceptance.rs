@@ -847,10 +847,22 @@ impl Runner<'_> {
                     );
                     return false;
                 };
-                // A refused check always exits 1 and a clean one 0: that is
+                // A clean check exits 0 and a refused one does not: that is
                 // the contract the kind verifies, not a per-case expectation.
-                let expected_exit = i32::from(!expect_clean);
-                if actual_exit != expected_exit {
+                // `check` pins the exact refusal shape and so pins exit 1;
+                // `reject` only proves the compile was refused, and a refusal
+                // by a compiler limitation exits 3.
+                let wrong_exit = match case.kind {
+                    CaseKind::Doc => actual_exit != 0,
+                    CaseKind::Reject => actual_exit == 0,
+                    _ => actual_exit != 1,
+                };
+                if wrong_exit {
+                    let expected_exit = match case.kind {
+                        CaseKind::Doc => "0",
+                        CaseKind::Reject => "non-zero",
+                        _ => "1",
+                    };
                     let _ = writeln!(
                         log,
                         "FAIL {} profile={} class=wrong-exit expected={expected_exit} actual={actual_exit}{}{}",

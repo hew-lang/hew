@@ -650,10 +650,18 @@ playground-wasi-check: wasm-runtime hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
 # Native run of every runnable playground example against its checked-in
-# `.expected` file (`hew tool playground-verify`), catching drift the
-# analysis-only WASM/manifest checks above don't exercise.
+# `.expected` file, catching drift the analysis-only WASM/manifest checks
+# above don't exercise.
+#
+# A transitional alias for the example cases of the one acceptance runner:
+# each runnable manifest entry is a `example-<id>` case naming the example
+# where it already lives. `hew tool playground-verify` still exists for
+# anyone verifying a manifest outside this repository; the next lane decides
+# its fate.
+EXAMPLE_CASES = $(patsubst tests/core-acceptance/cases/%.toml,--case %,$(wildcard tests/core-acceptance/cases/example-*.toml))
 playground-verify: hew-native
-	$(DEBUG_HEW) tool playground-verify
+	@test -n "$(EXAMPLE_CASES)" || { echo "no example-* acceptance cases found" >&2; exit 1; }
+	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(EXAMPLE_CASES)
 
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
 # graph, tooling tests, compiler measurements and the three Make-owned Linux
@@ -1112,9 +1120,16 @@ test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.
+#
+# Most fixtures are now acceptance cases named for the fixture itself, run
+# here through the one runner. run.sh still holds what a case cannot express
+# — assertions over an LLVM dump, fixtures that own state at a fixed path,
+# and the fixtures that fail today, whose assertions could not be observed to
+# migrate them. It shrinks as those are fixed; the next lane retires it.
 test-vertical-slice: hew-native ## Test: run the end-to-end compiler oracle
 	bash tests/vertical-slice/test-compile-accept.sh
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
+	cargo run -p xtask -- core-acceptance --suite acceptance --kind run,check,reject --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
 # Audited native value-semantics cases.  hew-native is the sole compiler build
 # edge; xtask only drives that already-built binary for its O0 and O2 outcomes.

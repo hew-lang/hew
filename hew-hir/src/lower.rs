@@ -4271,11 +4271,14 @@ pub fn lower_program_with_mono_cap(
             ctx.current_module_name = span_indices
                 .module_name(ctx.current_module_idx)
                 .map(str::to_string);
-            let Some(hir_decl) = (if let Some(module) = ctx.current_module_name.clone() {
+            let diag_start = ctx.diagnostics.len();
+            let lowered = if let Some(module) = ctx.current_module_name.clone() {
                 ctx.lower_imported_type_decl(decl, span.clone(), &module)
             } else {
                 ctx.lower_type_decl(decl, span.clone())
-            }) else {
+            };
+            ctx.tag_spliced_diagnostics(diag_start);
+            let Some(hir_decl) = lowered else {
                 continue;
             };
             let marker = hir_decl.marker;
@@ -5019,6 +5022,7 @@ pub fn lower_program_with_mono_cap(
             ctx.folded_integer_consts.clear();
             const_fold_module_idx = ctx.current_module_idx;
         }
+        let diag_start = ctx.diagnostics.len();
         match item {
             Item::TypeDecl(decl) => {
                 // Retrieve the already-lowered decl so diagnostics are not
@@ -5053,6 +5057,10 @@ pub fn lower_program_with_mono_cap(
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
                     let Some(mut hir_fn) = ctx.lower_fn(func, span.clone()) else {
+                        // A refused body already pushed its diagnostics; this
+                        // is the one path out of the loop that skips the tag
+                        // below.
+                        ctx.tag_spliced_diagnostics(diag_start);
                         continue;
                     };
                     // The process adapter owns the external `main` symbol. If
@@ -5254,6 +5262,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
         }
+        ctx.tag_spliced_diagnostics(diag_start);
     }
     // Restore the root index after the file-import-aware third pass so any
     // subsequent root-context reads default to 0 before the module-graph walk
@@ -9212,6 +9221,17 @@ impl LowerCtx {
         }
         #[cfg(not(debug_assertions))]
         let _ = span;
+    }
+
+    /// Tag diagnostics raised while lowering a spliced file-import item with
+    /// the file it was written in. The item's spans are that file's byte
+    /// offsets, so an untagged diagnostic renders against the root source and
+    /// points at whatever text happens to share the offset. A root item leaves
+    /// `current_module_name` unset and keeps the root's own attribution.
+    fn tag_spliced_diagnostics(&mut self, start: usize) {
+        if let Some(source_module) = self.current_module_name.clone() {
+            self.tag_diagnostics_since(start, &source_module);
+        }
     }
 
     fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {

@@ -1090,44 +1090,8 @@ pub fn assert_eq<T: Eq + Display>(left: T, right: T) {}
 pub fn assert_ne<T: Eq + Display>(left: T, right: T) {}
 
 // ---------------------------------------------------------------------------
-// Math
+// Numeric conversion
 // ---------------------------------------------------------------------------
-/// Returns the absolute value of an integer.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let x = abs(-5);  // 5
-/// }
-/// ```
-pub fn abs(x: i32) -> i32 {
-    0 as i32
-}
-
-/// Returns the square root of a floating-point number.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let r = sqrt(9.0);  // 3.0
-/// }
-/// ```
-pub fn sqrt(x: f64) -> f64 {
-    0.0
-}
-
-/// Returns the smaller of two integers.
-pub fn min(a: i32, b: i32) -> i32 {
-    0 as i32
-}
-
-/// Returns the larger of two integers.
-pub fn max(a: i32, b: i32) -> i32 {
-    0 as i32
-}
-
 /// Convert an integer to a floating-point number.
 ///
 /// Not yet implemented: the checker admits the call but cannot lower it to

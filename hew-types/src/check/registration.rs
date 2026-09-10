@@ -1097,15 +1097,8 @@ impl Checker {
             Ty::Unit,
         );
 
-        // Math functions
-        self.register_builtin_fn("abs", vec![Ty::I64], Ty::I64);
-        self.register_builtin_fn("sqrt", vec![Ty::F64], Ty::F64);
-        self.register_builtin_fn("min", vec![Ty::I64, Ty::I64], Ty::I64);
-        self.register_builtin_fn("max", vec![Ty::I64, Ty::I64], Ty::I64);
-        self.register_builtin_fn("pow", vec![Ty::F64, Ty::F64], Ty::F64);
-        self.register_builtin_fn("floor", vec![Ty::F64], Ty::F64);
-        self.register_builtin_fn("ceil", vec![Ty::F64], Ty::F64);
-        self.register_builtin_fn("round", vec![Ty::F64], Ty::F64);
+        // Numeric conversion. The math functions live in `std.math`; there is
+        // no bare spelling for them (A409).
         self.register_builtin_fn("to_float", vec![Ty::I64], Ty::F64);
 
         // String operations

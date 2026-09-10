@@ -27,6 +27,40 @@ fn retired_string_free_functions_are_not_source_builtins() {
 }
 
 #[test]
+fn retired_bare_math_spellings_name_their_module_qualified_form() {
+    for (expression, canonical) in [
+        ("sqrt(9.0)", "math.sqrt"),
+        ("abs(-5)", "math.abs"),
+        ("min(1, 2)", "math.min"),
+        ("max(1, 2)", "math.max"),
+        ("pow(2.0, 3.0)", "math.pow"),
+        ("floor(1.5)", "math.floor"),
+        ("ceil(1.5)", "math.ceil"),
+        ("round(1.5)", "math.round"),
+    ] {
+        let parsed = hew_parser::parse(&format!("fn main() {{ let value = {expression}; }}"));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+        let undefined = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::UndefinedFunction)
+            .unwrap_or_else(|| {
+                panic!("bare `{expression}` must be undefined: {:?}", output.errors)
+            });
+        assert!(
+            undefined
+                .suggestions
+                .iter()
+                .any(|suggestion| suggestion.contains(canonical)
+                    && suggestion.contains("import std.math")),
+            "bare `{expression}` must point at `{canonical}`: {:?}",
+            undefined.suggestions
+        );
+    }
+}
+
+#[test]
 fn test_literal_types() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 

@@ -16,6 +16,22 @@ pub(super) enum SignatureArgApplication<'a> {
     },
 }
 
+/// Suggest the module-qualified spelling for a bare name that a stdlib
+/// intrinsic declares. The math functions live in `std.math` and have no bare
+/// spelling (A409), so `sqrt(x)` is offered `math.sqrt` with its import. The
+/// intrinsic key is the authority; there is no table of retired names.
+fn module_qualified_intrinsic_spellings(name: &str) -> Vec<String> {
+    use strum::IntoEnumIterator;
+
+    crate::stdlib_authority::Intrinsic::iter()
+        .filter_map(|intrinsic| {
+            let key = intrinsic.key();
+            let (module, leaf) = key.split_once('.')?;
+            (leaf == name).then(|| format!("`{name}` is `{key}`; add `import std.{module}`"))
+        })
+        .collect()
+}
+
 pub(super) struct AppliedCallSignature {
     pub(super) params: Vec<Ty>,
     pub(super) return_type: Ty,
@@ -2486,13 +2502,14 @@ impl Checker {
             );
             return Ty::Error;
         }
-        let similar = crate::error::find_similar(
+        let mut similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs
                 .keys()
                 .map(String::as_str)
                 .chain(self.env.all_names()),
         );
+        similar.extend(module_qualified_intrinsic_spellings(&func_name));
         self.report_error_with_suggestions(
             TypeErrorKind::UndefinedFunction,
             span,

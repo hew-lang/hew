@@ -311,7 +311,7 @@ fn fmt_migrate_root_discovers_nested_hew_sources() {
     let path = nested.join("legacy.hew");
     std::fs::write(
         &path,
-        "enum Choice { Present(i64), }\n\nfn main() -> Choice { Present(42) }\n",
+        "enum Choice { Present(i64), }\n\nfn pick() -> Choice { Present(42) }\n\nfn main() { let _ = pick(); }\n",
     )
     .unwrap();
 

@@ -58,10 +58,7 @@ fn all_measured_wrappers() -> i64 {
         .Ok(value) => value,
         .Err(_) => return 2,
     };
-    let dns_timed = match dns.lookup_host_timed("127.0.0.1", 1000) {
-        .Ok(value) => value,
-        .Err(_) => return 3,
-    };
+    let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
     let compressed_reason = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
         .Ok(data) => data.len(),
         .Err(reason) => reason.len(),
@@ -89,7 +86,7 @@ const SYMBOLS: &[&str] = &[
     "hew_io_read_line",
     "hew_process_result_stderr",
     "hew_process_result_stdout",
-    "hew_file_read",
+    "hew_async_file_read",
     "hew_glob_error",
     "hew_glob_get",
     "hew_path_absolute",

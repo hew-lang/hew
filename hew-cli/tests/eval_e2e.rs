@@ -292,10 +292,10 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
     let path = dir.path().join("observe_attribution_eval.hew");
     std::fs::write(
         &path,
-        r"import std.observe;
+        r#"import std.observe;
 
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -308,15 +308,15 @@ actor Counter {
 
 fn run_counter() {
     let counter = spawn Counter(count: 0);
-    counter.increment(1);
-    counter.increment(2);
-    let _total = await counter.total();
-    let _barrier = observe.barrier().unwrap();
+    let _ = counter.increment(1);
+    let _ = counter.increment(2);
+    let _total = counter.total();
+    let _barrier = observe.barrier().expect("observe barrier must flush");
     println(observe.series());
     println(observe.scrape());
 }
 run_counter();
-",
+"#,
     )
     .unwrap();
 

@@ -43,7 +43,9 @@ fn yaml_bytes_ffi_return_runs_natively_and_under_wasi() {
     let source = dir.path().join("yaml_bytes_ffi_return.hew");
     fs::write(
         &source,
-        r#"#[opaque]
+        r#"import std.encoding.utf8;
+
+#[opaque]
 type YamlValue {}
 
 extern "C" {
@@ -55,7 +57,11 @@ extern "C" {
 fn main() {
     let value = unsafe { hew_yaml_parse("'aGV3'") };
     let decoded: bytes = unsafe { hew_yaml_get_bytes(value) };
-    println(decoded.to_string());
+    let text = match utf8.decode(decoded) {
+        .Ok(decoded_text) => decoded_text,
+        .Err(error) => panic("YAML bytes payload is not valid UTF-8"),
+    };
+    println(text);
     unsafe { hew_yaml_free(value) };
 }
 "#,

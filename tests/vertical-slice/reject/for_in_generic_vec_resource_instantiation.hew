@@ -6,7 +6,7 @@ type Handle {
 }
 
 impl Handle {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 type Wrapper {

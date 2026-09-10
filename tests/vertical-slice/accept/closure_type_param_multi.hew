@@ -6,8 +6,10 @@
 // Exercises the multi-type-parameter substitution path: a single closure env
 // whose fields resolve to a heterogeneous concrete tuple (`i64`, `string`)
 // rather than the bare `A`/`B` symbols.
-fn combine<A, B>(a: A, b: B, n: i64) -> i64 {
-    let f = || {
+// Both captures transfer with `move`, so both parameters are declared
+// `consume`: a type parameter has no independent snapshot operation.
+fn combine<A, B>(consume a: A, consume b: B, n: i64) -> i64 {
+    let f = move || {
         let _x = a;
         let _y = b;
         n

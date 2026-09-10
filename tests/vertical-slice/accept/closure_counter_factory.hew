@@ -1,22 +1,25 @@
-// BorrowMut write-back (#1′) through an ESCAPING (heap-boxed) env: the classic
-// stateful counter-factory idiom. `make_counter` captures its local `count` by
-// BorrowMut into a closure it RETURNS, so the env is promoted to a heap box
-// that outlives the factory frame. Each call mutates the heap env field in
-// place via `ClosureEnvFieldStore`, accumulating across calls.
+// Mutable capture write-back through an ESCAPING (heap-boxed) env: the classic
+// stateful counter-factory idiom. `make_counter` names `count` in a
+// `capture(var count)` prefix, so the closure owns a private mutable field in
+// an env it RETURNS, promoted to a heap box that outlives the factory frame.
+// Each call mutates the heap env field in place via `ClosureEnvFieldStore`,
+// accumulating across calls. Invoking a mutable closure needs a mutable
+// callable place, so the returned type is `fn[var]() -> i64` and the caller
+// binds it with `var`.
 //
 // Exercises the write-back on the heap allocation strategy (not just the stack
 // env) and confirms the heap env is freed exactly once when the closure drops
 // (see closure_env_drop_leak_oracle: zero leaks, no double-free).
-fn make_counter() -> fn() -> i64 {
-    var count: i64 = 0;
-    || {
+fn make_counter() -> fn[var]() -> i64 {
+    let count: i64 = 0;
+    capture(var count) || {
         count = count + 1;
         count
     }
 }
 
 fn main() {
-    let c = make_counter();
+    var c = make_counter();
     println(c()); // 1
     println(c()); // 2
     println(c()); // 3

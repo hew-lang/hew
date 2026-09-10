@@ -337,23 +337,28 @@ import std.net;
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
         let conn = match net.connect("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
-        conn.write_string("client-ping:r319");
-        let reply = conn.read_string();
+        let _ = conn.write_string("client-ping:r319");
+        let reply = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("client read is not valid UTF-8"), }};
         println(f"client-read={{reply}}");
         conn.close();
     }}
 }}
 
+// The client handler runs forked: a `receive fn` call from `main` completes the
+// handler before it returns, so calling it inline would block `main` short of
+// `accept()` while the handler blocks on its own read.
 fn main() {{
     let listener = match net.listen("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
     let client = spawn EchoServer;
-    let _ = client.connect_send_and_read(0);
+    scope {{
+        let _client_turn = fork client.connect_send_and_read(0);
 
-    let conn = listener.accept();
-    let request = conn.read_string();
-    println(f"server-read={{request}}");
-    conn.write_string("tcp-echo:hew-net-r319");
-    conn.close();
+        let conn = listener.accept();
+        let request = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("server read is not valid UTF-8"), }};
+        println(f"server-read={{request}}");
+        let _ = conn.write_string("tcp-echo:hew-net-r319");
+        conn.close();
+    }}
     listener.close();
 }}
 "#,
@@ -3668,11 +3673,11 @@ fn check_closure_shared_across_records_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_shared_across_records.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `h`"),
         "expected use-after-move diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("binding consumed here"),
+        combined.contains("value was consumed here"),
         "expected the diagnostic to name the move site; got: {combined}"
     );
 }
@@ -3709,8 +3714,12 @@ fn check_closure_move_then_invoke_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_move_then_invoke.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`"),
         "expected use-after-move diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("cannot invoke consumed callable `f`"),
+        "expected the invocation itself to be refused; got: {combined}"
     );
 }
 
@@ -3977,7 +3986,7 @@ fn owned_nested_record_by_value_round_trips() {
 /// fail-closed sentinel ("Named/user type `json.Value` reached the LLVM
 /// emitter"). The fix matches the short name in codegen's opaque-ptr decision
 /// (`hew-codegen-rs/src/llvm.rs`). Exercises a trivial pass-through handle
-/// method (`get_int`) and `free`, asserting the runtime round-trip.
+/// method (`get_int`) and the implicit close, asserting the runtime round-trip.
 #[test]
 fn run_imports_json_opaque_handle_round_trips() {
     require_codegen();
@@ -3990,8 +3999,7 @@ fn run_imports_json_opaque_handle_round_trips() {
          \n\
          fn main() -> i32 {\n\
          \x20   let v = json.from_int(42);\n\
-         \x20   let n = v.get_int();\n\
-         \x20   v.free();\n\
+         \x20   let n = match v.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
          \x20   println(f\"n={n}\");\n\
          \x20   0\n\
          }\n",
@@ -4009,10 +4017,10 @@ fn run_imports_json_opaque_handle_round_trips() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "n=42\n");
 }
 
-/// `import std::encoding::json` then chaining the fluent builder methods.
-/// Guards the regression where non-trivial imported impl methods (a void C
-/// call followed by `return self`, e.g. `with_int` / `push_int`) were absent
-/// from `fn_registry` and the lowered item list because imported impl-method
+/// `import std.encoding.json` then building an object and an array through the
+/// mutating `set` / `push` methods. Guards the regression where non-trivial
+/// imported impl methods (a void C call plus a status result) were absent from
+/// `fn_registry` and the lowered item list because imported impl-method
 /// registration was gated on per-method `pub` visibility (which impl methods
 /// never carry). Across the import boundary they surfaced as
 /// `IndirectCallUnsupported` / `CallableUnsupportedInMir`. The fix drops the
@@ -4030,20 +4038,25 @@ fn run_imports_json_fluent_builders_round_trip() {
         "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
-         \x20   let obj = json.object()\n\
-         \x20       .with_string(\"name\", \"Hew\")\n\
-         \x20       .with_int(\"version\", 1);\n\
-         \x20   let s = obj.stringify();\n\
+         \x20   var obj = json.object();\n\
+         \x20   match obj.set(\"name\", json.from_string(\"Hew\")) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match obj.set(\"version\", json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   let s = match obj.stringify() { .Ok(text) => text, .Err(_) => return 1, };\n\
          \x20   println(s);\n\
          \x20   let parsed = match json.parse(s) { .Ok(value) => value, .Err(_) => return 1, };\n\
-         \x20   let field = parsed.get_field(\"version\");\n\
-         \x20   println(f\"version={field.get_int()}\");\n\
-         \x20   field.free();\n\
-         \x20   parsed.free();\n\
-         \x20   obj.free();\n\
-         \x20   let arr = json.array().push_int(1).push_int(2).push_int(3);\n\
-         \x20   println(f\"len={arr.array_len()}\");\n\
-         \x20   arr.free();\n\
+         \x20   let field = match parsed.get_field(\"version\") {\n\
+         \x20       .Ok(.Some(value)) => value,\n\
+         \x20       .Ok(.None) => return 1,\n\
+         \x20       .Err(_) => return 1,\n\
+         \x20   };\n\
+         \x20   let version = match field.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
+         \x20   println(f\"version={version}\");\n\
+         \x20   var arr = json.array();\n\
+         \x20   match arr.push(json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match arr.push(json.from_int(2)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match arr.push(json.from_int(3)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   let len = match arr.array_len() { .Ok(value) => value, .Err(_) => return 1, };\n\
+         \x20   println(f\"len={len}\");\n\
          \x20   0\n\
          }\n",
     )

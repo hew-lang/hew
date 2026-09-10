@@ -1,0 +1,10 @@
+[[case]]
+id = "remote-pid-display"
+intent = "NodeId and RemotePid decompose and render through their ordinary methods, each lowering through a runtime-family ownership contract to a real runtime symbol: the node identity renders as its hex spelling, a looked-up pid reports a live slot and incarnation, and every rendering is a fresh owned string."
+source = "cases/remote-pid-display.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = ""
+exit = 0

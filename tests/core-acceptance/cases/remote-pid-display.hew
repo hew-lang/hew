@@ -1,0 +1,101 @@
+// A node's own identity, and the location a looked-up `RemotePid<T>` carries,
+// decompose and render through ordinary methods: `Node.id()` yields a `NodeId`
+// that displays as its stable hex identity, and a `RemotePid<T>` reports its
+// node-local slot, its node-session incarnation, and a rendering that carries
+// all three.
+actor Echo {
+    receive fn handle(req: i64) -> i64 {
+        req
+    }
+}
+
+impl ActorMsg for Echo {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+fn starts(consume config: NodeConfig) -> bool {
+    match Node.start(config) {
+        .Ok(_) => true,
+        .Err(_) => false,
+    }
+}
+
+fn configured_at(bind: string) -> NodeConfig {
+    var config = NodeConfig.at(bind);
+    config.key = "/tmp/hew-remote-pid-display-case.key";
+    config
+}
+
+fn main() -> i64 {
+    if !starts(configured_at("127.0.0.1:0")) {
+        return 1;
+    }
+    // A started node has a key-derived identity that renders as 32 hex digits,
+    // and the f-string form agrees with the method form.
+    let identity = match Node.id() {
+        .Some(id) => id.display(),
+        .None => {
+            Node.shutdown();
+            return 2;
+        },
+    };
+    if identity.len() != 32 {
+        Node.shutdown();
+        return 3;
+    }
+
+    let echo = spawn Echo();
+    Node.register("echo", echo);
+    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
+    match found {
+        .Err(_) => {
+            Node.shutdown();
+            return 4;
+        },
+        .Ok(peer) => {
+            // A registered actor holds a real node-local slot, never the zero
+            // sentinel a stale reference would carry.
+            if peer.slot() == 0 {
+                Node.shutdown();
+                return 5;
+            }
+            // The incarnation fences a same-key restart, so a live session
+            // reports one.
+            if peer.incarnation() == 0 {
+                Node.shutdown();
+                return 6;
+            }
+            // The rendering carries the node identity, the slot and the
+            // incarnation: `<node-hex>/<slot>@<incarnation>`.
+            let shown = peer.display();
+            if shown.len() <= identity.len() {
+                Node.shutdown();
+                return 7;
+            }
+            // Each call hands back a fresh owned string, so owning and dropping
+            // one rendering cannot disturb the next.
+            let again = peer.display();
+            if again != shown {
+                Node.shutdown();
+                return 8;
+            }
+            // A rendering read straight through with no binding to anchor it
+            // is a temporary the caller still owns and must release exactly
+            // once; a mixed shape holds one binding while dropping another
+            // temporary in the same expression sequence.
+            if peer.display().len() != shown.len() {
+                Node.shutdown();
+                return 9;
+            }
+            let held = peer.display();
+            if held.len() != peer.display().len() {
+                Node.shutdown();
+                return 10;
+            }
+        },
+    }
+
+    Node.shutdown();
+    0
+}

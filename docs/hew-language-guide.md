@@ -1945,32 +1945,46 @@ See [the network module](../std/net/net.hew) for the current operations and
 
 ## State machines
 
-### Machine declaration: events, states, transitions, step(), state_name()
+### Declaring a machine: events, states, transitions
+
+A machine holds one state from a closed set and evaluates typed events against
+transition rules. The body is a comma-separated list of members: the `events`
+header, the `state` declarations, the `on` rules, and an optional `default`.
 
 ```hew
 machine Counter {
-    events { Inc, Reset, }
+    events { Inc, Reset }
+
     state Zero,
-    state NonZero { value: i64, },
-    on Inc: Zero => NonZero { Counter.NonZero { value: 1 } }
-    on Inc: NonZero => NonZero reenter { Counter.NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Counter.Zero }
+    state NonZero { value: i64 },
+
+    on Inc: Zero => NonZero { value: 1 }
+    on Inc: NonZero => NonZero reenter { value: state.value + 1 }
+    on Reset: NonZero => Zero,
+
     default { state }
 }
+
 fn main() {
-    var c = Counter.Zero;
-    c.step(.Inc); c.step(.Inc); c.step(.Inc);
-    println(c.state_name());            // NonZero
-    match c {
+    var counter: Counter = .Zero;
+    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc);
+    println(counter.state_name());            // NonZero
+    match counter {
         .Zero => println("is zero"),
-        .NonZero { value } => println(f"value={value}"),  // value=3
+        .NonZero { value } => println(f"value={value}"),   // value=3
     }
-    c.step(.Reset);
-    println(c.state_name());            // Zero
+    let _ = counter.step(.Reset);
+    println(counter.state_name());            // Zero
 }
 ```
 
-A machine is a value type. State constructors use a machine-qualified dotted form both inside and outside transition bodies (`Counter.NonZero { value: 1 }`, `Counter.Zero`); contextual event arguments use `.Variant` (`step(.Inc)`). Event constructors use the event-type qualifier outside contextual positions (`CounterEvent.Inc`). This behaviour keeps state-constructor resolution explicit. `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
+A machine is a value type, so `step()` mutates in place and its receiver must
+be a `var`. `step()` returns a must-use report, so bind it (`let report = ...`)
+or discard it deliberately (`let _ = ...`). Every `(state, event)` cell must be
+covered or it is a compile error; `default { state }` makes the uncovered ones
+a no-op stay.
 
 > **Why `default` is a blanket catch-all, and what that costs you.** Without
 > `default`, every `(state, event)` pair not covered by an explicit `on`
@@ -1989,18 +2003,16 @@ A machine is a value type. State constructors use a machine-qualified dotted for
 > transitions in a machine should be hard errors and others should be
 > silent no-ops, the only current option is to omit `default` and write out
 > every cell explicitly, including the no-op ones (`on Bump: Dead => Dead
-reenter { state }`), so the compiler forces you to make each one a
-> deliberate decision.
+reenter,`), so the compiler forces you to make each one a deliberate
+> decision.
 
-### Transition heads: the source is a pattern, the target is an expression
+### Transition heads: the source is a pattern, the target is a state name
 
-`on Event: Source => Target` reads symmetrically, but the two sides are different
-grammatical things and they take different spellings.
+`on Event: Source => Target` reads symmetrically, but the two sides are
+different grammatical things.
 
 The **source** is a pattern matched against the machine's current state. It is
-never evaluated, has no expected type, and is the one pattern position exempt from
-`E_BARE_VARIANT_PATTERN`. Write it bare (`Off`), as a qualified path into a
-composite (`Connected.Active`, which resolves to the leaf `Active`), or as the
+never evaluated and has no expected type. Write it bare (`Off`) or as the
 wildcard `_`. A leading `.` is rejected there:
 
 ```
@@ -2009,131 +2021,238 @@ on Toggle: .Off => .On,
              written with a leading `.`
 ```
 
-The **target** is an expression checked against the machine's state enum, so it
-takes the contextual form: `=> .On`, `=> .Faulted { code: event.code }`. The bare
-form still parses, but since v0.6.0 it is rejected with `E_BARE_VARIANT_EXPR` and
-a fix-it that inserts the dot — the same rule every other
-enum-in-expected-type position follows. Run `hew fmt --migrate` to apply the
-fix-its across a legacy source. A `_` target (paired with a body that
-computes the next state) is a wildcard rather than a variant, so it takes no dot.
+The **target** is a state name in the machine's own namespace, resolved against
+its `state` declarations. It is not an enum variant, so it takes no dot:
 
 ```hew
 machine Switch {
-    events { Toggle, }
+    events { Toggle }
+
     state Off,
     state On,
-    on Toggle: Off => .On,
-    on Toggle: On => .Off,
+
+    on Toggle: Off => On,
+    on Toggle: On => Off,
 }
-```
 
-The formatter re-emits whichever target spelling you wrote; it never adds or
-removes the dot.
-
-### State field holding a Vec
-
-```hew
-machine Log {
-    events { Append { item: i64, }, Clear, }
-    state Empty,
-    state Filled { items: Vec<i64>, },
-    on Append(item): Empty => Filled {
-        var v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
-    }
-    on Append(item): Filled => Filled reenter {
-        var v = self.items; v.push(item); Filled { items: v }
-    }
-    on Clear: Filled => Empty { Log.Empty }
-    default { state }
-}
 fn main() {
-    var log = Empty;
-    let _ = log.step(Append { item: 10 });
-    let _ = log.step(Append { item: 20 });
-    match log {
-        .Empty => println("empty"),
-        .Filled { items } => {
-            println(f"count={items.len()}");   // count=2
-            println(f"first={items[0]}");  // first=10
-        },
-    }
+    var switch: Switch = .Off;
+    let _ = switch.step(.Toggle);
+    println(switch.state_name());   // On
 }
 ```
 
-Read the prior vec out of `self.items`, push, and rebuild the variant. Access elements with `v[i]` and `.len()`.
+Outside the machine — constructing a value, matching one — a state *is* an enum
+variant and takes the usual contextual dot: `var switch: Switch = .Off;`,
+`.NonZero { value } => ...`.
+
+### Transition bodies: `state` and `event`
+
+A rule head already says which state the transition produces, so the body says
+only what the head cannot. Two names are bound inside it: `state` is the source
+state's fields, `event` is the incoming payload. `self` is the receiver of an
+actor or a method and is not bound here; writing it is refused with
+`E_MACHINE_SELF`.
+
+There are three body forms:
+
+- A **unit target takes no body**: `on Reset: NonZero => Zero,`.
+- A **fielded target takes the field list**, with the target elided:
+  `on Inc: Zero => NonZero { value: 1 }`. The braces hold field initializers,
+  nothing else.
+- An **expression body** computes the state value. Use it when the rule also
+  emits outputs, when the target is the wildcard `_`, or for the identity
+  `{ state }` that keeps a fielded state unchanged.
+
+Repeating the target inside its own body — `=> NonZero { NonZero { value: 1 } }`,
+`=> Zero { .Zero }`, `=> Zero { Counter.Zero }` — is refused with
+`E_MACHINE_REDUNDANT_TARGET`.
 
 ### Event payload access
 
 ```hew
 machine Acc {
-    events { Add { n: i64, } }
+    events { Add { n: i64 } }
+
     state Seed,
-    state Total { sum: i64, },
-    on Add: Seed => Total { Total { sum: event.n } }
-    on Add: Total => Total reenter { Total { sum: self.sum + event.n } }
+    state Total { sum: i64 },
+
+    on Add(n): Seed => Total { sum: n }
+    on Add: Total => Total reenter { sum: state.sum + event.n }
 }
-fn make_add(n: i64) -> AccEvent { AccEvent.Add { n: n } }
+
+fn make_add(n: i64) -> AccEvent {
+    AccEvent.Add { n: n }
+}
+
 fn main() {
-    var a = Seed;
-    a.step(make_add(5));
-    a.step(make_add(7));
-    match a {
+    var acc: Acc = .Seed;
+    let _ = acc.step(make_add(5));
+    let _ = acc.step(make_add(7));
+    match acc {
         .Seed => println("seed"),
         .Total { sum } => println(f"sum={sum}"),   // sum=12
     }
 }
 ```
 
-Prefer the head binding `on Add(n): ...` so payload names are declared at the rule site; `event.n` is the equivalent fallback. `self.field` reads the source state; `event.field` reads the event payload. The compiler generates a companion enum `{MachineName}Event` you can name in signatures and construct with `MachineEvent.Variant`.
+The head binding `on Add(n): ...` names the payload fields at the rule site;
+`event.n` is the equivalent spelling without it. The compiler generates a
+companion enum `{MachineName}Event` you can name in signatures and construct
+with `AccEvent.Add { n: 1 }`.
+
+### State field holding a Vec
+
+A state field can own a heap value. Read the previous one out of `state`, work
+on it, and produce the new state:
+
+```hew
+machine Log {
+    events { Append { item: i64 }, Clear }
+
+    state Empty,
+    state Filled { items: Vec<i64> },
+
+    on Append(item): Empty => Filled { items: [item] }
+    on Append(item): Filled => Filled reenter {
+        var next = state.items;
+        next.push(item);
+        Filled { items: next }
+    }
+    on Clear: Filled => Empty,
+
+    default { state }
+}
+
+fn main() {
+    var log: Log = .Empty;
+    let _ = log.step(.Append { item: 10 });
+    let _ = log.step(.Append { item: 20 });
+    match log {
+        .Empty => println("empty"),
+        .Filled { items } => {
+            println(f"count={items.len()}");   // count=2
+            println(f"first={items[0]}");      // first=10
+        },
+    }
+}
+```
+
+### Emitting outputs
+
+An `emits` header declares a typed output vocabulary, separate from the inputs.
+`emit` appends a value to the report's `outputs`; the surrounding application
+interprets them and does the actual work, since a transition body is pure.
+
+```hew
+machine Meter {
+    events { Reading { value: i64 } }
+    emits { Alarm { value: i64 } }
+
+    state Watching { peak: i64 },
+
+    on Reading: Watching => Watching when event.value > state.peak {
+        emit Alarm { value: event.value };
+        Watching { peak: event.value }
+    }
+    on Reading: Watching => Watching { state }
+}
+
+fn main() {
+    var meter: Meter = .Watching { peak: 0 };
+    let report = meter.step(.Reading { value: 7 });
+    for output in report.outputs {
+        match output {
+            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+        }
+    }
+    let quiet = meter.step(.Reading { value: 3 });
+    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+}
+```
+
+A state may also declare `entry` and `exit` hooks, which see the same `state`
+and `event` bindings and may emit. A transition that changes state runs exit,
+body, then entry; a fixed same-state rule runs only its body unless it says
+`reenter`.
 
 ### Wildcard transitions and if-expression bodies
 
 ```hew
 machine Conn {
-    events { Start, Bump, Kill, }
+    events { Start, Bump, Kill }
+
     state Idle,
-    state Live { hits: i64, },
+    state Live { hits: i64 },
     state Dead,
-    on Start: Idle => Live { Live { hits: 0 } }
+
+    on Start: Idle => Live { hits: 0 }
     on Bump: Live => _ {
-        if self.hits + 1 >= 3 { Conn.Dead } else { Live { hits: self.hits + 1 } }
+        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
     }
-    on Kill: _ => Dead { Conn.Dead }
-    on Start: _ => _ { state }
-    on Bump: _ => _ { state }
+    on Kill: _ => Dead,
+
+    default { state }
 }
+
 fn main() {
-    var c = Idle;
-    let _ = c.step(.Start);
-    let _ = c.step(.Bump);
-    let _ = c.step(.Bump);
-    let _ = c.step(.Bump);
-    println(c.state_name());   // Dead
+    var conn: Conn = .Idle;
+    let _ = conn.step(.Start);
+    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Live
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Dead
 }
 ```
 
-`on E: _ => _ { state }` is the canonical "ignore this event everywhere it isn't explicitly handled". A wildcard-target body may return any variant, so an `if` returning different states is legal there and in a `reenter` body. An explicit cell rule always wins over a wildcard.
+`_` in the source position matches any state, and `_` in the target position
+lets the body choose, so an `if` returning different states is legal there. An
+explicit cell rule always wins over a wildcard.
 
-### Driving a machine through a free-function parameter
+### Driving a machine from a function or an actor
 
 ```hew
 machine Door {
-    events { Open, Close, }
+    events { Open, Close }
+
     state Shut,
-    state Ajar { angle: i64, },
-    on Open: Shut => Ajar { Ajar { angle: 90 } }
-    on Close: Ajar => Shut { Door.Shut }
+    state Ajar { angle: i64 },
+
+    on Open: Shut => Ajar { angle: 90 }
+    on Close: Ajar => Shut,
+
     default { state }
 }
-fn drive(d: Door) -> string {
-    var local = d;
-    local.step(.Open);
+
+fn drive(door: Door) -> string {
+    var local = door;
+    let _ = local.step(.Open);
     local.state_name()
 }
-fn main() { println(drive(.Shut)); }   // Ajar
+
+actor Porter {
+    var door: Door = .Shut,
+
+    receive fn accept(event: DoorEvent) {
+        let _report = door.step(event);
+        println(door.state_name());
+    }
+}
+
+fn main() {
+    println(drive(.Shut));            // Ajar
+    let porter = spawn Porter();
+    let _ = porter.accept(.Open);     // Ajar
+}
 ```
 
-Pass machines by value into and out of free functions and mutate a local `var`. A machine also works as an actor state field — `var d: Door = Shut;` in an actor body, with `d.step(Open)` inside a `receive fn`, compiles and runs (the field rides the enum clone/drop substrate). What does not work is a machine inside a plain record: `.step()` requires a `var`-bound receiver, and a record field is not one, so `r.d.step(Open)` is rejected with `` `.step()` requires a mutable binding receiver; this expression is not declared with `var` ``. Copy the field into a local `var`, step it, and write it back.
+Pass machines by value into and out of free functions and mutate a local `var`.
+A machine also works as an actor state field. What does not work is a machine
+inside a plain record: `.step()` requires a `var`-bound receiver and a record
+field is not one, so `r.d.step(.Open)` is rejected with `` `.step()` requires a
+mutable binding receiver; this expression is not declared with `var` ``. Copy
+the field into a local `var`, step it, and write it back.
 
 ## Generics
 

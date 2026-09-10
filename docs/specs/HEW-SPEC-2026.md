@@ -3499,17 +3499,11 @@ fn main() {
 
 ## 3.11 `machine` Types
 
-> **Implementation status:** The front-end (lexer keywords, parser, AST, HIR
-> lowering, static checks), the `hew machine diagram` visualisation subcommand,
-> and native code generation are implemented. Machine values are executable:
-> the compiler emits the tagged-union layout, companion event enum, `step()`,
-> `state_name()`, and enum-like pattern matching support described below.
-
-A `machine` is a **value type** that defines a closed set of named states, a
-closed set of named events, and transition rules mapping `(State, Event)` pairs
-to new states.  It compiles to a tagged union with a compiler-generated
-`step()` method.  Machines are not actors — they are pure data, like enums
-with per-state fields and compiler-checked transition logic.
+A `machine` is a **value type** holding one state from a closed set, with
+compiler-checked rules mapping a `(state, event)` pair to the next state. It
+compiles to a tagged union with a generated `step()` method. Machines are not
+actors: they are pure data, like enums with per-state fields, and a machine
+owns no thread, mailbox or output queue.
 
 > **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
 > for the full normative reference.
@@ -3518,60 +3512,66 @@ with per-state fields and compiler-checked transition logic.
 
 - **Value semantics** — a machine is a tagged union (like `enum`), not a
   reference type.
-- **Exhaustiveness** — the compiler verifies that every `(State, Event)` pair
-  is handled (via an explicit transition, a wildcard, or a `default` handler).
+- **Exhaustiveness** — every `(state, event)` pair is covered by an explicit
+  rule, a wildcard rule, or `default { state }`.
 - **Ordinary storage** — a state tag plus its payload, with normal ownership
-  for heap values and output collections. A machine creates no thread.
+  for heap values and output collections.
 
 ### 3.11.1 Declaration Syntax
 
+A machine body is a comma-separated list of members: the mandatory `events`
+header, the optional `emits` header, the `state` declarations, the `on` rules,
+and an optional `default`. A rule whose body is braced is self-delimiting; one
+without a body ends with `,`, like every other structural member.
+
 ```hew
-machine Name {
-    // Input-event vocabulary — declared up front (mandatory header)
+machine Door {
     events {
-        EventX,                            // event with no payload
-        EventY { payload: Type, },          // event with payload
-        EventZ,
+        Open { by: string },
+        Close,
     }
 
-    // Output vocabulary — optional and separate from input events
     emits {
-        Changed { value: Type },
+        Announce { text: string },
     }
 
-    // States — at least one required
-    state StateA,                          // unit state (no fields)
-    state StateB { field: Type, },         // state with data
-
-    // Transitions: on Event: Source => Target { body }
-    on EventZ: StateB => StateA { .StateA } // explicit body returns target value
-    on EventY: StateA => StateB { .StateB { field: event.payload } }
-
-    // Head binding: name payload fields at the rule site
-    on EventY(payload): StateB => StateA { Name.StateA }
-
-    // Self-transition with reenter (runs exit/entry even when state is unchanged)
-    on EventX: StateB => StateB reenter { .StateB { field: self.field } }
-
-    // Wildcard — applies in all unhandled source states for this event
-    on EventX: _ => _ { state }           // external transition, even to the same tag
-
-    // Depth-1 composite state (substate block; depth > 1 is reserved)
-    state Parent {
-        initial state Sub1,
-        state Sub2 { value: i64, }
+    state Shut,
+    state Ajar {
+        by: string,
+        entry {
+            emit Announce { text: "opened by " + state.by };
+        }
     },
 
-    // Default handler — fallback for ALL unmatched (state, event) pairs
+    on Open(by): Shut => Ajar { by: by }
+    on Close: Ajar => Shut,
+
     default { state }
 }
+
+fn main() {
+    var door: Door = .Shut;
+    let report = door.step(.Open { by: "sam" });
+    for output in report.outputs {
+        match output {
+            .Announce { text } => println(text),   // opened by sam
+        }
+    }
+    println(door.state_name());                    // Ajar
+}
 ```
+
+`events` declares the input vocabulary; `emits` declares a separate output
+vocabulary. A state is a unit (`state Shut,`) or carries named fields, and a
+fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
+`on Event: Source => Target`, optionally with a payload head binding
+(`on Open(by):`), `reenter`, and a `when` guard.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
 normative grammar — see §12):
 
 ```ebnf
-MachineDecl    = "machine" Ident TypeParams? "{"
+MachineDecl    = "machine" Ident TypeParams? WhereClause? "{"
                    EventsHeader
                    [ EmitsHeader ]
                    { StateDecl }
@@ -3584,13 +3584,11 @@ EventDecl      = Ident [ "{" FieldList "}" ] ;
 FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
 EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 
-StateDecl      = "state" Ident ( "{"
+StateDecl      = "state" Ident [ "{"
                    { Ident ":" Type "," }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
-                   { CompositeMember }              (* depth-1 composite only *)
-                 "}" )? "," ;
-CompositeMember = [ "initial" ] StateDecl ;         (* exactly one "initial" required *)
+                 "}" ] "," ;
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
@@ -3599,320 +3597,310 @@ TransitionBody = "," | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
 DefaultArm     = "default" "{" "state" "}" ;
 
-(* Emit expression (usable inside transition bodies and entry/exit blocks): *)
+(* Emit expression, usable in transition bodies and entry/exit blocks: *)
 EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
 ```
 
-> **Depth > 1 nesting is reserved** — a substate body may not itself contain
-> substates.  Depth-1 composite state blocks are supported; deeper nesting
-> (`depth > 1`) is a parse error: `nested composite states (depth > 1) are reserved`.
-
-**Visualisation:** `hew machine diagram <file.hew>` renders any
-`machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
-schema.  The command runs all HIR static checks before rendering, so it
-doubles as a structural validator.
+**Visualisation:** `hew machine diagram <file.hew>` renders any `machine`
+declaration as a Mermaid state diagram, Graphviz DOT, or JSON schema. The
+command runs the static checks before rendering, so it doubles as a structural
+validator.
 
 ```
 hew machine diagram traffic_light.hew                   # Mermaid (default)
 hew machine diagram traffic_light.hew --format graphviz # Graphviz DOT
 hew machine diagram traffic_light.hew --format json     # JSON schema
 hew machine diagram traffic_light.hew --machine Name    # filter one machine
-hew machine diagram traffic_light.hew --no-check        # skip HIR checks
+hew machine diagram traffic_light.hew --no-check        # skip the checks
 ```
 
 ### 3.11.2 Constraints
 
 A machine declares at least one state and one input event. Every state/input
-pair needs an explicit rule, a source wildcard or `default { state }`.
-Guarded rules require an unconditional fallback at the same or a lower
-priority. Rules after an unconditional fallback at the same priority are
-unreachable. A fixed target must be constructed on every normal path with
-all payload fields initialized.
+pair needs an explicit rule, a source wildcard or `default { state }`. Guarded
+rules require an unconditional fallback at the same or a lower priority. Rules
+after an unconditional fallback at the same priority are unreachable. A fixed
+target must be constructed on every normal path with all payload fields
+initialized.
 
-Machine evaluation is synchronous and pure: guards, transition bodies,
-hooks and their transitive helpers may compute and mutate local value data,
-but cannot perform I/O, interact with actors, suspend, access unsafe memory
-or retain external resource identity. An unknown or indirect call has no
-purity proof and is rejected. Checked computation faults remain possible.
-Inputs, states and outputs must support independent value copies.
+Machine evaluation is synchronous and pure: guards, transition bodies, hooks
+and their transitive helpers may compute and mutate local value data, but
+cannot perform I/O, interact with actors, suspend, access unsafe memory or
+retain external resource identity. An unknown or indirect call has no purity
+proof and is rejected. Checked computation faults remain possible. Inputs,
+states and outputs must support independent value copies.
 
-The native evaluator currently admits ordinary concrete machines. Const
-parameters, composite states and unclassified generic payloads are not yet
-admitted by this execution path. Parser support alone is not execution support.
+The native evaluator admits ordinary concrete machines. Const parameters,
+depth-1 composite state blocks and unclassified generic payloads parse but are
+not admitted by this execution path; parser or diagram support for a form is
+not evidence of executable support.
 
 ### 3.11.3 Transition Bodies
 
-Inside a transition body the compiler binds two implicit names:
+Inside a rule the compiler binds two implicit names, and only these two:
 
-| Binding     | Type              | Meaning                                         |
-| ----------- | ----------------- | ----------------------------------------------- |
-| `state`     | source state type | Fields of the current (source) state            |
-| `event`     | event payload     | Payload fields of the incoming event (if any)   |
+| Binding | Type              | Meaning                                       |
+| ------- | ----------------- | --------------------------------------------- |
+| `state` | source state type | Fields of the current (source) state          |
+| `event` | event payload     | Payload fields of the incoming event (if any) |
 
-```hew
-machine Elevator {
-    events {
-        GoTo { floor: i64, },
-        Arrive,
-    }
+`self` is the receiver of an actor or a method. It is not bound in a machine
+body — writing it is refused with `E_MACHINE_SELF`, which names `state`.
 
-    state Stopped { floor: i64, },
-    state Moving  { from: i64, to: i64, },
+A rule head already says which state the transition produces, so the body says
+only what the head cannot. There are three forms.
 
-    on GoTo: Stopped => Moving {
-        Moving { from: state.floor, to: event.floor }   // state.floor, event.floor
-    }
-    on Arrive: Moving => Stopped {
-        Stopped { floor: state.to }
-    }
-
-    default { state }
-}
-```
-
-**Elided target state name** — when the target state is unambiguous, the
-`TargetState { ... }` wrapper may be omitted and only the field initialiser
-list is written:
+**A unit target takes no body.** The rule ends with `,`:
 
 ```hew
-machine Accumulator {
-    events {
-        Work { amount: i64, },
-    }
-
-    state Active { count: i64, },
-
-    on Work: Active => Active { count: state.count + event.amount }
-    // equivalent to:
-    // on Work: Active => Active { Active { count: state.count + event.amount } }
-}
-```
-
-**Carrying the fields that do not change** — a state literal takes the record
-spread of §3.1, so a transition writes only what it changes and `..state`
-carries the rest:
-
-<!-- doctest: skip -->
-
-```hew
-on Sale: Filled => Filled reenter { Filled { ..state, count: state.count + 1 } }
-```
-
-**Body-less shorthand** — when a transition has no body, the compiler
-constructs the target state's zero-field (unit) variant automatically. Like
-every other bodyless structural member (§ Structural punctuation), a bodyless
-route ends with a comma:
-
-```hew
-machine Light {
-    events {
-        Toggle,
-    }
+machine Switch {
+    events { Toggle }
 
     state Off,
     state On,
 
-    on Toggle: Off => On,   // equivalent to: on Toggle: Off => On { .On }
+    on Toggle: Off => On,
     on Toggle: On => Off,
+}
+
+fn main() {
+    var switch: Switch = .Off;
+    let _ = switch.step(.Toggle);
+    println(switch.state_name());   // On
 }
 ```
 
-**State names are not variants (normative).** The name after `=>` in a
-transition head is a state name in the machine's own namespace, resolved
-against the machine's `state` declarations. It is not an enum variant in
-expression position, so the variant-spelling rule of §3.1 does not reach it
-and `on Toggle: Off => On,` is well formed as written. A comma-terminated
-bodyless route is legal in every transition form, guarded ones included. A
-machine's states desugar to an enum below the surface, and that desugar —
-not the source spelling — owns their identity.
-
-### 3.11.4 Guard Conditions (`when`)
-
-A transition may carry a boolean guard expression after the target state name:
+**A fielded target takes the field list, with the target elided.** The braces
+hold field initializers, nothing else:
 
 ```hew
-machine Bucket {
+machine Elevator {
     events {
-        Request,
+        GoTo { floor: i64 },
+        Arrive,
     }
 
-    state Allowing { tokens: i64, },
-    state Throttled,
+    state Stopped { floor: i64 },
+    state Moving { from: i64, to: i64 },
 
-    on Request: Allowing => Allowing when state.tokens > 1 {
-        Allowing { tokens: state.tokens - 1 }
-    }
-    on Request: Allowing => Throttled when state.tokens <= 1,
+    on GoTo: Stopped => Moving { from: state.floor, to: event.floor }
+    on Arrive: Moving => Stopped { floor: state.to }
 
     default { state }
 }
+
+fn main() {
+    var lift: Elevator = .Stopped { floor: 1 };
+    let _ = lift.step(.GoTo { floor: 4 });
+    println(lift.state_name());     // Moving
+    let _ = lift.step(.Arrive);
+    match lift {
+        .Stopped { floor } => println(f"stopped at {floor}"),   // stopped at 4
+        _ => println("moving"),
+    }
+}
 ```
 
-Guards are evaluated in declaration order.  The first transition whose event
-and source-state match *and* whose guard (if present) evaluates to `true` fires.
-If no guarded transition matches, evaluation falls through to wildcard rules and
-then to `default`.
+**An expression body computes the state value.** This is the form for a
+wildcard target (§3.11.4), for a rule that also emits outputs, and for the
+identity `{ state }` that keeps a fielded state unchanged. The body's final
+expression is the next state, and a state is named bare inside the machine that
+declares it:
 
-### 3.11.5 Wildcard Transitions and Priority
+```hew
+machine Meter {
+    events { Reading { value: i64 } }
+    emits { Alarm { value: i64 } }
 
-`_` in the source position matches any state.  `_` in the target position means
-"return a value of the machine type" (any variant, not a specific one).  The
-conventional identity pattern `on E: _ => _ { state }` keeps the current state
-unchanged as a value, but still runs its hooks.
+    state Watching { peak: i64 },
 
-A wildcard target is always an external transition: exit hook, transition
-body, then the resulting state's entry hook. This also applies when the
-body returns the source state's tag. `reenter` is allowed and redundant on
-a wildcard target. A fixed same-state target skips exit and entry unless
-it explicitly says `reenter`. Hook selection therefore never needs to
-speculate about or repeat an unevaluated transition body.
+    on Reading: Watching => Watching when event.value > state.peak {
+        emit Alarm { value: event.value };
+        Watching { peak: event.value }
+    }
+    on Reading: Watching => Watching { state }
+}
+
+fn main() {
+    var meter: Meter = .Watching { peak: 0 };
+    let report = meter.step(.Reading { value: 7 });
+    for output in report.outputs {
+        match output {
+            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+        }
+    }
+    let quiet = meter.step(.Reading { value: 3 });
+    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+}
+```
+
+A body that is nothing but the target the head already named — `=> Ajar { Ajar
+{ by: by } }`, `=> Shut { .Shut }`, `=> Shut { Door.Shut }` — is refused with
+`E_MACHINE_REDUNDANT_TARGET`. Write the field list, or no body at all.
+
+**State names are not variants (normative).** The name after `=>` in a rule
+head is a state name in the machine's own namespace, resolved against the
+machine's `state` declarations. It is not an enum variant in expression
+position, so the variant-spelling rule of §3.1 does not reach it and
+`on Toggle: Off => On,` is well formed as written. A machine's states desugar
+to an enum below the surface, and that desugar — not the source spelling — owns
+their identity.
+
+### 3.11.4 Guards, Wildcards and Priority
+
+A rule may carry a boolean guard after the target, written `when <expr>`.
+Guards are evaluated in declaration order; the first rule whose event and
+source state match *and* whose guard passes fires.
+
+`_` in the source position matches any state. `_` in the target position means
+the body produces a value of the machine type — any state, not a fixed one. The
+identity rule `on E: _ => _ { state }` keeps the current state as a value.
+
+```hew
+machine Conn {
+    events { Start, Bump, Kill }
+
+    state Idle,
+    state Live { hits: i64 },
+    state Dead,
+
+    on Start: Idle => Live { hits: 0 }
+    on Bump: Live => _ {
+        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
+    }
+    on Kill: _ => Dead,
+
+    default { state }
+}
+
+fn main() {
+    var conn: Conn = .Idle;
+    let _ = conn.step(.Start);
+    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Live
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Dead
+}
+```
 
 Priority order (highest to lowest):
 
-1. Explicit transitions (specific source state, no wildcard)
-2. Wildcard/`_`-source transitions
-3. `default` handler
+1. Explicit rules (specific source state, no wildcard)
+2. Wildcard-source rules
+3. The `default` handler
 
-Specific transitions always win over wildcards for the same event.
+A specific rule always wins over a wildcard for the same event. Guard success
+selects a rule; guards alone never establish coverage.
+
+### 3.11.5 Hooks and Reentry
+
+A state may declare `entry` and `exit` blocks. They see the same `state` and
+`event` bindings as a transition body and may emit outputs and mutate the
+staged payload.
+
+For a fixed target that changes state, evaluation order is exit, transition
+body, entry. A fixed same-state target runs only its body, unless the rule says
+`reenter`, which runs exit and entry as well. A wildcard target **always** runs
+exit, body and entry, including when the body produces the source state's tag;
+`reenter` is allowed and redundant there. Hook selection therefore never
+speculates about, or repeats, an unevaluated body.
+
+Source exit mutations are visible to the transition body; destination entry
+mutations become part of the committed state. Output order follows evaluation
+order across hooks and body.
 
 ### 3.11.6 Generated API
 
 Each `machine Name` becomes an ordinary state enum and methods, with these
 companion types:
 
-| Generated item | Behaviour |
-| --- | --- |
-| `NameEvent` | Typed input variants from `events` |
-| `NameOutput` | Separate typed output variants from `emits` |
-| `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for default fallback |
-| `NameStep` | Must-use report with `outputs: Vec<NameOutput>` and `disposition: NameStepDisposition` |
-| `m.step(event)` | Stages evaluation and returns `NameStep`, committing `m` only after success |
-| `m.state_name()` | Returns the current state tag as a string |
+| Generated item        | Behaviour                                                            |
+| --------------------- | -------------------------------------------------------------------- |
+| `NameEvent`           | Typed input variants from `events`                                   |
+| `NameOutput`          | Separate typed output variants from `emits`                          |
+| `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
+| `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |
+| `m.step(event)`       | Stages evaluation and returns `NameStep`, committing `m` on success  |
+| `m.state_name()`      | Returns the current state tag as a string                            |
 
-`emit` appends output data in evaluation order; it never recursively feeds
-an input event or performs the represented work. Without an `emits` header,
+`emit` appends output data in evaluation order; it never feeds an input event
+back in or performs the represented work. Without an `emits` header,
 `NameOutput` is an empty enum and the report's vector is empty. There is no
-dummy output variant or hidden queue.
+dummy output variant and no hidden queue.
 
 The step copies the current owning value into staged evaluation. A checked
 fault before commit leaves the caller's state unchanged and releases the
 candidate and any collected outputs. Successful output values remain valid
 independently of later state changes or the machine's lifetime.
 
-```hew
-machine Light {
-    events {
-        Toggle,
-    }
-
-    emits {
-        Changed { value: bool },
-    }
-
-    state Off,
-    state On,
-
-    on Toggle: Off => On {
-        emit Changed { value: true };
-        .On
-    }
-    on Toggle: On => Off {
-        emit Changed { value: false };
-        .Off
-    }
-}
-
-fn handle_output(output: LightOutput) {
-    match output {
-        .Changed { value } => println(f"changed to {value}"),
-    }
-}
-
-fn main() {
-    var light: Light = .Off;
-    let report = light.step(.Toggle);
-    for output in report.outputs {
-        // Interpret the typed output in the surrounding effectful application.
-        handle_output(output);
-    }
-}
-```
-
-**Pattern matching** — machine values can be destructured in `match`, `if let`,
+**Pattern matching** — machine values destructure in `match`, `if let`,
 `while let`, and function parameters exactly like enums:
 
 ```hew
-machine CircuitBreaker {
-    events {
-        Trip,
-    }
-
-    state Closed { failures: i64, },
+machine Breaker {
+    events { Trip, Reset }
+    state Closed { failures: i64 },
     state Open,
-    state HalfOpen,
-
-    on Trip: _ => _ { state }
-
+    on Trip: Closed => Open,
+    on Reset: Open => Closed { failures: 0 }
     default { state }
 }
 
-fn main() {
-    let cb: CircuitBreaker = .Closed { failures: 0 };
-    match cb {
-        .Closed { failures } => println(f"failures = {failures}"),
-        .Open                => println("open"),
-        .HalfOpen            => println("half-open"),
+fn describe(breaker: Breaker) -> string {
+    match breaker {
+        .Closed { failures } => f"failures = {failures}",
+        .Open => "open",
     }
+}
+
+fn main() {
+    println(describe(.Closed { failures: 2 }));   // failures = 2
+    println(describe(.Open));                     // open
 }
 ```
 
 ### 3.11.7 Using Machines Inside Actors
 
-Machines are values — they are commonly embedded as actor fields:
+Machines are values, so they are commonly held as actor fields:
 
 ```hew
-machine TcpState {
-    events {
-        Connect { local_seq: i64, remote_seq: i64 },
-        Reset,
-    }
+machine Tcp {
+    events { Connect, Close }
 
     state Closed,
-    state Established { local_seq: i64, remote_seq: i64 },
+    state Established { port: i64 },
 
-    on Connect: Closed => Established {
-        Established { local_seq: event.local_seq, remote_seq: event.remote_seq }
-    }
-    on Reset: _ => _ { .Closed }
+    on Connect: Closed => Established { port: 8080 }
+    on Close: Established => Closed,
 
     default { state }
 }
 
-fn handle_outputs(outputs: Vec<TcpStateOutput>) {
-    let _ = outputs;
-}
-
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed,
+    var tcp: Tcp = .Closed,
 
-    receive fn handle(event: TcpStateEvent) {
-        let report = tcp.step(event);
-        handle_outputs(report.outputs);
-        // React to the new state
+    receive fn handle(event: TcpEvent) {
+        let _report = tcp.step(event);
         match tcp {
-            .Established { local_seq, remote_seq } => {
-                println(f"established seq={local_seq}/{remote_seq}");
-            },
-            _ => {},
+            .Established { port } => println(f"established on {port}"),
+            .Closed => println("closed"),
         }
     }
 }
+
+fn main() {
+    let manager = spawn ConnectionManager();
+    let _ = manager.handle(.Connect);   // established on 8080
+    let _ = manager.handle(.Close);     // closed
+}
 ```
 
-Because `machine` is a value type, assigning a machine variable copies it.
-A successful `step()` updates its receiver and returns a report. Actor and
-supervisor composition must satisfy their ordinary value ownership and
-lifecycle contracts; it does not introduce a second machine runtime.
+Because `machine` is a value type, assigning a machine variable copies it. A
+successful `step()` updates its receiver and returns a report. Actor and
+supervisor composition satisfies its ordinary value ownership and lifecycle
+contracts; embedding a machine introduces no second runtime, and it does not
+move the surrounding actor's effects into `step`.
 
 ### 3.11.8 Type System Integration
 
@@ -3922,7 +3910,7 @@ lifecycle contracts; it does not introduce a second machine runtime.
   (same rule as structs).
 - Machines can be used as type parameters wherever the bound permits.
 - A machine declaration may itself be generic (`machine Lifecycle<T> { ... }`);
-  see §3.11.7 for the type arguments the substrate admits.
+  see §3.11.2 for the type arguments the evaluator admits.
 
 ---
 

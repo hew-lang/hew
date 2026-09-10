@@ -16,15 +16,15 @@ machine Gate {
     state Closed,
     state Opened { token: string },
 
-    on Open: Closed => Opened when event.token.len() > 0 {
+    on Open: Closed => Opened when !event.token.is_empty() {
         emit Accepted { token: event.token };
-        .Opened { token: event.token }
+        Opened { token: event.token }
     }
     on Open: Closed => Closed {
         emit Rejected { reason: "empty token" };
-        .Closed
+        Closed
     }
-    on Close: Opened => Closed { .Closed }
+    on Close: Opened => Closed,
     default { state }
 }
 
@@ -82,13 +82,17 @@ including owning strings, bytes and collections.
 A rule has the form:
 
 ```hew
-on Input: Source => Target reenter when condition { target_value }
+on Input: Source => Target reenter when condition { field: value }
 ```
 
-`reenter` and `when condition` are optional. A body-less rule ending in `;`
-constructs a unit target. A fixed target requires that target variant on every
-normal path, with every payload field initialized. `_` in the target position
-permits any state variant.
+`reenter` and `when condition` are optional. A rule with no body ends in `,`
+and constructs a unit target; a rule to a fielded target writes the field list
+with the target name elided (`=> Opened { token: event.token }`). An expression
+body remains for a computed target, a rule that also emits, and the identity
+`{ state }`. A body that is nothing but the target the head already named is
+refused with `E_MACHINE_REDUNDANT_TARGET`. A fixed target requires that target
+variant on every normal path, with every payload field initialized. `_` in the
+target position permits any state variant.
 
 Rules for a specific source state precede rules with wildcard source `_`.
 Within the same priority, guards are tested in source order. The first passing
@@ -103,10 +107,11 @@ unmatched inputs. The default is an identity fallback; computation belongs in
 explicit rules. Every selected explicit rule returns `Taken`, including an
 intentional same-state transition.
 
-Inside a rule, `self.field` and `state.field` refer to the refined source
-payload; `event.field` refers to the selected input payload. `state` denotes
-the current machine value. Head bindings such as `on Input(token): ...` give
-the body a local alias for `event.token`.
+Inside a rule, `state.field` refers to the refined source payload and
+`event.field` to the selected input payload; `state` alone denotes the current
+machine value. These are the only implicit bindings: `self` is an actor or
+method receiver and is refused here with `E_MACHINE_SELF`. Head bindings such
+as `on Input(token): ...` give the body a local alias for `event.token`.
 
 ## Hooks and wildcard targets
 

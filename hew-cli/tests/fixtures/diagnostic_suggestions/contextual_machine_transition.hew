@@ -1,3 +1,7 @@
+// The contextual spelling is tolerated in target position, where a state name
+// is not an enum variant (HEW-SPEC-2026 §3.11.3). It must compile without a
+// bare-variant suggestion; `bare_machine_transition.hew` covers the bare form
+// the docs teach.
 machine Switch {
     events {
         Toggle,
@@ -6,6 +10,6 @@ machine Switch {
     state Off,
     state On,
 
-    on Toggle: Off => On,
-    on Toggle: On => Off,
+    on Toggle: Off => .On,
+    on Toggle: On => .Off,
 }

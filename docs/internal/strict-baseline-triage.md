@@ -20,28 +20,30 @@ replaced the legacy lowerer. Its rows describe `main`: 85 of the 106 select
 macOS alone, and 20 rows selected Linux for tests that recovered on the final
 path.
 
-The ledger now carries 225 rows. Every remaining Linux failure in the triage
-half has one, naming the issue that will remove it; the 20 stale Linux
-selectors are gone. `make test` and `make test-strict` differ only by that
-ledger.
+The ledger now carries 225 rows: every remaining Linux failure in the triage
+half has one naming the issue that will remove it, and the 20 stale Linux
+selectors are gone. 15 of those 20 are outside the triage half and were dropped
+because the tests pass at this head. `make test` is still red here on the 101
+failures of the mechanical half; once that half lands its rows, `make test` and
+`make test-strict` differ only by this ledger.
 
 ## Dispositions
 
-- **Fixed** — repaired here; the test passes at this head.
-- **Rewritten** — the invariant still matters but the test observed a retired
+- **Fixed**: repaired here; the test passes at this head.
+- **Rewritten**: the invariant still matters but the test observed a retired
   mechanism; it now observes the current one, or a core-acceptance safety case
   does and the Rust test is gone.
-- **Deleted** — restated the old implementation, duplicated an acceptance case,
+- **Deleted**: restated the old implementation, duplicated an acceptance case,
   or covered a surface that no longer exists.
-- **Defect** — a real gap on the final path. The test stays failing with a
+- **Defect**: a real gap on the final path. The test stays failing with a
   ledger row pointing at its issue, and where the gap is a lowering or
   verification refusal, a minimal reproducer under `repros/final-core/`.
-- **Rewrite specified** — the observation mechanism is retired and the
+- **Rewrite specified**: the observation mechanism is retired and the
   replacement is written down, id by id, in #3394; the test stays red with a
   ledger row until a lane writes it. This is a work order, not a parking space.
-- **Deferred** — scheduled work with a named owner: sandbox emission (#3368)
+- **Deferred**: scheduled work with a named owner: sandbox emission (#3368)
   and native debug metadata (#3369).
-- **Fixed upstream** — recovered between the handoff baseline and this head;
+- **Fixed upstream**: recovered between the handoff baseline and this head;
   nothing in this lane touched it.
 
 The diagnostic column is what the test saw at the baseline before this lane

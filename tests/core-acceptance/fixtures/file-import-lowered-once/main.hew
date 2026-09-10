@@ -1,0 +1,5 @@
+import "handle.hew";
+
+fn main() -> i64 {
+    0
+}

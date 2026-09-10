@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-resource-type"
+intent = "A `#[resource]` type declared in a file-imported file keeps its lifecycle identity through HIR: the root constructs it, calls a method on it and closes it, and the close runs exactly once."
+source = "fixtures/file-import-resource-type/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\nclosed\n"
+exit = 0

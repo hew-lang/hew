@@ -2510,43 +2510,6 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
     ids
 }
 
-/// Answer whether the source-order third pass already lowered this module's
-/// free functions, so the module-graph fourth pass must not lower them again.
-///
-/// A file-path import (`import "lib.hew";`) splices the imported module's items
-/// into `program.items`, so the third pass emits one `HirItem::Function` per pub
-/// free fn under its source-declared name. The same module is also in
-/// `mg.topo_order`, so the fourth pass would emit a SECOND body for the same
-/// declaration under the module-qualified spelling (`lib$twice`). Both items
-/// carry the resolver's single `declaration` `DefId`, so the module would then
-/// realize one callable identity twice: `build_direct_call_symbol_index` keeps
-/// the last spelling written (the qualified one) while any consumer that
-/// resolves the surface spelling — the fn-value shim in
-/// `hew-mir/src/lower/expr.rs` — keeps the first, and the two disagree.
-///
-/// The discriminator is the module's IDENTITY, exactly as in the `Item::Impl`
-/// and `Item::Actor` arms: only file-import SPLICED modules are reached by both
-/// passes. Package-import modules are never spliced, so they are lowered here
-/// exactly once and are unaffected.
-///
-/// A GENERIC declaration is exempt. Its origin body is never a realized
-/// callable — MIR routes it to the representation substrate, not to `raw_mir` —
-/// so two origin bodies are not two realizations of one identity. The
-/// monomorphisation registry keys each instance by the origin `ItemId` the call
-/// site resolved, which for a module-qualified call is the qualified
-/// registration; dropping that item would orphan every instance it owns.
-fn free_fn_already_lowered_by_source_order_pass(
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-    mod_id: &hew_parser::module::ModuleId,
-    func: &FnDecl,
-) -> bool {
-    file_import_modules.contains(mod_id)
-        && func
-            .type_params
-            .as_ref()
-            .is_none_or(std::vec::Vec::is_empty)
-}
-
 /// Identify, by PROVENANCE (file-set subsumption), the package-import graph
 /// modules whose `impl` blocks must NOT be re-lowered by the fourth pass
 /// because a *superset* package module already lowers the identical impl
@@ -4380,7 +4343,7 @@ pub fn lower_program_with_mono_cap(
     ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -4477,7 +4440,7 @@ pub fn lower_program_with_mono_cap(
     // is the HIR-side symmetric producer.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -5287,30 +5250,24 @@ pub fn lower_program_with_mono_cap(
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
-        // Impl blocks already emitted by the source-order third pass — both
-        // root-program impls and FILE-import impls that `flatten_file_import_items`
-        // spliced into `program.items`. The module-graph walk below ALSO visits
-        // file-import modules (they ARE in `mg.topo_order`) and would call
-        // `lower_impl_block` again, producing duplicate `HirItem::Function`
-        // entries with the same unqualified `<SelfType>::<method>` symbol.
-        // Two `RawMirFunction` entries with the same name cause codegen to
-        // declare the LLVM function twice; the second `add_function` with
-        // identical type returns the same `FunctionValue`, so `lower_function`
-        // is called twice on the same LLVM function, appending duplicate basic
-        // blocks. For file-import impls the resulting LLVM module fails
-        // verification with "Global is external, but doesn't have external or
-        // weak linkage!" (the internal-linkage bodyless declaration that the
-        // rename collision produces).
+        // A file-imported module's declarations are lowered by the source-order
+        // third pass: `flatten_file_import_items` splices them into
+        // `program.items` under the declaring file's module index, and that pass
+        // owns every kind they can carry. The same modules are also in
+        // `mg.topo_order`, so this walk skips them by identity — lowering an
+        // item twice emits two `HirItem`s for one declaration, which downstream
+        // reads as two realizations of one identity (duplicate
+        // `<SelfType>::<method>` symbols and LLVM verifier failures for impls,
+        // a doubled HIR refusal for an extern or type declaration, two
+        // lifecycle admissions for one `#[resource]` record).
         //
-        // The discriminator is module ORIGIN, not the impl's bare
-        // `"<type>:<trait>"` name: only the file-import SPLICED modules are
-        // lowered twice (third-pass splice + this fourth-pass walk), so the
-        // skip targets exactly those modules by identity. Keying by name would
-        // be unsound — Hew permits distinct modules to share a bare type/trait
-        // name (the single semantic authority principle), so a file-import/root
-        // impl could silently shadow a same-named but DISTINCT package-import
-        // impl. `file_import_module_ids` cannot misroute a package impl: package
-        // modules are never in the set, so this walk emits them exactly once.
+        // The discriminator is module ORIGIN, never a bare type/trait name:
+        // Hew permits distinct modules to declare same-named types and impls,
+        // so a name-keyed skip could silently drop a package-import declaration
+        // that merely shares a name. `file_import_module_ids` holds exactly the
+        // root's spliced file-import chain; package modules are never in it and
+        // are lowered here exactly once.
+        //
         // Prefer a source-specific package module's impl over a byte-identical
         // copy absorbed by a directory superset. Unique impls in the superset
         // still lower normally. See `preferred_package_module_ids`.
@@ -5320,7 +5277,7 @@ pub fn lower_program_with_mono_cap(
         // another file's entry and byte-offset collisions across files are
         // misread as same-file types.
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -5452,13 +5409,6 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or(module_idx);
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            if free_fn_already_lowered_by_source_order_pass(
-                                &file_import_modules,
-                                mod_id,
-                                func,
-                            ) {
-                                continue;
-                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5485,13 +5435,6 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
-                            if free_fn_already_lowered_by_source_order_pass(
-                                &file_import_modules,
-                                mod_id,
-                                func,
-                            ) {
-                                continue;
-                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5652,27 +5595,18 @@ pub fn lower_program_with_mono_cap(
                             // Skip impl blocks of FILE-import modules: their
                             // items were spliced into `program.items` and
                             // already lowered by the source-order third pass.
-                            // Re-lowering here would emit duplicate
-                            // `<SelfType>::<method>` symbols (see
-                            // `file_import_module_ids`). The guard is by module
-                            // identity, so a package-import impl that merely
-                            // shares a bare type/trait name with a file-import
-                            // or root impl is never skipped.
-                            //
                             // A directory module may absorb the same impl that a
                             // source-specific submodule also contributes. Keep
                             // the source-specific copy so its qualified type and
                             // impl symbol remain aligned; skip only the duplicate
                             // impl in the superset, not the superset's unique
                             // impls.
-                            if file_import_modules.contains(mod_id)
-                                || item_is_duplicated_in_preferred_module(
-                                    program,
-                                    &preferred_modules,
-                                    mod_id,
-                                    item,
-                                )
-                            {
+                            if item_is_duplicated_in_preferred_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                            ) {
                                 continue;
                             }
                             if let TypeExpr::Named {
@@ -5801,20 +5735,6 @@ pub fn lower_program_with_mono_cap(
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
                         Item::Actor(actor) if actor.visibility.is_pub() => {
-                            // Skip actors of FILE-import modules: their items
-                            // were spliced into `program.items` and already
-                            // emitted (under the flat/root identity) by the
-                            // source-order pass; re-emitting here would
-                            // duplicate the layout. The guard is by module
-                            // PROVENANCE (`file_import_module_ids`), not bare
-                            // name: actor identity is the qualified
-                            // (module, name) pair, so a package actor that
-                            // merely shares a bare name with a root or
-                            // file-imported actor is a DISTINCT actor and must
-                            // still emit its own qualified layout here.
-                            if file_import_modules.contains(mod_id) {
-                                continue;
-                            }
                             // Fail-closed target gate: actors require the actor
                             // runtime ABI (x86_64/aarch64), same as the root-item
                             // actor arm in the source-order emit pass.

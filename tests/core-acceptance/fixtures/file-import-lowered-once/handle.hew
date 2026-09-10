@@ -1,0 +1,7 @@
+// No sibling inherent impl declares a `consume self` method, so HIR refuses
+// this declaration. The refusal proves which pass owns a file-imported item:
+// the splice pass lowers it once, so the refusal appears once.
+#[linear]
+pub type Handle {
+    id: i64,
+}

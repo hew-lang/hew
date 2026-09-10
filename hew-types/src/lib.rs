@@ -104,8 +104,7 @@ pub use stdlib_authority::{
     authority as stdlib_authority, AuthorityBinding, AuthorityDeclarationKind, AuthorityError,
     AuthorityErrorKind, AuthoritySource, DiagnosticItem, EnumVariantOrder, ExternAbiEntry,
     ExternAbiFact, ExternRuntimeCapability, ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup,
-    PreludeExport, PreludeExportKind, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY,
-    SUBSTRATE_SOURCES,
+    PreludeExport, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
 };
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;

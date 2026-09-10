@@ -10040,12 +10040,7 @@ impl Checker {
         );
 
         for export in prelude_exports {
-            if export.kind != crate::PreludeExportKind::Item {
-                continue;
-            }
-            let Some(source_name) = export.name.as_ref() else {
-                continue;
-            };
+            let source_name = &export.name;
             let binding = export.alias.as_ref().unwrap_or(source_name);
             if protected_names.contains(source_name) {
                 self.protected_prelude_bindings

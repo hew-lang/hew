@@ -1711,18 +1711,7 @@ impl Checker {
             self.current_module.clone(),
             self.current_module_idx,
             module_name.to_string(),
-        )) || crate::stdlib_authority::authority()
-            .prelude_exports()
-            .iter()
-            .filter(|export| export.kind == crate::PreludeExportKind::Module)
-            .any(|export| {
-                export.alias.as_deref().unwrap_or_else(|| {
-                    export
-                        .module
-                        .rsplit_once('.')
-                        .map_or(export.module.as_str(), |(_, leaf)| leaf)
-                }) == module_name
-            })
+        ))
     }
 
     /// Whether this module spelling resolves to a user-source declaration.

@@ -335,9 +335,30 @@ fn ordinary_builtin_declarations_remain_shadowable() {
     );
 }
 
+/// Check a root program that binds `helper` as an imported module. No module
+/// is in scope without its import (A409), so a module-shaped diagnostic needs
+/// a real binding.
+fn check_source_importing_helper(source: &str) -> TypeCheckOutput {
+    let mut root = hew_parser::parse(&format!("import helper;\n{source}"));
+    assert!(root.errors.is_empty(), "fixture parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(vec![].into());
+    Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program)
+}
+
 #[test]
 fn modules_and_types_are_rejected_in_value_position() {
-    let output = check_source("fn main() { let module_value = math; let type_value = Vec; }");
+    let output = check_source_importing_helper(
+        "fn main() { let module_value = helper; let type_value = Vec; }",
+    );
     assert!(output
         .errors
         .iter()
@@ -373,7 +394,7 @@ fn bare_type_remains_rejected_as_a_value_after_dotted_path_dispatch() {
 
 #[test]
 fn module_member_lookup_uses_path_diagnostics() {
-    let output = check_source("fn main() { math.missing(); }");
+    let output = check_source_importing_helper("fn main() { helper.missing(); }");
     assert!(output
         .errors
         .iter()

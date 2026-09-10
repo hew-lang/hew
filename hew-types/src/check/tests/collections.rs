@@ -3757,3 +3757,48 @@ fn map_constructor_against_a_non_map_expectation_is_rejected() {
         output.direct_call_targets
     );
 }
+
+/// `finalize_hashmap_admission` replays deferred `HashMap` key admission
+/// after inference settles, on a scope it rebuilds from the type parameters
+/// recorded at the deferred site. That rebuild used to carry only the
+/// parameter *names*, dropping their declared bounds, so a generic actor's
+/// `K: Hash + Eq` field key was checked against an empty bound set and
+/// spuriously rejected. The declared bounds must survive to the deferred
+/// check.
+#[test]
+fn generic_actor_hashmap_field_key_bounds_survive_deferred_admission() {
+    let output = check_source(
+        r"
+        actor Cache<K: Hash + Eq, V: Clone> {
+            var entries: HashMap<K, V>,
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "K: Hash + Eq must satisfy HashMap key admission for a generic actor field; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Negative control for the above: a key type parameter declared without
+/// `Hash` must still be refused as a `HashMap` key, so the fix does not
+/// disable the admission check itself.
+#[test]
+fn generic_actor_hashmap_field_key_without_hash_bound_is_still_rejected() {
+    let output = check_source(
+        r"
+        actor Cache<K: Eq, V: Clone> {
+            var entries: HashMap<K, V>,
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "K without a Hash bound must still be rejected as a HashMap key"
+    );
+}

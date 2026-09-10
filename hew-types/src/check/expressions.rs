@@ -5338,6 +5338,36 @@ impl Checker {
         names
     }
 
+    /// Like `current_type_param_names`, but carries each name's declared
+    /// bounds instead of discarding them. A deferred check that replays
+    /// admission after inference settles (`finalize_hashmap_admission`) needs
+    /// the actual bounds to answer `type_param_has_marker_bound`; the
+    /// original declaration scope is gone by then, so this is the one point
+    /// that captures it.
+    pub(super) fn current_type_param_bounds_map(&self) -> HashMap<String, Vec<String>> {
+        let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
+        for frame in &self.current_type_param_bounds {
+            for (name, param_bounds) in &frame.bounds {
+                bounds
+                    .entry(name.clone())
+                    .or_insert_with(|| param_bounds.clone());
+            }
+        }
+        if let Some(fn_name) = &self.current_function {
+            if let Some(sig) = self.fn_sigs.get(fn_name) {
+                for param_name in &sig.type_params {
+                    bounds.entry(param_name.clone()).or_insert_with(|| {
+                        sig.type_param_bounds
+                            .get(param_name)
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                }
+            }
+        }
+        bounds
+    }
+
     /// Equality uses the selected Eq authority after declarations and inference
     /// settle. Ordinary numeric comparisons bypass this gate and retain IEEE
     /// float semantics; selecting aggregate Eq does not change ordering.

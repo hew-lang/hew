@@ -4740,18 +4740,17 @@ impl Checker {
                     .unwrap_or(hew_parser::ast::OverflowPolicy::Block),
             );
         }
-        let mut fields = HashMap::new();
-        let mut field_order: Vec<String> = Vec::new();
-        let mut hole_vars = Vec::new();
-        for field in &ad.fields {
-            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
-            field_order.push(field.name.clone());
-            fields.insert(field.name.clone(), field_ty);
-        }
 
         // Extract type-param names from the declaration so the TypeDef's
         // positional `type_params` vector and ordinary nominal bounds share
         // one declaration authority. Actor arguments must also be Send.
+        //
+        // Computed and pushed into scope before field/init-param resolution
+        // below: an actor's own type parameters (`actor Cache<K: Hash + Eq,
+        // V: Clone>`) must already be in scope while its state fields and
+        // init parameters are resolved, or a field's `HashMap<K, V>` key
+        // admission cannot see K's declared bounds and is rejected as if K
+        // had none.
         let type_param_names: Vec<String> =
             ad.type_params.iter().map(|tp| tp.name.clone()).collect();
         let mut type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
@@ -4760,6 +4759,22 @@ impl Checker {
             if !bounds.iter().any(|bound| bound == "Send") {
                 bounds.push("Send".into());
             }
+        }
+        let has_type_params = !type_param_names.is_empty();
+        if has_type_params {
+            self.current_type_param_bounds.push(TypeParamScope::new(
+                type_param_bounds.clone(),
+                HashMap::new(),
+            ));
+        }
+
+        let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
+        let mut hole_vars = Vec::new();
+        for field in &ad.fields {
+            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
+            field_order.push(field.name.clone());
+            fields.insert(field.name.clone(), field_ty);
         }
 
         let type_def = TypeDef {
@@ -4808,6 +4823,9 @@ impl Checker {
         } else {
             vec![]
         };
+        if has_type_params {
+            self.current_type_param_bounds.pop();
+        }
         self.actor_init_params.insert(identity.to_string(), params);
         // A field without a default that init assigns is init's to
         // initialize (D447). An init parameter sharing a field's name is

@@ -1335,25 +1335,23 @@ impl Checker {
         // Registration sees legal forward references before their declarations
         // exist. Keep this obligation in the existing inference queue and check
         // it once the complete declaration graph and substitution are available.
-        let is_abstract_key_param = matches!(
-            &resolved_key,
-            Ty::Named { name, args, builtin: None }
-                if args.is_empty() && self.is_type_param_in_scope(name)
-        );
-        let type_params = self.current_type_param_names();
+        let type_param_bounds = self.current_type_param_bounds_map();
         self.deferred_hashmap_admission
             .entry(SpanKey::in_module(span, self.current_module_idx))
             .and_modify(|check| {
-                check.is_abstract_key_param |= is_abstract_key_param;
-                check.type_params.extend(type_params.iter().cloned());
+                for (name, bounds) in &type_param_bounds {
+                    check
+                        .type_param_bounds
+                        .entry(name.clone())
+                        .or_insert_with(|| bounds.clone());
+                }
             })
             .or_insert_with(|| DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: resolved_key.clone(),
                 val_ty: resolved_val.clone(),
                 source_module: self.current_module.clone(),
-                is_abstract_key_param,
-                type_params,
+                type_param_bounds,
             });
         if !self.type_decls_registered
             || resolved_key.has_inference_var()

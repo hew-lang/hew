@@ -2234,8 +2234,12 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) key_ty: Ty,
     pub(super) val_ty: Ty,
     pub(super) source_module: Option<String>,
-    pub(super) is_abstract_key_param: bool,
-    pub(super) type_params: HashSet<String>,
+    /// Declared bounds for every type parameter in scope at the record site,
+    /// keyed by name. Carried verbatim into `finalize_hashmap_admission`'s
+    /// replayed scope so a bare key type parameter's bounds (e.g. `K: Hash +
+    /// Eq`) survive to the deferred check and decide admission there — the
+    /// scope is the one authority; there is no separate abstract-key flag.
+    pub(super) type_param_bounds: HashMap<String, Vec<String>>,
 }
 
 /// A `HashMap` value-copy obligation deferred until inference has settled.

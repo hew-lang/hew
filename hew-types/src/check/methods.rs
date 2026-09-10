@@ -431,8 +431,10 @@ impl Checker {
     }
 
     /// Finish map admission after inference and declaration registration.
-    /// The saved template scope distinguishes abstract members from undefined
-    /// declarations; concrete keys are checked at their exact instantiation.
+    /// The replayed scope carries each type parameter's declared bounds from
+    /// the record site, so a bare key type parameter (e.g. `K` in a generic
+    /// actor's `HashMap<K, V>` field) is checked against its own `Hash + Eq`
+    /// bounds rather than skipped or checked against an empty bound set.
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
         let mut reported_var_pairs = HashSet::new();
@@ -465,16 +467,10 @@ impl Checker {
             } else {
                 self.current_type_param_bounds
                     .push(super::types::TypeParamScope::new(
-                        check
-                            .type_params
-                            .into_iter()
-                            .map(|name| (name, Vec::new()))
-                            .collect(),
+                        check.type_param_bounds,
                         HashMap::new(),
                     ));
-                if !check.is_abstract_key_param {
-                    self.validate_collection_key_capabilities(&key, "Map", &check.span);
-                }
+                self.validate_collection_key_capabilities(&key, "Map", &check.span);
                 self.current_type_param_bounds.pop();
             }
             for error in &mut self.errors[before..] {
@@ -11238,8 +11234,7 @@ mod tests {
                 key_ty: Ty::Error,
                 val_ty: Ty::I64,
                 source_module: None,
-                is_abstract_key_param: false,
-                type_params: HashSet::new(),
+                type_param_bounds: HashMap::new(),
             },
         );
 
@@ -11266,8 +11261,7 @@ mod tests {
                 key_ty: Ty::String,
                 val_ty: Ty::Var(TypeVar::fresh()),
                 source_module: None,
-                is_abstract_key_param: false,
-                type_params: HashSet::new(),
+                type_param_bounds: HashMap::new(),
             },
         );
 
@@ -11284,10 +11278,10 @@ mod tests {
         );
     }
 
-    /// An abstract key parameter already admitted under its generic bounds has
-    /// no concrete layout fact until monomorphization substitutes K/V.
+    /// A bare key type parameter is checked against the bounds recorded at
+    /// the deferred site, not skipped: `K: Hash + Eq` must admit cleanly.
     #[test]
-    fn finalize_hashmap_admission_skips_abstract_key_param() {
+    fn finalize_hashmap_admission_admits_abstract_key_param_with_hash_eq_bounds() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 60..70;
         checker.deferred_hashmap_admission.insert(
@@ -11297,8 +11291,10 @@ mod tests {
                 key_ty: Ty::normalize_named("K".to_string(), vec![]),
                 val_ty: Ty::normalize_named("V".to_string(), vec![]),
                 source_module: None,
-                is_abstract_key_param: true,
-                type_params: HashSet::from(["K".into(), "V".into()]),
+                type_param_bounds: HashMap::from([
+                    ("K".into(), vec!["Hash".into(), "Eq".into()]),
+                    ("V".into(), vec![]),
+                ]),
             },
         );
 
@@ -11306,7 +11302,40 @@ mod tests {
 
         assert!(
             checker.errors.is_empty(),
-            "abstract HashMap key params are checked via declared bounds, not layout eligibility; got: {:?}",
+            "K: Hash + Eq must satisfy Map key admission via its declared bounds; got: {:?}",
+            checker.errors
+        );
+    }
+
+    /// Negative control: a bare key type parameter without a `Hash` bound
+    /// must still be refused, so admission decides from the recorded bounds
+    /// rather than skipping bare type parameters altogether.
+    #[test]
+    fn finalize_hashmap_admission_rejects_abstract_key_param_missing_hash_bound() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 60..70;
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("K".to_string(), vec![]),
+                val_ty: Ty::normalize_named("V".to_string(), vec![]),
+                source_module: None,
+                type_param_bounds: HashMap::from([
+                    ("K".into(), vec!["Eq".into()]),
+                    ("V".into(), vec![]),
+                ]),
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied && e.message.contains("Hash")),
+            "K without a Hash bound must still be rejected as a Map key; got: {:?}",
             checker.errors
         );
     }
@@ -11361,8 +11390,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                is_abstract_key_param: false,
-                type_params: HashSet::new(),
+                type_param_bounds: HashMap::new(),
             },
         );
         checker.deferred_hashmap_admission.insert(
@@ -11372,8 +11400,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                is_abstract_key_param: false,
-                type_params: HashSet::new(),
+                type_param_bounds: HashMap::new(),
             },
         );
 

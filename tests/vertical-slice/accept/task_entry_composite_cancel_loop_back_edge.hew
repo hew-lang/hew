@@ -24,7 +24,7 @@ actor Driver {
     receive fn run_value() -> Sum {
         var out: Sum = Sum { total: 0, count: 0 };
         scope {
-            fork t = compute();
+            let t = fork compute();
             let v = await t;
             out = v;
         };
@@ -34,7 +34,7 @@ actor Driver {
 
 fn main() {
     let d = spawn Driver;
-    let r = await d.run_value();
+    let r = d.run_value();
     match r {
         .Ok(s) => println(f"total={s.total} count={s.count}"),
         .Err(_) => println("failed"),

@@ -16,7 +16,7 @@ actor Driver {
     receive fn run_value() -> Point {
         var out: Point = Point { x: 0, y: 0 };
         scope {
-            fork t = compute();
+            let t = fork compute();
             let v = await t;
             out = v;
         };
@@ -26,7 +26,7 @@ actor Driver {
 
 fn main() {
     let d = spawn Driver;
-    let r = await d.run_value();
+    let r = d.run_value();
     match r {
         .Ok(p) => println(f"x={p.x} y={p.y}"),
         .Err(_) => println("failed"),

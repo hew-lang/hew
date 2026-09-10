@@ -1513,11 +1513,8 @@ unsafe fn element_needs_drop(v: *mut HewVec) -> bool {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let vec = &*v;
-        if vec.layout.is_null() {
-            vec.elem_kind == ElemKind::String
-        } else {
-            (*vec.layout).drop_fn.is_some()
-        }
+        let descriptor_drop = !vec.layout.is_null() && (*vec.layout).drop_fn.is_some();
+        descriptor_drop || vec.elem_kind == ElemKind::String
     }
 }
 
@@ -1537,8 +1534,8 @@ unsafe fn drop_elements(v: *mut HewVec, indices: impl Iterator<Item = usize>) {
                 for index in indices {
                     drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
                 }
+                return;
             }
-            return;
         }
         if vec.elem_kind == ElemKind::String {
             for index in indices {

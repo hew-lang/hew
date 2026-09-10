@@ -81,7 +81,7 @@ fn main() {
     let second = spawn Client;
     let third = spawn Client;
     let room = spawn ChatRoom(first: first, second: second, third: third);
-    room.broadcast("clean");
+    let _ = room.broadcast("clean");
     match room.fence() {
         .Ok(_) => println("ROOM_FENCE_REPLIED"),
         .Err(_) => println("ROOM_DIED"),

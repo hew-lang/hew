@@ -1077,8 +1077,11 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
         .starts_with("right.render.CollisionResult::<impl "));
 }
 
+/// A user module laid out like the shipped channel keeps its own declarations:
+/// its `Sender` and `Receiver` are source nominals under the importer's owner,
+/// never the builtin channel types the shipped module publishes.
 #[test]
-fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
+fn user_channel_lookalike_keeps_its_own_sender_and_receiver_identity() {
     let user_module = hew_parser::parse(
         r"
         pub type Sender { marker: i64, }
@@ -1093,7 +1096,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
 
     let mut root = hew_parser::parse(
         r"
-        import std.channel.channel as ch;
+        import std.channel as ch;
         fn probe(tx: ch.Sender, rx: ch.Receiver) {}
         ",
     );
@@ -1126,7 +1129,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
             name,
             args,
             builtin: None,
-        } if name == "std.channel.channel.Sender" && args.is_empty()
+        } if name == "std.channel.Sender" && args.is_empty()
     ));
     assert!(matches!(
         &params[1],
@@ -1134,7 +1137,7 @@ fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
             name,
             args,
             builtin: None,
-        } if name == "std.channel.channel.Receiver" && args.is_empty()
+        } if name == "std.channel.Receiver" && args.is_empty()
     ));
 }
 

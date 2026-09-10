@@ -2633,18 +2633,7 @@ fn resolve_file_imports_internal(
                 }
 
                 if let Some((canonical, form)) = resolved.into_iter().next() {
-                    // The shipped stdlib directory peers are alternate
-                    // spellings of one compiler-owned module. Promote those
-                    // imports to the entry source before loading the
-                    // completed source set.
                     if is_module_import
-                        && hew_types::module_registry::canonical_stdlib_module_for_source(
-                            &canonical,
-                        )
-                        .is_some()
-                    {
-                        canonical_directory_module_entry_source(&canonical)
-                    } else if is_module_import
                         && is_directory_module_entry_alias(&decl.path, &canonical, form)
                     {
                         // A directory module is spelled by its directory, and
@@ -2672,31 +2661,45 @@ fn resolve_file_imports_internal(
                         && canonical_directory_module_entry_source(&canonical) != canonical
                         && decl.path.len() >= 2
                     {
-                        // A user package's peer file has no identity of its
-                        // own — spec 3.5.1 merges every peer into the
-                        // directory module's namespace. Importing it
-                        // directly would parse it standalone, isolated from
-                        // the sibling declarations it expects to share a
-                        // scope with, and any reference to one of those
-                        // siblings would surface downstream as a plain
-                        // "undefined function"/"undefined variable" with no
-                        // hint that the fix is to import the directory
-                        // module instead. Refuse here, before that isolated
-                        // module ever gets built.
-                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
-                        let message = format!(
-                            "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
-                        );
-                        return Err(match read_source(ctx.documents, source_file) {
-                            Ok(module_source) => FrontendFailure::coded_message_at(
-                                "E_PEER_IMPORT",
-                                message,
-                                items[*idx].1.clone(),
-                                &module_source,
-                                &source_file.display().to_string(),
-                            ),
-                            Err(_) => FrontendFailure::coded_message("E_PEER_IMPORT", message),
-                        });
+                        // The shipped stdlib's directory peers stay importable
+                        // by file (`std.net.http.http_client`, D461); they load
+                        // through the directory's entry source so the module is
+                        // complete however it was reached. The entry-file
+                        // spelling is refused above for the stdlib too, so one
+                        // directory module has exactly one name everywhere.
+                        if hew_types::module_registry::canonical_stdlib_module_for_source(
+                            &canonical,
+                        )
+                        .is_some()
+                        {
+                            canonical_directory_module_entry_source(&canonical)
+                        } else {
+                            // A user package's peer file has no identity of its
+                            // own — spec 3.5.1 merges every peer into the
+                            // directory module's namespace. Importing it
+                            // directly would parse it standalone, isolated from
+                            // the sibling declarations it expects to share a
+                            // scope with, and any reference to one of those
+                            // siblings would surface downstream as a plain
+                            // "undefined function"/"undefined variable" with no
+                            // hint that the fix is to import the directory
+                            // module instead. Refuse here, before that isolated
+                            // module ever gets built.
+                            let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                            let message = format!(
+                                "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
+                            );
+                            return Err(match read_source(ctx.documents, source_file) {
+                                Ok(module_source) => FrontendFailure::coded_message_at(
+                                    "E_PEER_IMPORT",
+                                    message,
+                                    items[*idx].1.clone(),
+                                    &module_source,
+                                    &source_file.display().to_string(),
+                                ),
+                                Err(_) => FrontendFailure::coded_message("E_PEER_IMPORT", message),
+                            });
+                        }
                     } else {
                         canonical
                     }

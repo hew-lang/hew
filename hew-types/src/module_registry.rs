@@ -363,12 +363,6 @@ fn canonical_stdlib_module_source_in_roots(
 }
 
 /// Return the declaration owner selected by an import's resolved source.
-///
-/// `std::channel::channel` is the legacy filesystem spelling for
-/// `std/channel/channel.hew`; the repeated basename does not introduce a
-/// second source module. Collapse it only when the resolved path is the exact
-/// shipped channel source, so an identically-spelled user package retains its
-/// own nominal owner.
 #[must_use]
 pub fn canonical_source_module_identity(
     requested_dotted: &str,
@@ -378,22 +372,10 @@ pub fn canonical_source_module_identity(
     // shipped module.  Resolve their owner from the trusted source path so a
     // direct `std.net.http.http_client` import cannot create a second nominal
     // owner beside the assembled `std.net.http` module.
-    if let Some(owner) = source_paths
+    source_paths
         .iter()
         .find_map(|source| canonical_stdlib_module_for_source(source))
-    {
-        return owner;
-    }
-
-    if requested_dotted == "std.channel.channel"
-        && source_paths
-            .iter()
-            .any(|source| is_canonical_stdlib_module_source(source, "std.channel"))
-    {
-        "std.channel".to_string()
-    } else {
-        requested_dotted.to_string()
-    }
+        .unwrap_or_else(|| requested_dotted.to_string())
 }
 
 #[derive(Debug)]
@@ -1203,6 +1185,12 @@ mod tests {
             canonical_source_module_identity("std.net.http", &[stdlib.join("net/http/http.hew")]),
             "std.net.http"
         );
+        let user_lookalike = std::env::temp_dir().join("user/std/net/http/http_client.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.net.http.http_client", &[user_lookalike]),
+            "std.net.http.http_client",
+            "only a shipped source names a directory module; a user source keeps its own owner"
+        );
     }
 
     #[test]
@@ -1214,29 +1202,6 @@ mod tests {
         fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
 
         assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
-    }
-
-    #[test]
-    fn channel_repeated_basename_maps_only_exact_shipped_source_to_canonical_owner() {
-        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("std/channel/channel.hew");
-        assert_eq!(
-            canonical_source_module_identity("std.channel.channel", &[shipped]),
-            "std.channel"
-        );
-
-        let user_lookalike = std::env::temp_dir().join("user/std/channel/channel.hew");
-        assert_eq!(
-            canonical_source_module_identity("std.channel.channel", &[user_lookalike]),
-            "std.channel.channel",
-            "a same-spelled user module must retain its own nominal owner"
-        );
-        assert_eq!(
-            canonical_source_module_identity("std.channel", &[]),
-            "std.channel",
-            "the canonical owner is already stable"
-        );
     }
 
     #[test]
@@ -1628,7 +1593,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-channel-physical-alias");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std.channel.channel as ch;\n",
+            "import std.channel as ch;\n",
         )
         .expect("write signature importer");
 
@@ -1641,51 +1606,12 @@ mod tests {
         assert_eq!(
             reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
             Some("std.channel.Sender".to_string()),
-            "the selected shipped source collapses its repeated physical basename"
+            "the shipped source publishes its declarations under the directory owner"
         );
         assert_eq!(
             reg.canonical_registry_signature_type_identity("ch.Foreign", "signature_importer",),
             None,
             "an imported qualifier cannot authorize a type absent from that exact source"
-        );
-    }
-
-    #[test]
-    fn imported_registry_signature_user_lookalike_is_order_independent() {
-        let mut reg = registry();
-        reg.load("std.channel")
-            .expect("prime canonical shipped channel cache");
-
-        let fixture = TestDir::new("registry-signature-channel-user-lookalike");
-        let channel_dir = fixture.root.join("std/channel");
-        fs::create_dir_all(&channel_dir).expect("create user channel path");
-        fs::write(
-            channel_dir.join("channel.hew"),
-            "pub type Sender { marker: i64, }\n",
-        )
-        .expect("write user channel lookalike");
-        fs::write(
-            fixture.root.join("signature_importer.hew"),
-            "import std.channel.channel as ch;\n",
-        )
-        .expect("write user signature importer");
-
-        // Model a later importer with a different exact resolution context.
-        // The already-cached shipped canonical owner must not grant authority
-        // to this same-spelled user source or rewrite it back to std.channel.
-        reg.search_paths = vec![fixture.root.clone()];
-        reg.load("signature_importer")
-            .expect("load user-lookalike importer");
-
-        assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
-            Some("std.channel.channel.Sender".to_string()),
-            "the user source retains its nested nominal owner despite shipped-cache order"
-        );
-        assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Receiver", "signature_importer",),
-            None,
-            "the shipped Receiver declaration must not leak through the canonical cache"
         );
     }
 

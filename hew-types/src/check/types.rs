@@ -578,10 +578,15 @@ pub struct TypeCheckOutput {
     pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity.
     ///
-    /// Key shapes: `{module}.{name}` for source free functions,
-    /// `Type::method` for methods, and bare names for builtins. Source
-    /// declarations publish only their canonical spelling; this map remains
-    /// a name-keyed semantic registry until consumers move to `DefId`.
+    /// Key shapes: `{module}.{name}` for source free functions — the module
+    /// being the identity table's render, so a module reached under two import
+    /// spellings keys one namespace — `Type::method` for methods, and bare
+    /// names for compiler builtins and `extern "C"` symbols, whose namespace is
+    /// the linker's rather than a module's. No source declaration is reachable
+    /// under a bare name: an import publishes a binding into the importing
+    /// file's `{module}.{name}` namespace and records the declaration it names
+    /// in `import_fn_name_aliases`, so a module sees what it declares or
+    /// imports and nothing else.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -3512,14 +3517,6 @@ pub struct Checker {
     /// walk, the root surface, import registration), and a refused path is
     /// refused on every one of them.
     pub(super) reported_declaration_collisions: std::collections::HashSet<String>,
-    /// Import spellings that name a module reached under a different
-    /// canonical owner, mapped to that owner.
-    ///
-    /// `import std.channel.channel;` names the primary file of the directory
-    /// module `std.channel`, and registration keys the module's items by the
-    /// spelling the import used while the declarations were minted under the
-    /// canonical owner. Declaration lookup resolves the one through the other.
-    pub(super) canonical_module_spellings: std::collections::HashMap<String, String>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -4083,7 +4080,6 @@ impl Checker {
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),
-            canonical_module_spellings: std::collections::HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
             current_module_idx: 0,
             local_type_defs: HashSet::new(),

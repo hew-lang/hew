@@ -1,0 +1,48 @@
+// `Node.id()` reports the key-derived node identity as `Option<NodeId>`:
+// `None` before a stable identity is loaded, `Some` after a start, and `Some`
+// again on every later call.
+fn starts(consume config: NodeConfig) -> bool {
+    match Node.start(config) {
+        .Ok(_) => true,
+        .Err(_) => false,
+    }
+}
+
+fn configured_at(bind: string) -> NodeConfig {
+    var config = NodeConfig.at(bind);
+    config.key = "/tmp/hew-node-id-case.key";
+    config
+}
+
+fn identified() -> bool {
+    match Node.id() {
+        .Some(_) => true,
+        .None => false,
+    }
+}
+
+fn main() -> i64 {
+    if identified() {
+        return 1;
+    }
+
+    if !starts(configured_at("127.0.0.1:0")) {
+        return 2;
+    }
+
+    if !identified() {
+        return 3;
+    }
+    // A second read hands back the same identity, so reading one does not
+    // disturb the next.
+    if !identified() {
+        return 4;
+    }
+    // The key-derived identity and its exported credential agree on presence.
+    if Node.identity_key().len() != 64 {
+        return 5;
+    }
+
+    Node.shutdown();
+    0
+}

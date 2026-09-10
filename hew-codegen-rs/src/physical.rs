@@ -4395,6 +4395,76 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
             }
+            RuntimeCallFamily::NodeId => {
+                // `hew_node_api_id` writes the identity and returns 0 only
+                // when a stable key-derived identity is loaded.
+                let option = variant_carrier(action)?;
+                let glue = self
+                    .module
+                    .variant_glue
+                    .iter()
+                    .find(|candidate| candidate.id == option)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("node identity lacks its Option recipe".into())
+                    })?;
+                let payload = glue
+                    .variants
+                    .first()
+                    .and_then(|case| case.fields.first())
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("node identity lacks its payload type".into())
+                    })?
+                    .ty
+                    .clone();
+                let layout = self.module.target.layout(&payload).ok_or_else(|| {
+                    CodegenError::FailClosed("node identity payload lacks its layout".into())
+                })?;
+                let identity_ty = llvm_type(self.ctx, &layout.repr)?;
+                let slot = self
+                    .value_emitter()
+                    .entry_scratch(identity_ty, "node.id.slot")?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_id",
+                    self.ctx
+                        .i32_type()
+                        .fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
+                )?;
+                let status = self
+                    .runtime_call_value(function, &[slot.into()], "node.id.status")?
+                    .into_int_value();
+                let present = self.ctx.append_basic_block(self.value, "node.id.present");
+                let absent = self.ctx.append_basic_block(self.value, "node.id.absent");
+                let complete = self.ctx.append_basic_block(self.value, "node.id.complete");
+                let destination = self.slots[required_result()?.0 as usize];
+                let found = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        status,
+                        self.ctx.i32_type().const_zero(),
+                        "node.id.found",
+                    )
+                    .llvm_ctx("check node identity status")?;
+                self.builder
+                    .build_conditional_branch(found, present, absent)
+                    .llvm_ctx("select node identity result")?;
+                self.builder.position_at_end(present);
+                let value = self
+                    .builder
+                    .build_load(identity_ty, slot, "node.id.value")
+                    .llvm_ctx("load the written node identity")?;
+                self.write_variant_value(destination, 0, &[value], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node identity hit")?;
+                self.builder.position_at_end(absent);
+                self.write_variant_value(destination, 1, &[], option)?;
+                self.builder
+                    .build_unconditional_branch(complete)
+                    .llvm_ctx("finish node identity miss")?;
+                self.builder.position_at_end(complete);
+            }
             RuntimeCallFamily::NodeIdentityKey => {
                 let function = get_or_declare_external(
                     self.llvm,

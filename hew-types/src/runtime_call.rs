@@ -155,6 +155,9 @@ pub enum RuntimeValueKind {
     /// The exact checked result type for a compiler-owned operation whose
     /// generic payload is not carried by an argument (Node.lookup).
     NodeLookupResult,
+    /// A builtin nominal with no type parameters, named by its own identity
+    /// rather than by a source spelling (`NodeId`).
+    BuiltinNominal(BuiltinType),
     /// Ordinary type construction, shared by optional results and projections.
     Applied(BuiltinType, &'static [Self]),
     /// Ordinary product results, including receiver replacement with a value.
@@ -226,6 +229,9 @@ impl RuntimeValueKind {
             Self::Duration => ResolvedTy::Duration,
             Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(name, Vec::new()),
+            Self::BuiltinNominal(builtin) => {
+                ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new())
+            }
             Self::MonomorphicBuiltin(builtin) => {
                 let fact =
                     crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
@@ -2521,6 +2527,7 @@ impl RuntimeCallFamily {
             "Node::lookup" => Some(Self::NodeLookup),
             "Node::shutdown" => Some(Self::NodeShutdown),
             "Node::identity_key" => Some(Self::NodeIdentityKey),
+            "Node::id" => Some(Self::NodeId),
             _ => None,
         }
     }
@@ -5326,10 +5333,17 @@ impl RuntimeCallFamily {
             },
             Self::NodeId => RuntimeOpRow {
                 symbol: "Node::id",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Option,
+                        &[K::BuiltinNominal(BuiltinType::NodeId)],
+                    )),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeIdentityKey => RuntimeOpRow {
@@ -9365,6 +9379,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::SharedPayload
                     | RuntimeValueKind::NodeLookupResult
+                    | RuntimeValueKind::BuiltinNominal(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
                     | RuntimeValueKind::IoHandle(_)

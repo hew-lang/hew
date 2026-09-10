@@ -1811,16 +1811,16 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
 //   1. Print any stdout the program produced before failure to its own stdout.
 //   2. Exit with the child's exact exit code (not always 1).
 //
-// `panic()` is the Hew builtin that exits non-zero; it uses exit code 101
-// (Rust's panic convention), which is distinct from the CLI's own error exit
-// code (1) and therefore makes propagation detectable.
+// `panic()` is the Hew builtin that exits non-zero; every native path exits 1,
+// so these tests pin the child's own status rather than a status the CLI could
+// only have invented.
 
 #[test]
 fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
 
-    // `panic` exits the child with code 101.  Without the fix `hew eval`
-    // would always return 1 regardless of the child's code.
+    // `panic` exits the child with code 1.  Without the fix `hew eval`
+    // would report its own status regardless of the child's code.
     let output = Command::new(hew_binary())
         .args(["eval", r#"panic("deliberate failure")"#])
         .current_dir(repo_root())
@@ -1862,8 +1862,8 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     let dir = support::tempdir();
     let path = dir.path().join("failing_eval.hew");
     // A single expression that unconditionally panics.  `panic` exits with
-    // code 101 (Hew's convention), which is distinct from the CLI's own
-    // error exit code (1) and makes propagation detectable.
+    // code 1, and the CLI must propagate the child's status rather than
+    // substitute one of its own.
     std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
 
     let output = Command::new(hew_binary())
@@ -2110,8 +2110,8 @@ fn eval_json_runtime_failure() {
 
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
     assert_eq!(
-        v["exit_code"], 101,
-        "expected child exit code 101 (Hew panic): {v}"
+        v["exit_code"], 1,
+        "expected child exit code 1 (Hew panic): {v}"
     );
     assert!(
         v["stderr"].as_str().unwrap_or("").contains("deliberate"),
@@ -2419,7 +2419,7 @@ fn eval_json_file_ok() {
 //
 // File shape that actually exercises the prepend path:
 //   chunk 1 (bare expression): print("prior-chunk\n")   ← emits stdout, succeeds
-//   chunk 2 (bare expression): panic("boom")            ← fails, exit 101
+//   chunk 2 (bare expression): panic("boom")            ← fails, exit 1
 //
 // Chunk 1 runs in its own compiled binary and writes to stdout.  That output
 // is captured into `collected`.  When chunk 2's binary panics, the fix prepends
@@ -2435,7 +2435,7 @@ fn eval_json_file_ok() {
 
 /// Write a two-chunk .hew file:
 ///   chunk 1 — bare `print("prior-chunk\n")` (complete expression, emits stdout)
-///   chunk 2 — bare `panic("boom")`           (complete expression, exits 101)
+///   chunk 2 — bare `panic("boom")`           (complete expression, exits 1)
 ///
 /// The blank line between them ensures the chunk-splitter in
 /// `eval_source_file_cli` finishes chunk 1 before starting chunk 2.
@@ -2487,8 +2487,8 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     );
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101{ctx}"
+        Some(1),
+        "expected child exit code 1{ctx}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -2526,10 +2526,7 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
         v["status"], "runtime_failure",
         "unexpected status: {v}{ctx}"
     );
-    assert_eq!(
-        v["exit_code"], 101,
-        "expected child exit code 101: {v}{ctx}"
-    );
+    assert_eq!(v["exit_code"], 1, "expected child exit code 1: {v}{ctx}");
     let captured = v["stdout"].as_str().unwrap_or("");
     assert!(
         captured.contains("prior-chunk"),

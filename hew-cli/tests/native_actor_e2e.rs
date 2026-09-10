@@ -614,7 +614,7 @@ fn actor_close_waits_for_handler_cleanup() {
 actor Closer {
     receive fn started(holder: LocalPid<Holder>) {
         let result = scope within 1ms {
-            await holder;
+            closed(holder);
             "unexpected clean wait"
         } handle failure {
             match failure { .Deadline { message } => "waiter-deadline", .Fault { message } => "unexpected fault", }
@@ -643,7 +643,7 @@ fn actor_termination_fault_reaches_waiter_recovery() {
 fn main() {
     let broken = spawn Broken();
     let _ = mailbox(broken, on_full: .Reject).fail();
-    let result = scope { await broken; "unexpected clean termination" } handle failure {
+    let result = scope { closed(broken); "unexpected clean termination" } handle failure {
         match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
     };
     println(result);

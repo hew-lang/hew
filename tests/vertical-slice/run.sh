@@ -2871,16 +2871,10 @@ expect_check_fail_contains \
 # CheckerBoundaryViolation. The fixture pins the authoritative error site
 # (check_call in calls.rs, TypeErrorKind::ClosureCapturesDuplexHandle).
 
-# Reject: a closure whose body suspends is a coroutine ramp, while the current
-# `fn` type does not carry suspension through direct, nested, and higher-order
-# invocation paths. Refuse the construct before codegen so no caller can read
-# the ramp's continuation handle as its declared result.
-expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/closure_await_fail_closed.hew" \
-    "E_NOT_YET_IMPLEMENTED" \
-    "closure_await_fail_closed"
-grep -qF -- 'suspension inside a closure' "${reject_output}" ||
-    record_failure "row ${LINENO}" "assertion failed"
+# Accept: a closure whose body suspends lowers to a coroutine ramp and the
+# caller reads its declared result, not the ramp's continuation handle. The
+# fixture asks an actor from inside a closure and prints the reply.
+run_accept_expect_stdout "closure_await_suspends"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The

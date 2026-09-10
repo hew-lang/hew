@@ -486,14 +486,42 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
         .expect("read drop-only Receiver Vec LLVM IR");
     assert!(
-        ir.contains("@__hew_vec_elem_layout_channel_receiver_drop_only")
-            && ir.contains("call ptr @hew_vec_new_with_elem_layout")
+        ir.contains("call ptr @hew_vec_new_with_elem_layout")
             && ir.contains("call void @hew_vec_push_owned_move")
-            && ir.contains("call void @hew_vec_free_owned")
-            && ir.contains("define internal void @__hew_vec_channel_receiver_drop_inplace")
-            && ir.contains("call void @hew_channel_receiver_close")
-            && ir.contains("ptr null, ptr @__hew_vec_channel_receiver_drop_inplace"),
-        "Receiver Vec must emit clone-null descriptor, move ingress, and one close-on-free wrapper:\n{ir}"
+            && ir.contains("call void @hew_vec_free_owned"),
+        "Receiver Vec must build through the element-layout descriptor and move its endpoint in:\n{ir}"
+    );
+    // The descriptor is the subject, not its mangled name: an element-layout
+    // constant carrying a NULL clone slot is what makes the Vec drop-only, and
+    // the drop thunk it names is where the endpoint's close must land. Matching
+    // the emitted symbol out of the descriptor keeps this off the emission
+    // order, which decides only the numeric suffix.
+    let descriptor = ir
+        .lines()
+        .find(|line| line.contains("= internal constant { i64, i64, i8, ptr, ptr, ptr }"))
+        .unwrap_or_else(|| panic!("no Vec element-layout descriptor emitted:\n{ir}"));
+    let clone_null_prefix = "i8 2, ptr null, ptr @";
+    let drop_symbol = descriptor
+        .split_once(clone_null_prefix)
+        .unwrap_or_else(|| {
+            panic!("Receiver Vec descriptor must carry a null clone slot:\n{descriptor}")
+        })
+        .1
+        .split(',')
+        .next()
+        .expect("drop thunk symbol")
+        .trim();
+    let drop_thunk = ir
+        .split_once(&format!("define internal void @{drop_symbol}(ptr %0) {{"))
+        .unwrap_or_else(|| panic!("descriptor names a missing drop thunk @{drop_symbol}:\n{ir}"))
+        .1;
+    let drop_body = drop_thunk
+        .split_once("\n}")
+        .expect("drop thunk body is unterminated")
+        .0;
+    assert!(
+        drop_body.contains("call void @hew_channel_receiver_close"),
+        "the drop-only element thunk @{drop_symbol} must close the endpoint exactly once:\n{drop_body}"
     );
 
     // Lost coverage: `--dump-mir raw` (retired) used to also confirm each of

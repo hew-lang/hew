@@ -917,8 +917,12 @@ fn test_bad_eq() {
         assert_eq!(summary.failed, 1, "{}", describe(&summary));
         if let TestOutcome::Failed(failure) = &summary.results[0].outcome {
             assert_eq!(failure.kind, TestFailureKind::Runtime);
+            // The desugar names the relation that was violated, plus both
+            // rendered operands, so a failure report says what went wrong
+            // without the reader re-running the test.
             assert!(
-                failure.message.contains("assert_eq"),
+                failure.message.contains("assertion failed: left != right")
+                    && failure.message.contains("left: 1"),
                 "error message: {}",
                 failure.message
             );

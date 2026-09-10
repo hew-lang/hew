@@ -1,6 +1,6 @@
 //! Closure probe with two reads from a captured connection.
 //! Each ordinary read waits for data or EOF; the closure must preserve its
-//! captured handle across suspension. This is a probe, not acceptance evidence.
+//! captured handle across suspension. `await_e2e` runs this under both pools.
 
 import std.encoding.utf8;
 
@@ -48,7 +48,7 @@ fn main() {
         hew_tcp_listener_local_port(listener)
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let _ = reader.go(0);
+    fork reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("payload");
     sleep(300ms);

@@ -282,13 +282,13 @@ mod tests {
     /// a change to the harness.
     #[test]
     fn tool_compile_parses_identically_to_the_hidden_compile_alias() {
-        let argv = ["--dump-mir", "raw", "sample.hew"];
+        let argv = ["--dump-mir", "physical", "sample.hew"];
 
         let namespaced = parse_compile(["hew", "tool", "compile"].into_iter().chain(argv));
         let alias = parse_compile(["hew", "compile"].into_iter().chain(argv));
 
         assert_eq!(format!("{namespaced:?}"), format!("{alias:?}"));
-        assert_eq!(namespaced.dump_mir.as_deref(), Some("raw"));
+        assert_eq!(namespaced.dump_mir.as_deref(), Some("physical"));
         assert_eq!(namespaced.input, PathBuf::from("sample.hew"));
     }
 

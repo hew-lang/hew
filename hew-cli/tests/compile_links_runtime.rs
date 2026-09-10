@@ -186,11 +186,12 @@ fn wire_decode_valid_bytes_round_trips() {
 }
 
 /// A wire-type `Type.decode(bytes)` on MALFORMED bytes (an empty buffer that is
-/// not a valid encoding) must FAIL CLOSED with a clean runtime trap — never a
-/// SIGSEGV. The deserialize thunk frees its partial reconstruction and returns
-/// null; before the null-branch fix the call site loaded that null pointer and
-/// segfaulted (exit 139 / signal 11). Now it traps `HEW_TRAP_WIRE_DECODE_FAILED`
-/// and aborts via `llvm.trap` (SIGTRAP/SIGILL), the fail-closed boundary.
+/// not a valid encoding) must FAIL CLOSED through the structured fault reporter:
+/// an attributed `WireDecodeFailed (210)` line and exit 1 — never a SIGSEGV.
+/// The deserialize thunk frees its partial reconstruction and returns null;
+/// before the null-branch fix the call site loaded that null pointer and
+/// segfaulted (exit 139 / signal 11). The segfault negative is the point of
+/// this test, so it is asserted directly rather than inferred from the code.
 #[cfg(unix)]
 #[test]
 fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
@@ -217,21 +218,28 @@ fn wire_decode_malformed_bytes_fails_closed_not_segfault() {
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr),
     );
-    // The crash MUST be a trap signal (SIGILL=4 / SIGTRAP=5 from `llvm.trap`),
-    // never SIGSEGV (11) — the segfault this fix closed.
+    // The negative this test exists for: never the segfault the null-branch fix
+    // closed.
     let signal = run_output.status.signal();
     assert_ne!(
         signal,
         Some(libc::SIGSEGV),
-        "malformed wire decode segfaulted (SIGSEGV) instead of trapping closed\nstdout: {}\nstderr: {}",
+        "malformed wire decode segfaulted (SIGSEGV) instead of failing closed\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr),
     );
-    assert!(
-        matches!(signal, Some(libc::SIGILL | libc::SIGTRAP)),
-        "expected a clean trap signal (SIGILL/SIGTRAP) on malformed wire decode, got signal {signal:?} / code {:?}\nstdout: {}\nstderr: {}",
+    // A reported fault exits 1 under the one-exit rule; dying on any signal
+    // would mean the reporter never ran.
+    assert_eq!(
         run_output.status.code(),
+        Some(1),
+        "malformed wire decode must exit 1 through the fault reporter, got signal {signal:?}\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&run_output.stdout),
         String::from_utf8_lossy(&run_output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&run_output.stderr);
+    assert!(
+        stderr.contains("WireDecodeFailed (210)"),
+        "malformed wire decode must attribute the failure to WireDecodeFailed (210)\nstderr: {stderr}",
     );
 }

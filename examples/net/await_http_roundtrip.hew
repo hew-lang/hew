@@ -1,6 +1,7 @@
 //! HTTP/1.1 client and server using ordinary accept and read calls.
-//! Client and server must run concurrently; completion-call launch ordering
-//! still needs review before this example is treated as runnable.
+//! Client and server must run concurrently, so `main` launches both handlers
+//! with `fork`: a discarded receive call is an ask, and waiting on the server
+//! would leave nobody to make the request.
 
 import std.encoding.utf8;
 
@@ -104,8 +105,8 @@ actor Client {
 fn main() {
     let s = spawn Server(addr: "127.0.0.1:18110");
     let c = spawn Client(url: "http://127.0.0.1:18110/hello");
-    let _ = s.serve(0);
-    let _ = c.go(0);
+    fork s.serve(0);
+    fork c.go(0);
     sleep(1500ms);
     println("main-done");
 }

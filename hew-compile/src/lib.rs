@@ -4975,9 +4975,12 @@ fn main() {
         // sharing a body symbol.
         let expected = [
             (hew_types::DefId::for_test("main.root_first"), "root_first"),
+            // A file import is spliced into the root namespace and lowered
+            // once, so its declaration keeps the declaring file's identity
+            // while its emitted body carries the root's bare symbol.
             (
                 hew_types::DefId::for_test("file_helpers.file_first"),
-                "file_helpers$file_first",
+                "file_first",
             ),
             (
                 hew_types::DefId::for_test("hew.genhelpers.first"),

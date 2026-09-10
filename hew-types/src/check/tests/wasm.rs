@@ -689,12 +689,12 @@ mod wasm_rejects {
             checker.enable_wasm_target();
             let output = checker.check_program(&parsed.program);
             assert_eq!(
-                checker
+                output
                     .import_fn_name_aliases
                     .get(&(None, 0, binding.to_string())),
                 Some(&"std.fs.read".to_string()),
                 "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
-                checker.import_fn_name_aliases,
+                output.import_fn_name_aliases,
             );
             let rejections = output
                 .errors

@@ -8248,6 +8248,9 @@ struct LowerCtx {
     /// published, keyed by the file that wrote the import. The companion of
     /// `published_bare_const_owners`; see `imported_rewrite_symbol`.
     import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
+    /// Root-scope value bindings the program itself declares. A root
+    /// declaration outranks a name an import published into the root scope.
+    root_value_bindings: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8574,6 +8577,7 @@ impl LowerCtx {
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
             import_fn_name_aliases: tc_output.import_fn_name_aliases.clone(),
+            root_value_bindings: tc_output.root_value_bindings.clone(),
             identity: tc_output.identity.clone(),
         }
     }
@@ -9211,6 +9215,11 @@ impl LowerCtx {
             .and_then(|rewrites| rewrites.get(name))
         {
             return Some(symbol.clone());
+        }
+        // The root's own value namespace outranks a name an import published
+        // into it, exactly as it does in the checker's use-time gate.
+        if self.current_module_name.is_none() && self.root_value_bindings.contains(name) {
+            return None;
         }
         self.import_fn_name_aliases
             .get(&(

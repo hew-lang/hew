@@ -743,99 +743,6 @@ impl VecValueOp {
             _ => return None,
         })
     }
-
-    const fn contract(self) -> RuntimeSemanticContract {
-        use RuntimeArgumentEffect::{Borrow, Copy, Move};
-        use RuntimeResultEffect::{
-            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
-        };
-        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
-        const VECTOR: RuntimeValueKind = Receiver(BuiltinType::Vec);
-        const ELEMENT_TYPE: RuntimeValueKind = TypeArgument(0);
-        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: VECTOR,
-            effect: Borrow,
-        };
-        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: VECTOR,
-            effect: Move,
-        };
-        const INDEX: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: I64,
-            effect: Copy,
-        };
-        const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: ELEMENT_TYPE,
-            effect: RuntimeArgumentEffect::Value,
-        };
-        match self {
-            Self::New => runtime_semantic_contract(&[], FreshOwned(VECTOR), &[]),
-            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
-            Self::Contains => runtime_semantic_contract(
-                &[
-                    READ,
-                    RuntimeArgumentContract {
-                        ty: ELEMENT_TYPE,
-                        effect: Borrow,
-                    },
-                ],
-                BitCopy(Bool),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Index => runtime_semantic_contract(
-                &[READ, INDEX],
-                IndependentValue(ELEMENT_TYPE),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::Get => runtime_semantic_contract(
-                &[READ, INDEX],
-                IndependentValue(Applied(BuiltinType::Option, &[ELEMENT_TYPE])),
-                &[],
-            ),
-            Self::Push => {
-                runtime_semantic_contract(&[WRITE, ELEMENT], UpdatedReceiver(VECTOR), &[])
-            }
-            Self::Set => runtime_semantic_contract(
-                &[WRITE, INDEX, ELEMENT],
-                UpdatedReceiver(VECTOR),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(VECTOR), &[]),
-            // Both removals hand one element to the caller and shrink the
-            // vector; only which end they take from differs, and that is a
-            // physical choice.
-            Self::Pop | Self::TakeFirst => runtime_semantic_contract(
-                &[WRITE],
-                UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::Remove => runtime_semantic_contract(
-                &[WRITE, INDEX],
-                UpdatedReceiverAndValue(Tuple(&[VECTOR, ELEMENT_TYPE])),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::IndexBorrow => runtime_semantic_contract(
-                &[READ, INDEX],
-                RuntimeResultEffect::Borrowed(ELEMENT_TYPE),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::GetBorrow => runtime_semantic_contract(
-                &[READ, INDEX],
-                RuntimeResultEffect::Borrowed(Applied(BuiltinType::Option, &[ELEMENT_TYPE])),
-                &[],
-            ),
-            Self::Slice => runtime_semantic_contract(
-                &[READ, INDEX, INDEX],
-                IndependentValue(VECTOR),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-            Self::SliceFrom => runtime_semantic_contract(
-                &[READ, INDEX],
-                IndependentValue(VECTOR),
-                &[RuntimeLogicalFailure::IndexOutOfBounds],
-            ),
-        }
-    }
 }
 
 /// Ordinary map operations with independently owned keys and values.
@@ -875,92 +782,6 @@ impl MapValueOp {
             crate::HashMapMethod::Clone | crate::HashMapMethod::IsEmpty => return None,
         })
     }
-
-    const fn contract(self) -> RuntimeSemanticContract {
-        use RuntimeArgumentEffect::{Borrow, Move};
-        use RuntimeResultEffect::{
-            BitCopy, Borrowed, FreshOwned, IndependentValue, UpdatedReceiver,
-            UpdatedReceiverAndValue,
-        };
-        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
-        const MAP: RuntimeValueKind = Receiver(BuiltinType::HashMap);
-        const KEY: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: TypeArgument(0),
-            effect: Borrow,
-        };
-        // The map adopts the value: it owns the slot's contents once the
-        // insertion returns. Lowering hands over an independent owner, so a
-        // caller that still reads its own binding keeps it.
-        const VALUE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: TypeArgument(1),
-            effect: RuntimeArgumentEffect::Value,
-        };
-        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: MAP,
-            effect: Borrow,
-        };
-        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: MAP,
-            effect: Move,
-        };
-        const OPTIONAL_VALUE: RuntimeValueKind = Applied(BuiltinType::Option, &[TypeArgument(1)]);
-        match self {
-            Self::New => runtime_semantic_contract(&[], FreshOwned(MAP), &[]),
-            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
-            Self::Index => runtime_semantic_contract(
-                &[READ, KEY],
-                IndependentValue(TypeArgument(1)),
-                &[
-                    RuntimeLogicalFailure::CallbackFault,
-                    RuntimeLogicalFailure::IndexOutOfBounds,
-                ],
-            ),
-            Self::Get => runtime_semantic_contract(
-                &[READ, KEY],
-                IndependentValue(OPTIONAL_VALUE),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::GetBorrow => runtime_semantic_contract(
-                &[READ, KEY],
-                Borrowed(OPTIONAL_VALUE),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::ContainsKey => runtime_semantic_contract(
-                &[READ, KEY],
-                BitCopy(Bool),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Insert => runtime_semantic_contract(
-                &[WRITE, KEY, VALUE],
-                UpdatedReceiver(MAP),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Remove => runtime_semantic_contract(
-                &[WRITE, KEY],
-                UpdatedReceiverAndValue(Tuple(&[MAP, OPTIONAL_VALUE])),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(MAP), &[]),
-            Self::Keys => runtime_semantic_contract(
-                &[READ],
-                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(0)])),
-                &[],
-            ),
-            Self::Values => runtime_semantic_contract(
-                &[READ],
-                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(1)])),
-                &[],
-            ),
-            Self::Entries => runtime_semantic_contract(
-                &[READ],
-                IndependentValue(Applied(
-                    BuiltinType::Vec,
-                    &[Tuple(&[TypeArgument(0), TypeArgument(1)])],
-                )),
-                &[],
-            ),
-        }
-    }
 }
 
 /// Ordinary set operations using the same element and receiver type templates.
@@ -988,47 +809,6 @@ impl SetValueOp {
             crate::HashSetMethod::ToVec => Self::Elements,
             crate::HashSetMethod::Clone | crate::HashSetMethod::IsEmpty => return None,
         })
-    }
-
-    const fn contract(self) -> RuntimeSemanticContract {
-        use RuntimeArgumentEffect::{Borrow, Move};
-        use RuntimeResultEffect::{
-            BitCopy, FreshOwned, IndependentValue, UpdatedReceiver, UpdatedReceiverAndValue,
-        };
-        use RuntimeValueKind::{Applied, Bool, Receiver, Tuple, TypeArgument, I64};
-        const SET: RuntimeValueKind = Receiver(BuiltinType::HashSet);
-        const ELEMENT: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: TypeArgument(0),
-            effect: Borrow,
-        };
-        const READ: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: SET,
-            effect: Borrow,
-        };
-        const WRITE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: SET,
-            effect: Move,
-        };
-        match self {
-            Self::New => runtime_semantic_contract(&[], FreshOwned(SET), &[]),
-            Self::Len => runtime_semantic_contract(&[READ], BitCopy(I64), &[]),
-            Self::Contains => runtime_semantic_contract(
-                &[READ, ELEMENT],
-                BitCopy(Bool),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Insert | Self::Remove => runtime_semantic_contract(
-                &[WRITE, ELEMENT],
-                UpdatedReceiverAndValue(Tuple(&[SET, Bool])),
-                &[RuntimeLogicalFailure::CallbackFault],
-            ),
-            Self::Clear => runtime_semantic_contract(&[WRITE], UpdatedReceiver(SET), &[]),
-            Self::Elements => runtime_semantic_contract(
-                &[READ],
-                IndependentValue(Applied(BuiltinType::Vec, &[TypeArgument(0)])),
-                &[],
-            ),
-        }
     }
 }
 
@@ -1073,13 +853,6 @@ macro_rules! encoding_operations {
                 }
             }
 
-            fn from_c_symbol(symbol: &str) -> Option<(EncodingFormat, Self)> {
-                match symbol {
-                    $(concat!("hew_json_", $suffix) => Some((EncodingFormat::Json, Self::$op)),
-                      concat!("hew_yaml_", $suffix) => Some((EncodingFormat::Yaml, Self::$op))),+,
-                    _ => None,
-                }
-            }
         }
     };
 }
@@ -1221,54 +994,6 @@ const fn runtime_semantic_contract(
         failures,
     }
 }
-
-const SIR_I64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::I64,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_BOOL_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::Bool,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_I32_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::I32,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_U32_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::U32,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_U64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::U64,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_F64_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::F64,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::String,
-    effect: RuntimeArgumentEffect::Borrow,
-}];
-const SIR_STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
-    &[SIR_STRING_BORROW[0], SIR_STRING_BORROW[0]];
-/// `hew_regex_match(slot_index, text)`: the index selects the module's
-/// compiled handle, the text is only read.
-const SIR_REGEX_MATCH: &[RuntimeArgumentContract] = &[SIR_I64_COPY[0], SIR_STRING_BORROW[0]];
-const SIR_BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::Bytes,
-    effect: RuntimeArgumentEffect::Borrow,
-}];
-const SIR_U8_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::U8,
-    effect: RuntimeArgumentEffect::Copy,
-}];
-const SIR_NO_FAILURES: &[RuntimeLogicalFailure] = &[];
-const SIR_INDEX_FAILURES: &[RuntimeLogicalFailure] = &[RuntimeLogicalFailure::IndexOutOfBounds];
-const SIR_CHAR_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-    ty: RuntimeValueKind::Char,
-    effect: RuntimeArgumentEffect::Copy,
-}];
 
 impl ConsumeVerdict {
     /// `true` iff the verdict directs the callee to own/drop the argument —
@@ -1414,36 +1139,7 @@ pub enum MathIntrinsic {
     Round,
 }
 
-impl MathIntrinsic {
-    const fn semantic_contract(self) -> RuntimeSemanticContract {
-        use RuntimeResultEffect::BitCopy;
-        use RuntimeValueKind::{F64, I64};
-        const FLOAT_PAIR: &[RuntimeArgumentContract] = &[SIR_F64_COPY[0], SIR_F64_COPY[0]];
-        const INTEGER_PAIR: &[RuntimeArgumentContract] = &[SIR_I64_COPY[0], SIR_I64_COPY[0]];
-        match self {
-            Self::AbsI64 => runtime_semantic_contract(
-                SIR_I64_COPY,
-                BitCopy(I64),
-                &[RuntimeLogicalFailure::IntegerOverflow],
-            ),
-            Self::MinI64 | Self::MaxI64 => {
-                runtime_semantic_contract(INTEGER_PAIR, BitCopy(I64), &[])
-            }
-            Self::MinF64 | Self::MaxF64 | Self::Pow => {
-                runtime_semantic_contract(FLOAT_PAIR, BitCopy(F64), &[])
-            }
-            Self::Sqrt
-            | Self::Exp
-            | Self::Log
-            | Self::Sin
-            | Self::Cos
-            | Self::AbsF64
-            | Self::Floor
-            | Self::Ceil
-            | Self::Round => runtime_semantic_contract(SIR_F64_COPY, BitCopy(F64), &[]),
-        }
-    }
-}
+impl MathIntrinsic {}
 
 // =============================================================================
 // RuntimeCallFamily — closed-set typed catalog
@@ -1464,43 +1160,7 @@ pub enum PrintKind {
     Str,
 }
 
-impl PrintKind {
-    const fn arguments(self) -> &'static [RuntimeArgumentContract] {
-        use RuntimeArgumentEffect::{Borrow, Copy};
-        use RuntimeValueKind::{Bool, String, F64, I32, U32, U64, U8};
-        match self {
-            Self::I64 => SIR_I64_COPY,
-            Self::I32 => &[RuntimeArgumentContract {
-                ty: I32,
-                effect: Copy,
-            }],
-            Self::U8 => &[RuntimeArgumentContract {
-                ty: U8,
-                effect: Copy,
-            }],
-            Self::U32 => &[RuntimeArgumentContract {
-                ty: U32,
-                effect: Copy,
-            }],
-            Self::U64 => &[RuntimeArgumentContract {
-                ty: U64,
-                effect: Copy,
-            }],
-            Self::F64 => &[RuntimeArgumentContract {
-                ty: F64,
-                effect: Copy,
-            }],
-            Self::Bool => &[RuntimeArgumentContract {
-                ty: Bool,
-                effect: Copy,
-            }],
-            Self::Str => &[RuntimeArgumentContract {
-                ty: String,
-                effect: Borrow,
-            }],
-        }
-    }
-}
+impl PrintKind {}
 
 /// Closed-set discriminator for every compiler-known runtime / builtin
 /// call. One variant per `(method, generic-arity)` tuple. Adding a new
@@ -2590,280 +2250,6 @@ impl RuntimeCallFamily {
         }
     }
 
-    /// Time is scalar arithmetic over the runtime's monotonic clock: every one
-    /// of these copies its operands in and bit-copies one scalar out, with no
-    /// ownership consequence. `duration` has its own semantic value kind;
-    /// `instant` is already `ResolvedTy::I64` by the time SIR sees it, so it
-    /// needs none.
-    const fn time_semantic_contract(self) -> Option<RuntimeSemanticContract> {
-        use RuntimeArgumentEffect::Copy;
-        use RuntimeResultEffect::BitCopy;
-        use RuntimeValueKind::{Bool, Duration, I64};
-
-        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
-        const DURATION_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: Duration,
-            effect: Copy,
-        }];
-        const INSTANT_COPY: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: I64,
-            effect: Copy,
-        }];
-        const INSTANT_PAIR_COPY: &[RuntimeArgumentContract] = &[INSTANT_COPY[0], INSTANT_COPY[0]];
-
-        Some(match self {
-            Self::InstantNow => runtime_semantic_contract(&[], BitCopy(I64), NO_FAILURES),
-            Self::InstantElapsed => {
-                runtime_semantic_contract(INSTANT_COPY, BitCopy(Duration), NO_FAILURES)
-            }
-            Self::InstantDurationSince => {
-                runtime_semantic_contract(INSTANT_PAIR_COPY, BitCopy(Duration), NO_FAILURES)
-            }
-            Self::DurationNanos
-            | Self::DurationMicros
-            | Self::DurationMillis
-            | Self::DurationSecs
-            | Self::DurationMins
-            | Self::DurationHours => {
-                runtime_semantic_contract(DURATION_COPY, BitCopy(I64), NO_FAILURES)
-            }
-            Self::DurationAbs => {
-                runtime_semantic_contract(DURATION_COPY, BitCopy(Duration), NO_FAILURES)
-            }
-            Self::DurationIsZero => {
-                runtime_semantic_contract(DURATION_COPY, BitCopy(Bool), NO_FAILURES)
-            }
-            _ => return None,
-        })
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat per-family contract table reads more clearly as one match \
-                  than split across helper functions"
-    )]
-    const fn text_variant_semantic_contract(self) -> Option<RuntimeSemanticContract> {
-        use RuntimeArgumentEffect::{Borrow, Copy};
-        use RuntimeResultEffect::{BitCopy, FreshOwned, FreshOwnedVariant};
-        use RuntimeValueKind::{Bytes, String, I64};
-
-        const STRING_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: String,
-            effect: Borrow,
-        }];
-        const STRING_PAIR_BORROW: &[RuntimeArgumentContract] =
-            &[STRING_BORROW[0], STRING_BORROW[0]];
-        const STRING_TRIPLE_BORROW: &[RuntimeArgumentContract] =
-            &[STRING_BORROW[0], STRING_BORROW[0], STRING_BORROW[0]];
-        const STRING_INDEX_BORROW: &[RuntimeArgumentContract] = &[
-            STRING_BORROW[0],
-            RuntimeArgumentContract {
-                ty: I64,
-                effect: Copy,
-            },
-        ];
-        const BYTES_BORROW: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: Bytes,
-            effect: Borrow,
-        }];
-        const BYTES_GET: &[RuntimeArgumentContract] = &[
-            BYTES_BORROW[0],
-            RuntimeArgumentContract {
-                ty: I64,
-                effect: Copy,
-            },
-        ];
-        const NO_FAILURES: &[RuntimeLogicalFailure] = &[];
-
-        Some(match self {
-            Self::StringFind => runtime_semantic_contract(
-                STRING_PAIR_BORROW,
-                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
-                    BuiltinType::Option,
-                    &[I64],
-                )),
-                NO_FAILURES,
-            ),
-            Self::StringCharAt => runtime_semantic_contract(
-                STRING_INDEX_BORROW,
-                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
-                    BuiltinType::Option,
-                    &[RuntimeValueKind::Char],
-                )),
-                NO_FAILURES,
-            ),
-            Self::BytesGet => runtime_semantic_contract(
-                BYTES_GET,
-                RuntimeResultEffect::IndependentValue(RuntimeValueKind::Applied(
-                    BuiltinType::Option,
-                    &[RuntimeValueKind::U8],
-                )),
-                NO_FAILURES,
-            ),
-            Self::StringIndex => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                BitCopy(RuntimeValueKind::Char),
-                SIR_INDEX_FAILURES,
-            ),
-            Self::BytesSlice => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: Bytes,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(Bytes),
-                SIR_INDEX_FAILURES,
-            ),
-            Self::BytesSliceFrom => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: Bytes,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(Bytes),
-                SIR_INDEX_FAILURES,
-            ),
-            Self::StringSliceCodepoints => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(String),
-                SIR_INDEX_FAILURES,
-            ),
-            Self::StringSliceCodepointsFrom => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(String),
-                SIR_INDEX_FAILURES,
-            ),
-            Self::StringSlice => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(String),
-                NO_FAILURES,
-            ),
-
-            Self::StringRepeat => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: I64,
-                        effect: Copy,
-                    },
-                ],
-                FreshOwned(String),
-                NO_FAILURES,
-            ),
-            Self::StringSplit => RuntimeSemanticContract {
-                arguments: STRING_PAIR_BORROW,
-                result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
-                failures: NO_FAILURES,
-            },
-            Self::StringLines => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(RuntimeValueKind::Applied(BuiltinType::Vec, &[String])),
-                failures: NO_FAILURES,
-            },
-            Self::StringChars => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(RuntimeValueKind::Applied(
-                    BuiltinType::Vec,
-                    &[RuntimeValueKind::Char],
-                )),
-                failures: NO_FAILURES,
-            },
-            Self::StringReplace => {
-                runtime_semantic_contract(STRING_TRIPLE_BORROW, FreshOwned(String), NO_FAILURES)
-            }
-            Self::StringToUppercase
-            | Self::StringToLowercase
-            | Self::StringTrim
-            | Self::StringClone => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
-            Self::StringToBytes => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: FreshOwned(Bytes),
-                failures: NO_FAILURES,
-            },
-            Self::StringByteLen => RuntimeSemanticContract {
-                arguments: STRING_BORROW,
-                result: BitCopy(I64),
-                failures: NO_FAILURES,
-            },
-            Self::BytesDecodeUtf8 => RuntimeSemanticContract {
-                arguments: BYTES_BORROW,
-                result: FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode),
-                failures: NO_FAILURES,
-            },
-            Self::BytesDecodeUtf8Lossy => RuntimeSemanticContract {
-                arguments: BYTES_BORROW,
-                result: FreshOwned(String),
-                failures: NO_FAILURES,
-            },
-            _ => return None,
-        })
-    }
-
     /// Canonical checker signature for compiler-registered builtins whose
     /// source identity differs from their runtime ABI symbol.
     #[must_use]
@@ -3001,845 +2387,4109 @@ impl RuntimeCallFamily {
         }
     }
 
-    /// Resolve the C-ABI symbol the family lowers to. Total function;
-    /// every variant has exactly one symbol (the bijection guarantee).
-    ///
-    /// For families whose symbols are in `known_runtime_symbols`,
-    /// the returned string is allowlist-recognised (consumer
-    /// invariant). For pre-staged families (Channel, Stream, Sink,
-    /// Node, Math, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`), the
-    /// returned string is the codegen `Terminator::Call` intercept
-    /// callee name; a follow-up wires those producers and folds them into the
-    /// allowlist.
+    /// The one row describing this runtime operation.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::too_many_lines,
-        reason = "bijection enumeration IS the substrate; one arm per family"
+        reason = "one declarative row per runtime operation is the authority"
     )]
-    pub fn c_symbol(self) -> &'static str {
+    pub const fn row(self) -> RuntimeOpRow {
+        use RuntimeArgumentContract as A;
+        use RuntimeArgumentEffect as E;
+        use RuntimeResultEffect as R;
+        use RuntimeValueKind as K;
         match self {
-            Self::AsyncIo(op) => op.c_symbol(),
-            Self::FileRead(op) => op.c_symbol(),
-            Self::Tcp(op) => op.c_symbol(),
-            Self::Encoding { format, op } => op.c_symbol(format),
-            // Actor
-            Self::ActorAsk => "hew_actor_ask",
-            Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
-            Self::ActorCooperate => "hew_actor_cooperate",
-            Self::ActorDemonitor => "hew_actor_demonitor",
-            Self::ActorGenSinkComplete => "hew_actor_gen_sink_complete",
-            Self::ActorGenSinkRegister => "hew_actor_gen_sink_register",
-            Self::ActorLink => "hew_actor_link",
-            Self::LinkRemote => "hew_node_link_remote_location",
-            Self::ActorMonitor => "hew_actor_monitor",
-            Self::ActorSelf => "hew_actor_self",
-            Self::ActorSendById => "hew_actor_send_by_id",
-            Self::ActorSpawn => "hew_actor_spawn",
-            Self::ActorUnlink => "hew_actor_unlink",
-            // Auto-mutex
-            Self::AutoMutexAlloc => "hew_auto_mutex_alloc",
-            Self::AutoMutexFree => "hew_auto_mutex_free",
-            Self::AutoMutexLock => "hew_auto_mutex_lock",
-            Self::AutoMutexUnlock => "hew_auto_mutex_unlock",
-            // Bytes
-            Self::BytesAppend => "hew_bytes_append",
-            Self::BytesClear => "hew_bytes_clear",
-            Self::BytesContains => "hew_bytes_contains",
-            Self::BytesDecodeUtf8 => "hew_bytes_decode_utf8",
-            Self::BytesDecodeUtf8Lossy => "hew_bytes_decode_utf8_lossy",
-            Self::BytesGet => "hew_bytes_get",
-            Self::BytesIndex => "hew_bytes_index",
-            Self::BytesIsEmpty => "hew_bytes_is_empty",
-            Self::BytesLen => "hew_bytes_len",
-            Self::BytesPop => "hew_bytes_pop",
-            Self::BytesPush => "hew_bytes_push",
-            Self::BytesSet => "hew_bytes_set",
-            Self::BytesSlice => "hew_bytes_slice",
-            Self::BytesSliceFrom => "hew_bytes_slice_from",
-            Self::BytesNew => "bytes::new",
-            // CancellationToken
-            Self::CancelTokenIsRequested => "hew_cancel_token_is_requested",
-            Self::CancelTokenRelease => "hew_cancel_token_release",
-            Self::CancelTokenRetain => "hew_cancel_token_retain",
-            // Channel (pre-staged)
-            Self::ChannelRecvLayout => "hew_channel_recv_layout",
-            Self::ChannelSendLayout => "hew_channel_send_layout",
-            Self::ChannelTryRecvLayout => "hew_channel_try_recv_layout",
-            Self::ChannelSenderClone => "hew_channel_sender_clone",
-            Self::ChannelSenderClose => "hew_channel_sender_close",
-            Self::ChannelReceiverClose => "hew_channel_receiver_close",
-            Self::ChannelPairNew => "hew_channel_new",
-            Self::ChannelPairFree => "hew_channel_pair_free",
-            Self::ActorRequestRelease => "hew_msg_envelope_release",
-            Self::ActorCallFree => "hew_actor_call_free",
-            Self::ActorRequestTake => "hew_actor_ask_wait_take_request",
-            Self::ChannelPairIsValid => "hew_channel_pair_is_valid",
-            Self::ChannelPairSender => "hew_channel_pair_sender",
-            Self::ChannelPairReceiver => "hew_channel_pair_receiver",
-            // Duplex
-            Self::DuplexClone => "hew_duplex_clone",
-            Self::DuplexClose => "hew_duplex_close",
-            Self::DuplexCloseHalf => "hew_duplex_close_half",
-            Self::DuplexPair => "hew_duplex_pair",
-            Self::DuplexPayloadFree => "hew_duplex_payload_free",
-            Self::DuplexRecv => "hew_duplex_recv",
-            Self::DuplexRecvHalf => "hew_duplex_recv_half",
-            Self::DuplexSend => "hew_duplex_send",
-            Self::DuplexSendHalf => "hew_duplex_send_half",
-            Self::DuplexTryRecv => "hew_duplex_try_recv",
-            Self::DuplexTrySend => "hew_duplex_try_send",
-            // Duration
-            Self::DurationAbs => "hew_duration_abs",
-            Self::DurationHours => "hew_duration_hours",
-            Self::DurationIsZero => "hew_duration_is_zero",
-            Self::DurationMicros => "hew_duration_micros",
-            Self::DurationMillis => "hew_duration_millis",
-            Self::DurationMins => "hew_duration_mins",
-            Self::DurationNanos => "hew_duration_nanos",
-            Self::DurationSecs => "hew_duration_secs",
-            // Dyn box
-            Self::DynBoxAlloc => "hew_dyn_box_alloc",
-            Self::DynBoxFree => "hew_dyn_box_free",
-            // HashMap
-            Self::HashMapContainsKeyLayout => "hew_hashmap_contains_key_layout",
-            Self::HashMapClearLayout => "hew_hashmap_clear_layout",
-            Self::HashMapCloneLayout => "hew_hashmap_clone_layout",
-            Self::HashMapEntriesLayout => "hew_hashmap_entries_layout",
-            Self::HashMapFreeLayout => "hew_hashmap_free_layout",
-            Self::HashMapGetLayout => "hew_hashmap_get_layout",
-            Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
-            Self::HashMapKeysLayout => "hew_hashmap_keys_layout",
-            Self::HashMapLenLayout => "hew_hashmap_len_layout",
-            Self::HashMapNew => "HashMap::new",
-            Self::HashMapNewWithLayout => "hew_hashmap_new_with_layout",
-            Self::HashMapRemoveLayout => "hew_hashmap_remove_layout",
-            Self::HashMapValuesLayout => "hew_hashmap_values_layout",
-            // HashSet
-            Self::HashSetContainsLayout => "hew_hashset_contains_layout",
-            Self::HashSetClearLayout => "hew_hashset_clear_layout",
-            Self::HashSetCloneLayout => "hew_hashset_clone_layout",
-            Self::HashSetFreeLayout => "hew_hashset_free_layout",
-            Self::HashSetInsertLayout => "hew_hashset_insert_layout",
-            Self::HashSetIsEmptyLayout => "hew_hashset_is_empty_layout",
-            Self::HashSetLenLayout => "hew_hashset_len_layout",
-            Self::HashSetNew => "HashSet::new",
-            Self::HashSetNewWithLayout => "hew_hashset_new_with_layout",
-            Self::HashSetRemoveLayout => "hew_hashset_remove_layout",
-            Self::HashSetToVecLayout => "hew_hashset_to_vec_layout",
-            // Instant
-            Self::InstantDurationSince => "hew_instant_duration_since",
-            Self::InstantElapsed => "hew_instant_elapsed",
-            Self::InstantNow => "hew_instant_now",
-            // Math intrinsics (user-visible callee names)
-            Self::MathIntrinsic(MathIntrinsic::Sqrt) => "sqrt",
-            Self::MathIntrinsic(MathIntrinsic::Exp) => "exp",
-            Self::MathIntrinsic(MathIntrinsic::Log) => "log",
-            Self::MathIntrinsic(MathIntrinsic::Sin) => "sin",
-            Self::MathIntrinsic(MathIntrinsic::Cos) => "cos",
-            Self::MathIntrinsic(MathIntrinsic::AbsI64) => "abs",
-            Self::MathIntrinsic(MathIntrinsic::MinI64) => "min",
-            Self::MathIntrinsic(MathIntrinsic::MaxI64) => "max",
-            Self::MathIntrinsic(MathIntrinsic::AbsF64) => "abs_f",
-            Self::MathIntrinsic(MathIntrinsic::MinF64) => "min_f",
-            Self::MathIntrinsic(MathIntrinsic::MaxF64) => "max_f",
-            Self::MathIntrinsic(MathIntrinsic::Pow) => "pow",
-            Self::MathIntrinsic(MathIntrinsic::Floor) => "floor",
-            Self::MathIntrinsic(MathIntrinsic::Ceil) => "ceil",
-            Self::MathIntrinsic(MathIntrinsic::Round) => "round",
-            // Node (pre-staged)
-            Self::NodeAllowPeer => "Node::allow_peer",
-            Self::NodeConnect => "Node::connect",
-            Self::NodeId => "Node::id",
-            Self::NodeIdentityKey => "Node::identity_key",
-            Self::NodeLoadKeys => "Node::load_keys",
-            Self::NodeLookup => "Node::lookup",
-            Self::NodeMonitor => "hew_node_monitor_location",
-            Self::NodeRegister => "Node::register",
-            Self::NodeSetTransport => "Node::set_transport",
-            Self::NodeShutdown => "Node::shutdown",
-            Self::NodeStart => "Node::start",
-            // User metrics (#1862)
-            Self::MetricCounterRegister => "hew_metric_counter_register",
-            Self::MetricCounterInc => "hew_metric_counter_inc",
-            Self::MetricCounterAdd => "hew_metric_counter_add",
-            Self::MetricGaugeRegister => "hew_metric_gauge_register",
-            Self::MetricGaugeSet => "hew_metric_gauge_set",
-            Self::MetricGaugeInc => "hew_metric_gauge_inc",
-            Self::MetricGaugeDec => "hew_metric_gauge_dec",
-            Self::MetricGaugeAdd => "hew_metric_gauge_add",
-            Self::MetricHistogramRegister => "hew_metric_histogram_register",
-            Self::MetricHistogramRegisterSimple => "hew_metric_histogram_register_simple",
-            Self::MetricHistogramRecord => "hew_metric_histogram_record",
-            Self::MetricVecRegister => "hew_metric_vec_register",
-            Self::MetricVecWith => "hew_metric_vec_with",
-            // Observe
-            Self::ObserveReadU64 => "hew_observe_read_u64",
-            Self::ObserveScrape => "hew_observe_scrape",
-            Self::ObserveSeries => "hew_observe_series",
-            Self::ObserveBarrier => "hew_observe_barrier",
-            // Rc
-            Self::RcClone => "hew_rc_clone",
-            Self::RcDowngrade => "hew_rc_downgrade",
-            Self::RcDrop => "hew_rc_drop",
-            Self::RcGet => "hew_rc_get",
-            Self::RcIsUnique => "hew_rc_is_unique",
-            Self::RcNew => "hew_rc_new",
-            Self::RcSet => "hew_rc_set",
-            Self::RcStrongCount => "hew_rc_strong_count",
-            Self::RcWeakCount => "hew_rc_weak_count",
-            Self::WeakCloneRc => "hew_weak_clone_rc",
-            Self::WeakDropRc => "hew_weak_drop_rc",
-            Self::WeakUpgradeRc => "hew_weak_upgrade_rc",
-            // RecvHalf
-            Self::RecvHalfRecv => "hew_recv_half_recv",
-            Self::RecvHalfTryRecv => "hew_recv_half_try_recv",
-            // Regex
-            Self::RegexCapture => "hew_regex_capture",
-            Self::RegexCompile => "hew_regex_compile",
-            Self::RegexFreeCapture => "hew_regex_free_capture",
-            Self::RegexHandle => "hew_regex_handle",
-            Self::RegexMatch => "hew_regex_match",
-            // RemotePid<T>::send intercept
-            Self::RemotePidSend => "hew_remote_pid_send",
-            // Reply channel
-            Self::ReplyChannelCancel => "hew_reply_channel_cancel",
-            Self::ReplyChannelFree => "hew_reply_channel_free",
-            Self::ReplyChannelNew => "hew_reply_channel_new",
-            Self::ReplyPayloadFree => "hew_reply_payload_free",
-            Self::ReplyWait => "hew_reply_wait",
-            // Select
-            Self::SelectFirst => "hew_select_first",
-            // SendHalf
-            Self::SendHalfSend => "hew_send_half_send",
-            Self::SendHalfTrySend => "hew_send_half_try_send",
-            // Sink (pre-staged consumers; both element kinds real per
-            // hew-types/src/builtin_names.rs:253-265)
-            Self::SinkClose => "hew_sink_close",
-            Self::SinkPeerClosed => "hew_sink_peer_closed",
-            Self::SinkWrite(StreamElementKind::Bytes) => "hew_sink_write_bytes",
-            Self::SinkWrite(StreamElementKind::String) => "hew_sink_write_string",
-            Self::SinkTryWrite(StreamElementKind::Bytes) => "hew_sink_try_write_bytes",
-            Self::SinkTryWrite(StreamElementKind::String) => "hew_sink_try_write_string",
-            // Stream
-            Self::StreamClose => "hew_stream_close",
-            Self::StreamNextLayout => "hew_stream_next_layout",
-            Self::StreamSendLayout => "hew_stream_send_layout",
-            Self::StreamTryNextLayout => "hew_stream_try_next_layout",
-            // String
-            Self::StringByteLen => "hew_string_byte_length",
-            Self::StringCharAt => "hew_string_char_at",
-            Self::StringCharAtUtf8 => "hew_string_char_at_utf8",
-            Self::StringCharCount => "hew_string_char_count",
-            Self::StringConcat => "hew_string_concat",
-            Self::StringEquals => "hew_string_equals",
-            Self::StringCompare => "hew_string_compare",
-            Self::StringStartsWith => "hew_string_starts_with",
-            Self::StringEndsWith => "hew_string_ends_with",
-            Self::StringContains => "hew_string_contains",
-            Self::StringIsEmpty => "hew_string_is_empty",
-            Self::StringIsDigit => "hew_string_is_digit",
-            Self::StringIsAlpha => "hew_string_is_alpha",
-            Self::StringIsAlphanumeric => "hew_string_is_alphanumeric",
-            Self::StructuralFormat => "hew_structural_format",
-            Self::StringFind => "hew_string_find",
-            Self::StringGet => "hew_string_get",
-            Self::StringIndex => "hew_string_index",
-            Self::StringLen => "hew_string_length",
-            Self::StringSliceCodepoints => "hew_string_slice_codepoints",
-            Self::StringSliceCodepointsFrom => "hew_string_slice_codepoints_from",
-            Self::StringRepeat => "hew_string_repeat",
-            Self::StringReplace => "hew_string_replace",
-            Self::StringClone => "hew_string_clone",
-            Self::StringSplit => "hew_string_split",
-            Self::StringLines => "hew_string_lines",
-            Self::StringChars => "hew_string_chars",
-            Self::StringSlice => "hew_string_slice",
-            Self::StringToLowercase => "hew_string_to_lowercase",
-            Self::StringToBytes => "hew_string_to_bytes",
-            Self::StringToUppercase => "hew_string_to_uppercase",
-            Self::StringTrim => "hew_string_trim",
-            Self::U8ToString => "hew_u8_to_string",
-            Self::I32ToString => "hew_int_to_string",
-            Self::I64ToString => "hew_i64_to_string",
-            Self::U32ToString => "hew_uint_to_string",
-            Self::U64ToString => "hew_u64_to_string",
-            Self::F64ToString => "hew_float_to_string",
-            Self::CharToString => "hew_char_to_string",
-            Self::Print { .. } => "hew_print_value",
-            Self::ProcessExit => "hew_exit",
-            Self::StderrWrite => "hew_io_write_err",
-            Self::BoolToString => "hew_bool_to_string",
-            // Supervisor
-            Self::SupervisorDirectId => "hew_supervisor_direct_id",
-            Self::SupervisorChildGet => "hew_supervisor_child_get",
-            Self::LocalPidSupervisorChildGet => "hew_local_pid_supervisor_child_get",
-            Self::SupervisorNestedGet => "hew_supervisor_nested_get",
-            Self::SupervisorPoolChildGet => "hew_supervisor_pool_child_get",
-            Self::LocalPidSupervisorPoolChildRefGet => {
-                "hew_local_pid_supervisor_pool_child_ref_get"
-            }
-            Self::SupervisorPoolLen => "hew_supervisor_pool_len",
-            Self::SupervisorStop => "hew_supervisor_stop",
-            Self::SupervisorRestartAwaitBlocking => "hew_supervisor_restart_await_blocking",
-            // Active transport attach (pre-staged)
-            Self::TcpAttachLocal => "hew_tcp_attach_local",
-            Self::TlsAttachLocal => "hew_tls_attach_local",
-            Self::WebSocketAttachLocal => "hew_ws_attach_local",
-            // Task
-            Self::TaskAwaitBlocking => "hew_task_await_blocking",
-            Self::TaskCompleteThreaded => "hew_task_complete_threaded",
-            Self::TaskCompletionObserve => "hew_task_completion_observe",
-            Self::TaskCompletionUnobserve => "hew_task_completion_unobserve",
-            Self::TaskFree => "hew_task_free",
-            Self::GeneratorFree => "hew_checked_generator_free",
-            Self::TaskGetEnv => "hew_task_get_env",
-            Self::TaskGetError => "hew_task_get_error",
-            Self::TaskGetResult => "hew_task_get_result",
-            Self::TaskNew => "hew_task_new",
-            Self::TaskScopeCancelAfterNs => "hew_task_scope_cancel_after_ns",
-            Self::TaskScopeDestroy => "hew_task_scope_destroy",
-            Self::TaskScopeJoinAll => "hew_task_scope_join_all",
-            Self::TaskScopeNew => "hew_task_scope_new",
-            Self::TaskScopeSetCurrent => "hew_task_scope_set_current",
-            Self::TaskScopeSpawn => "hew_task_scope_spawn",
-            Self::TaskSetEnv => "hew_task_set_env",
-            Self::TaskSetResult => "hew_task_set_result",
-            Self::TaskSpawnThread => "hew_task_spawn_thread",
-            // Semantic labels are not C ABI entry points.
-            Self::Map(op) => match op {
-                MapValueOp::New => "map.value.new",
-                MapValueOp::Len => "map.value.len",
-                MapValueOp::Index => "map.value.index",
-                MapValueOp::Get => "map.value.get",
-                MapValueOp::GetBorrow => "map.value.get_borrow",
-                MapValueOp::ContainsKey => "map.value.contains_key",
-                MapValueOp::Insert => "map.value.insert",
-                MapValueOp::Remove => "map.value.remove",
-                MapValueOp::Clear => "map.value.clear",
-                MapValueOp::Keys => "map.value.keys",
-                MapValueOp::Values => "map.value.values",
-                MapValueOp::Entries => "map.value.entries",
+            // The async IO, file and TCP operation sets and the encoding
+            // matrix each carry their row in their own operation enum.
+            Self::AsyncIo(op) => RuntimeOpRow {
+                symbol: op.c_symbol(),
+                contract: Some(op.contract()),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
             },
-            Self::Set(op) => match op {
-                SetValueOp::New => "set.value.new",
-                SetValueOp::Len => "set.value.len",
-                SetValueOp::Contains => "set.value.contains",
-                SetValueOp::Insert => "set.value.insert",
-                SetValueOp::Remove => "set.value.remove",
-                SetValueOp::Clear => "set.value.clear",
-                SetValueOp::Elements => "set.value.elements",
+            Self::FileRead(op) => RuntimeOpRow {
+                symbol: op.c_symbol(),
+                contract: Some(op.contract()),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
             },
-            Self::Array(op) => op.symbol(),
-            Self::SupervisorPool(op) => op.symbol(),
-            Self::Vector(op) => match op {
-                VecValueOp::New => "vec.value.new",
-                VecValueOp::Len => "vec.value.len",
-                VecValueOp::Contains => "vec.value.contains",
-                VecValueOp::Index => "vec.value.index",
-                VecValueOp::Get => "vec.value.get",
-                VecValueOp::Push => "vec.value.push",
-                VecValueOp::Set => "vec.value.set",
-                VecValueOp::Pop => "vec.value.pop",
-                VecValueOp::Remove => "vec.value.remove",
-                VecValueOp::Clear => "vec.value.clear",
-                VecValueOp::IndexBorrow => "vec.value.index_borrow",
-                VecValueOp::GetBorrow => "vec.value.get_borrow",
-                VecValueOp::TakeFirst => "vec.value.take_first",
-                VecValueOp::Slice => "vec.value.slice",
-                VecValueOp::SliceFrom => "vec.value.slice_from",
+            Self::Tcp(op) => RuntimeOpRow {
+                symbol: op.c_symbol(),
+                contract: Some(op.contract()),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
             },
-            // Vec
-            Self::VecAppend => "hew_vec_append",
-            Self::VecClear => "hew_vec_clear",
-            Self::VecClone => "hew_vec_clone",
-            Self::VecCloneLayout => "hew_vec_clone_layout",
-            Self::VecCloneOwned => "hew_vec_clone_owned",
-            Self::VecTakeAll => "hew_vec_take_all",
-            Self::VecContainsLayout => "hew_vec_contains_thunk",
-            Self::VecContainsOwned => "hew_vec_contains_owned",
-            Self::VecContainsScalar(VecContainsScalarElem::F64) => "hew_vec_contains_f64",
-            Self::VecContainsScalar(VecContainsScalarElem::I32) => "hew_vec_contains_i32",
-            Self::VecContainsScalar(VecContainsScalarElem::I64) => "hew_vec_contains_i64",
-            Self::VecContainsScalar(VecContainsScalarElem::Str) => "hew_vec_contains_str",
-            Self::VecGet(VecGetElem::Bool) => "hew_vec_get_bool",
-            Self::VecGet(VecGetElem::F32) => "hew_vec_get_f32",
-            Self::VecGet(VecGetElem::F64) => "hew_vec_get_f64",
-            Self::VecGet(VecGetElem::I8) => "hew_vec_get_i8",
-            Self::VecGet(VecGetElem::I16) => "hew_vec_get_i16",
-            Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
-            Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
-            Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
-            Self::VecGet(VecGetElem::Take) => "hew_vec_take_owned",
-            Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
-            Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
-            Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
-            Self::VecGet(VecGetElem::Str) => "hew_vec_get_str",
-            Self::VecGet(VecGetElem::U8) => "hew_vec_get_u8",
-            Self::VecGet(VecGetElem::U16) => "hew_vec_get_u16",
-            Self::VecIsEmpty => "hew_vec_is_empty",
-            Self::VecJoinStr => "hew_vec_join_str",
-            Self::VecLen => "hew_vec_len",
-            Self::VecNew => "Vec::new",
-            Self::VecPopBool => "hew_vec_pop_bool",
-            Self::VecPopLayout => "hew_vec_pop_layout",
-            Self::VecPopOwned => "hew_vec_pop_owned",
-            Self::VecPushBool => "hew_vec_push_bool",
-            Self::VecPushLayout => "hew_vec_push_layout",
-            Self::VecPushOwned => "hew_vec_push_owned",
-            Self::VecPushOwnedMove => "hew_vec_push_owned_move",
-            Self::VecScalar { op, elem } => vec_scalar_c_symbol(op, elem),
-            Self::VecRemoveAtBool => "hew_vec_remove_at_bool",
-            Self::VecRemoveAtLayout => "hew_vec_remove_at_layout",
-            Self::VecRemoveAtOwned => "hew_vec_remove_at_owned",
-            Self::VecSetBool => "hew_vec_set_bool",
-            Self::VecSetLayout => "hew_vec_set_layout",
-            Self::VecSetOwned => "hew_vec_set_owned",
-            Self::VecSetOwnedMove => "hew_vec_set_owned_move",
-            Self::VecSliceRange(VecSliceElem::Bytesize) => "hew_vec_slice_range_bytesize",
-            Self::VecSliceRange(VecSliceElem::F64) => "hew_vec_slice_range_f64",
-            Self::VecSliceRange(VecSliceElem::I32) => "hew_vec_slice_range_i32",
-            Self::VecSliceRange(VecSliceElem::I64) => "hew_vec_slice_range_i64",
-            Self::VecSliceRange(VecSliceElem::Layout) => "hew_vec_slice_range_layout",
-            Self::VecSliceRange(VecSliceElem::Owned) => "hew_vec_slice_range_owned",
-            Self::VecSliceRange(VecSliceElem::Ptr) => "hew_vec_slice_range_ptr",
-            Self::VecSliceRange(VecSliceElem::Str) => "hew_vec_slice_range_str",
-            // Vtable
-            Self::VtableDispatchPanicOnOob => "hew_vtable_dispatch_panic_on_oob",
+            Self::Encoding { format, op } => RuntimeOpRow {
+                symbol: op.c_symbol(format),
+                contract: Some(op.contract(format)),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorPool(op) => RuntimeOpRow {
+                symbol: op.symbol(),
+                contract: Some(op.contract()),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorAsk => RuntimeOpRow {
+                symbol: "hew_actor_ask",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorAskWithChannel => RuntimeOpRow {
+                symbol: "hew_actor_ask_with_channel",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorCooperate => RuntimeOpRow {
+                symbol: "hew_actor_cooperate",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorDemonitor => RuntimeOpRow {
+                symbol: "hew_actor_demonitor",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorGenSinkComplete => RuntimeOpRow {
+                symbol: "hew_actor_gen_sink_complete",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorGenSinkRegister => RuntimeOpRow {
+                symbol: "hew_actor_gen_sink_register",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorLink => RuntimeOpRow {
+                symbol: "hew_actor_link",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::LinkRemote => RuntimeOpRow {
+                symbol: "hew_node_link_remote_location",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorMonitor => RuntimeOpRow {
+                symbol: "hew_actor_monitor",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorSelf => RuntimeOpRow {
+                symbol: "hew_actor_self",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorSendById => RuntimeOpRow {
+                symbol: "hew_actor_send_by_id",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorSpawn => RuntimeOpRow {
+                symbol: "hew_actor_spawn",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorUnlink => RuntimeOpRow {
+                symbol: "hew_actor_unlink",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::AutoMutexAlloc => RuntimeOpRow {
+                symbol: "hew_auto_mutex_alloc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::AutoMutexFree => RuntimeOpRow {
+                symbol: "hew_auto_mutex_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::AutoMutexLock => RuntimeOpRow {
+                symbol: "hew_auto_mutex_lock",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::AutoMutexUnlock => RuntimeOpRow {
+                symbol: "hew_auto_mutex_unlock",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesAppend => RuntimeOpRow {
+                symbol: "hew_bytes_append",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesClear => RuntimeOpRow {
+                symbol: "hew_bytes_clear",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiver(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesContains => RuntimeOpRow {
+                symbol: "hew_bytes_contains",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesDecodeUtf8 => RuntimeOpRow {
+                symbol: "hew_bytes_decode_utf8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwnedVariant(RuntimeVariantResultKind::Utf8Decode),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesDecodeUtf8Lossy => RuntimeOpRow {
+                symbol: "hew_bytes_decode_utf8_lossy",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesGet => RuntimeOpRow {
+                symbol: "hew_bytes_get",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesIndex => RuntimeOpRow {
+                symbol: "hew_bytes_index",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesIsEmpty => RuntimeOpRow {
+                symbol: "hew_bytes_is_empty",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesLen => RuntimeOpRow {
+                symbol: "hew_bytes_len",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesPop => RuntimeOpRow {
+                symbol: "hew_bytes_pop",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bytes,
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Bytes,
+                        K::Applied(BuiltinType::Option, &[K::U8]),
+                    ])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesPush => RuntimeOpRow {
+                symbol: "hew_bytes_push",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesSet => RuntimeOpRow {
+                symbol: "hew_bytes_set",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Bytes),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesSlice => RuntimeOpRow {
+                symbol: "hew_bytes_slice",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Bytes),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesSliceFrom => RuntimeOpRow {
+                symbol: "hew_bytes_slice_from",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Bytes,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Bytes),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BytesNew => RuntimeOpRow {
+                symbol: "bytes::new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::FreshOwned(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::BytesConstructor,
+            },
+            Self::CancelTokenIsRequested => RuntimeOpRow {
+                symbol: "hew_cancel_token_is_requested",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::CancelTokenRelease => RuntimeOpRow {
+                symbol: "hew_cancel_token_release",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::CancelTokenRetain => RuntimeOpRow {
+                symbol: "hew_cancel_token_retain",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelRecvLayout => RuntimeOpRow {
+                symbol: "hew_channel_recv_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelSendLayout => RuntimeOpRow {
+                symbol: "hew_channel_send_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelTryRecvLayout => RuntimeOpRow {
+                symbol: "hew_channel_try_recv_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelSenderClone => RuntimeOpRow {
+                symbol: "hew_channel_sender_clone",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelHalf(ChannelHalfKind::Sender),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::ChannelHalf(ChannelHalfKind::Sender)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelSenderClose => RuntimeOpRow {
+                symbol: "hew_channel_sender_close",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelHalf(ChannelHalfKind::Sender),
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelReceiverClose => RuntimeOpRow {
+                symbol: "hew_channel_receiver_close",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelHalf(ChannelHalfKind::Receiver),
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelPairNew => RuntimeOpRow {
+                symbol: "hew_channel_new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::ChannelPair),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelPairFree => RuntimeOpRow {
+                symbol: "hew_channel_pair_free",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelPair,
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorRequestRelease => RuntimeOpRow {
+                symbol: "hew_msg_envelope_release",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ActorRequestOwner,
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorCallFree => RuntimeOpRow {
+                symbol: "hew_actor_call_free",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::ActorCall),
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ActorRequestTake => RuntimeOpRow {
+                symbol: "hew_actor_ask_wait_take_request",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ActorRequestAdmission,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::ActorRequestOwner),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelPairIsValid => RuntimeOpRow {
+                symbol: "hew_channel_pair_is_valid",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelPair,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelPairSender => RuntimeOpRow {
+                symbol: "hew_channel_pair_sender",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelPair,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::ChannelHalfResult(ChannelHalfKind::Sender)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ChannelPairReceiver => RuntimeOpRow {
+                symbol: "hew_channel_pair_receiver",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::ChannelPair,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::ChannelHalfResult(ChannelHalfKind::Receiver)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexClone => RuntimeOpRow {
+                symbol: "hew_duplex_clone",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexClose => RuntimeOpRow {
+                symbol: "hew_duplex_close",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexCloseHalf => RuntimeOpRow {
+                symbol: "hew_duplex_close_half",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexPair => RuntimeOpRow {
+                symbol: "hew_duplex_pair",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexPayloadFree => RuntimeOpRow {
+                symbol: "hew_duplex_payload_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexRecv => RuntimeOpRow {
+                symbol: "hew_duplex_recv",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexRecvHalf => RuntimeOpRow {
+                symbol: "hew_duplex_recv_half",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexSend => RuntimeOpRow {
+                symbol: "hew_duplex_send",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexSendHalf => RuntimeOpRow {
+                symbol: "hew_duplex_send_half",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexTryRecv => RuntimeOpRow {
+                symbol: "hew_duplex_try_recv",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DuplexTrySend => RuntimeOpRow {
+                symbol: "hew_duplex_try_send",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationAbs => RuntimeOpRow {
+                symbol: "hew_duration_abs",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Duration),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationHours => RuntimeOpRow {
+                symbol: "hew_duration_hours",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationIsZero => RuntimeOpRow {
+                symbol: "hew_duration_is_zero",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationMicros => RuntimeOpRow {
+                symbol: "hew_duration_micros",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationMillis => RuntimeOpRow {
+                symbol: "hew_duration_millis",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationMins => RuntimeOpRow {
+                symbol: "hew_duration_mins",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationNanos => RuntimeOpRow {
+                symbol: "hew_duration_nanos",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DurationSecs => RuntimeOpRow {
+                symbol: "hew_duration_secs",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Duration,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DynBoxAlloc => RuntimeOpRow {
+                symbol: "hew_dyn_box_alloc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::DynBoxFree => RuntimeOpRow {
+                symbol: "hew_dyn_box_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::HashMapContainsKeyLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_contains_key_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapClearLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_clear_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapCloneLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_clone_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapEntriesLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_entries_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapFreeLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_free_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::HashMapGetLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_get_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashMapLayoutGet,
+            },
+            Self::HashMapInsertLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_insert_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapKeysLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_keys_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapLenLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_len_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapNew => RuntimeOpRow {
+                symbol: "HashMap::new",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+            },
+            Self::HashMapNewWithLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_new_with_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+            },
+            Self::HashMapRemoveLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_remove_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashMapValuesLayout => RuntimeOpRow {
+                symbol: "hew_hashmap_values_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetContainsLayout => RuntimeOpRow {
+                symbol: "hew_hashset_contains_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetClearLayout => RuntimeOpRow {
+                symbol: "hew_hashset_clear_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetCloneLayout => RuntimeOpRow {
+                symbol: "hew_hashset_clone_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetFreeLayout => RuntimeOpRow {
+                symbol: "hew_hashset_free_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::HashSetInsertLayout => RuntimeOpRow {
+                symbol: "hew_hashset_insert_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetIsEmptyLayout => RuntimeOpRow {
+                symbol: "hew_hashset_is_empty_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetLenLayout => RuntimeOpRow {
+                symbol: "hew_hashset_len_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetNew => RuntimeOpRow {
+                symbol: "HashSet::new",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+            },
+            Self::HashSetNewWithLayout => RuntimeOpRow {
+                symbol: "hew_hashset_new_with_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+            },
+            Self::HashSetRemoveLayout => RuntimeOpRow {
+                symbol: "hew_hashset_remove_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::HashSetToVecLayout => RuntimeOpRow {
+                symbol: "hew_hashset_to_vec_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+            },
+            Self::InstantDurationSince => RuntimeOpRow {
+                symbol: "hew_instant_duration_since",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Duration),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::InstantElapsed => RuntimeOpRow {
+                symbol: "hew_instant_elapsed",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Duration),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::InstantNow => RuntimeOpRow {
+                symbol: "hew_instant_now",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
+                symbol: "sqrt",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Exp) => RuntimeOpRow {
+                symbol: "exp",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Log) => RuntimeOpRow {
+                symbol: "log",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Sin) => RuntimeOpRow {
+                symbol: "sin",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Cos) => RuntimeOpRow {
+                symbol: "cos",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::AbsI64) => RuntimeOpRow {
+                symbol: "abs",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[RuntimeLogicalFailure::IntegerOverflow],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::MinI64) => RuntimeOpRow {
+                symbol: "min",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::MaxI64) => RuntimeOpRow {
+                symbol: "max",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::AbsF64) => RuntimeOpRow {
+                symbol: "abs_f",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::MinF64) => RuntimeOpRow {
+                symbol: "min_f",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::MaxF64) => RuntimeOpRow {
+                symbol: "max_f",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Pow) => RuntimeOpRow {
+                symbol: "pow",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Floor) => RuntimeOpRow {
+                symbol: "floor",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Ceil) => RuntimeOpRow {
+                symbol: "ceil",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Round) => RuntimeOpRow {
+                symbol: "round",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeAllowPeer => RuntimeOpRow {
+                symbol: "Node::allow_peer",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeConnect => RuntimeOpRow {
+                symbol: "Node::connect",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Result,
+                        &[K::Unit, K::MonomorphicBuiltin(BuiltinType::NodeError)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeId => RuntimeOpRow {
+                symbol: "Node::id",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeIdentityKey => RuntimeOpRow {
+                symbol: "Node::identity_key",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeLoadKeys => RuntimeOpRow {
+                symbol: "Node::load_keys",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeLookup => RuntimeOpRow {
+                symbol: "Node::lookup",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::NodeLookupResult),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeMonitor => RuntimeOpRow {
+                symbol: "hew_node_monitor_location",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeRegister => RuntimeOpRow {
+                symbol: "Node::register",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::Receiver(BuiltinType::LocalPid),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::I32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeSetTransport => RuntimeOpRow {
+                symbol: "Node::set_transport",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeShutdown => RuntimeOpRow {
+                symbol: "Node::shutdown",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::NodeStart => RuntimeOpRow {
+                symbol: "Node::start",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Named("std.builtins.NodeConfig"),
+                        effect: E::Move,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Result,
+                        &[K::Unit, K::MonomorphicBuiltin(BuiltinType::NodeError)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricCounterRegister => RuntimeOpRow {
+                symbol: "hew_metric_counter_register",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricCounterInc => RuntimeOpRow {
+                symbol: "hew_metric_counter_inc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricCounterAdd => RuntimeOpRow {
+                symbol: "hew_metric_counter_add",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricGaugeRegister => RuntimeOpRow {
+                symbol: "hew_metric_gauge_register",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricGaugeSet => RuntimeOpRow {
+                symbol: "hew_metric_gauge_set",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricGaugeInc => RuntimeOpRow {
+                symbol: "hew_metric_gauge_inc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricGaugeDec => RuntimeOpRow {
+                symbol: "hew_metric_gauge_dec",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricGaugeAdd => RuntimeOpRow {
+                symbol: "hew_metric_gauge_add",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricHistogramRegister => RuntimeOpRow {
+                symbol: "hew_metric_histogram_register",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricHistogramRegisterSimple => RuntimeOpRow {
+                symbol: "hew_metric_histogram_register_simple",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricHistogramRecord => RuntimeOpRow {
+                symbol: "hew_metric_histogram_record",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricVecRegister => RuntimeOpRow {
+                symbol: "hew_metric_vec_register",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::MetricVecWith => RuntimeOpRow {
+                symbol: "hew_metric_vec_with",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ObserveReadU64 => RuntimeOpRow {
+                symbol: "hew_observe_read_u64",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ObserveScrape => RuntimeOpRow {
+                symbol: "hew_observe_scrape",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ObserveSeries => RuntimeOpRow {
+                symbol: "hew_observe_series",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ObserveBarrier => RuntimeOpRow {
+                symbol: "hew_observe_barrier",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcClone => RuntimeOpRow {
+                symbol: "hew_rc_clone",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcDowngrade => RuntimeOpRow {
+                symbol: "hew_rc_downgrade",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcDrop => RuntimeOpRow {
+                symbol: "hew_rc_drop",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcGet => RuntimeOpRow {
+                symbol: "hew_rc_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcIsUnique => RuntimeOpRow {
+                symbol: "hew_rc_is_unique",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcNew => RuntimeOpRow {
+                symbol: "hew_rc_new",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcSet => RuntimeOpRow {
+                symbol: "hew_rc_set",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcStrongCount => RuntimeOpRow {
+                symbol: "hew_rc_strong_count",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RcWeakCount => RuntimeOpRow {
+                symbol: "hew_rc_weak_count",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::WeakCloneRc => RuntimeOpRow {
+                symbol: "hew_weak_clone_rc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::WeakDropRc => RuntimeOpRow {
+                symbol: "hew_weak_drop_rc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::WeakUpgradeRc => RuntimeOpRow {
+                symbol: "hew_weak_upgrade_rc",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RecvHalfRecv => RuntimeOpRow {
+                symbol: "hew_recv_half_recv",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RecvHalfTryRecv => RuntimeOpRow {
+                symbol: "hew_recv_half_try_recv",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RegexCapture => RuntimeOpRow {
+                symbol: "hew_regex_capture",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RegexCompile => RuntimeOpRow {
+                symbol: "hew_regex_compile",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RegexFreeCapture => RuntimeOpRow {
+                symbol: "hew_regex_free_capture",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RegexHandle => RuntimeOpRow {
+                symbol: "hew_regex_handle",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::NamedOpaque("std.text.regex.PatternHandle")),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RegexMatch => RuntimeOpRow {
+                symbol: "hew_regex_match",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::RemotePidSend => RuntimeOpRow {
+                symbol: "hew_remote_pid_send",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ReplyChannelCancel => RuntimeOpRow {
+                symbol: "hew_reply_channel_cancel",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ReplyChannelFree => RuntimeOpRow {
+                symbol: "hew_reply_channel_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ReplyChannelNew => RuntimeOpRow {
+                symbol: "hew_reply_channel_new",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ReplyPayloadFree => RuntimeOpRow {
+                symbol: "hew_reply_payload_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ReplyWait => RuntimeOpRow {
+                symbol: "hew_reply_wait",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SelectFirst => RuntimeOpRow {
+                symbol: "hew_select_first",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SendHalfSend => RuntimeOpRow {
+                symbol: "hew_send_half_send",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SendHalfTrySend => RuntimeOpRow {
+                symbol: "hew_send_half_try_send",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkClose => RuntimeOpRow {
+                symbol: "hew_sink_close",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Sink),
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkPeerClosed => RuntimeOpRow {
+                symbol: "hew_sink_peer_closed",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkWrite(StreamElementKind::Bytes) => RuntimeOpRow {
+                symbol: "hew_sink_write_bytes",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkWrite(StreamElementKind::String) => RuntimeOpRow {
+                symbol: "hew_sink_write_string",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkTryWrite(StreamElementKind::Bytes) => RuntimeOpRow {
+                symbol: "hew_sink_try_write_bytes",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SinkTryWrite(StreamElementKind::String) => RuntimeOpRow {
+                symbol: "hew_sink_try_write_string",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StreamClose => RuntimeOpRow {
+                symbol: "hew_stream_close",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Stream),
+                        effect: E::Move,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StreamNextLayout => RuntimeOpRow {
+                symbol: "hew_stream_next_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StreamSendLayout => RuntimeOpRow {
+                symbol: "hew_stream_send_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StreamTryNextLayout => RuntimeOpRow {
+                symbol: "hew_stream_try_next_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringCharAt => RuntimeOpRow {
+                symbol: "hew_string_char_at",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Char])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringCharAtUtf8 => RuntimeOpRow {
+                symbol: "hew_string_char_at_utf8",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringCharCount => RuntimeOpRow {
+                symbol: "hew_string_char_count",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringByteLen => RuntimeOpRow {
+                symbol: "hew_string_byte_length",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringConcat => RuntimeOpRow {
+                symbol: "hew_string_concat",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringEquals => RuntimeOpRow {
+                symbol: "hew_string_equals",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringCompare => RuntimeOpRow {
+                symbol: "hew_string_compare",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::I32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringStartsWith => RuntimeOpRow {
+                symbol: "hew_string_starts_with",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringEndsWith => RuntimeOpRow {
+                symbol: "hew_string_ends_with",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringContains => RuntimeOpRow {
+                symbol: "hew_string_contains",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringIsEmpty => RuntimeOpRow {
+                symbol: "hew_string_is_empty",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringIsDigit => RuntimeOpRow {
+                symbol: "hew_string_is_digit",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringIsAlpha => RuntimeOpRow {
+                symbol: "hew_string_is_alpha",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringIsAlphanumeric => RuntimeOpRow {
+                symbol: "hew_string_is_alphanumeric",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StructuralFormat => RuntimeOpRow {
+                symbol: "hew_structural_format",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringFind => RuntimeOpRow {
+                symbol: "hew_string_find",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringGet => RuntimeOpRow {
+                symbol: "hew_string_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringIndex => RuntimeOpRow {
+                symbol: "hew_string_index",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Char),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringLen => RuntimeOpRow {
+                symbol: "hew_string_length",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringRepeat => RuntimeOpRow {
+                symbol: "hew_string_repeat",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringReplace => RuntimeOpRow {
+                symbol: "hew_string_replace",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringClone => RuntimeOpRow {
+                symbol: "hew_string_clone",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringSplit => RuntimeOpRow {
+                symbol: "hew_string_split",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Vec, &[K::String])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringLines => RuntimeOpRow {
+                symbol: "hew_string_lines",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Vec, &[K::String])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringChars => RuntimeOpRow {
+                symbol: "hew_string_chars",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Vec, &[K::Char])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringSliceCodepoints => RuntimeOpRow {
+                symbol: "hew_string_slice_codepoints",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringSliceCodepointsFrom => RuntimeOpRow {
+                symbol: "hew_string_slice_codepoints_from",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringSlice => RuntimeOpRow {
+                symbol: "hew_string_slice",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringToLowercase => RuntimeOpRow {
+                symbol: "hew_string_to_lowercase",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringToBytes => RuntimeOpRow {
+                symbol: "hew_string_to_bytes",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Bytes),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringToUppercase => RuntimeOpRow {
+                symbol: "hew_string_to_uppercase",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StringTrim => RuntimeOpRow {
+                symbol: "hew_string_trim",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::U8ToString => RuntimeOpRow {
+                symbol: "hew_u8_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::I32ToString => RuntimeOpRow {
+                symbol: "hew_int_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I32,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::I64ToString => RuntimeOpRow {
+                symbol: "hew_i64_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::U32ToString => RuntimeOpRow {
+                symbol: "hew_uint_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U32,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::U64ToString => RuntimeOpRow {
+                symbol: "hew_u64_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U64,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::F64ToString => RuntimeOpRow {
+                symbol: "hew_float_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::CharToString => RuntimeOpRow {
+                symbol: "hew_char_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Char,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::I32,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I32,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::I32,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I32,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::I64,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::I64,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U8,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U8,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U32,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U32,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U32,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U32,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U64,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::U64,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::F64,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::F64,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::Bool,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bool,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::Bool,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bool,
+                        effect: E::Copy,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::Str,
+                newline: false,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Print {
+                kind: PrintKind::Str,
+                newline: true,
+            } => RuntimeOpRow {
+                symbol: "hew_print_value",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::ProcessExit => RuntimeOpRow {
+                symbol: "hew_exit",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::Never,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::StderrWrite => RuntimeOpRow {
+                symbol: "hew_io_write_err",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::String,
+                        effect: E::Borrow,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::BoolToString => RuntimeOpRow {
+                symbol: "hew_bool_to_string",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Bool,
+                        effect: E::Copy,
+                    }],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorDirectId => RuntimeOpRow {
+                symbol: "hew_supervisor_direct_id",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorChildGet => RuntimeOpRow {
+                symbol: "hew_supervisor_child_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::LocalPidSupervisorChildGet => RuntimeOpRow {
+                symbol: "hew_local_pid_supervisor_child_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorNestedGet => RuntimeOpRow {
+                symbol: "hew_supervisor_nested_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorPoolChildGet => RuntimeOpRow {
+                symbol: "hew_supervisor_pool_child_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::LocalPidSupervisorPoolChildRefGet => RuntimeOpRow {
+                symbol: "hew_local_pid_supervisor_pool_child_ref_get",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorPoolLen => RuntimeOpRow {
+                symbol: "hew_supervisor_pool_len",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorStop => RuntimeOpRow {
+                symbol: "hew_supervisor_stop",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::SupervisorRestartAwaitBlocking => RuntimeOpRow {
+                symbol: "hew_supervisor_restart_await_blocking",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TcpAttachLocal => RuntimeOpRow {
+                symbol: "hew_tcp_attach_local",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TlsAttachLocal => RuntimeOpRow {
+                symbol: "hew_tls_attach_local",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::WebSocketAttachLocal => RuntimeOpRow {
+                symbol: "hew_ws_attach_local",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskAwaitBlocking => RuntimeOpRow {
+                symbol: "hew_task_await_blocking",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskCompleteThreaded => RuntimeOpRow {
+                symbol: "hew_task_complete_threaded",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskCompletionObserve => RuntimeOpRow {
+                symbol: "hew_task_completion_observe",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskCompletionUnobserve => RuntimeOpRow {
+                symbol: "hew_task_completion_unobserve",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskFree => RuntimeOpRow {
+                symbol: "hew_task_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::GeneratorFree => RuntimeOpRow {
+                symbol: "hew_checked_generator_free",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskGetEnv => RuntimeOpRow {
+                symbol: "hew_task_get_env",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskGetError => RuntimeOpRow {
+                symbol: "hew_task_get_error",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskGetResult => RuntimeOpRow {
+                symbol: "hew_task_get_result",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskNew => RuntimeOpRow {
+                symbol: "hew_task_new",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeCancelAfterNs => RuntimeOpRow {
+                symbol: "hew_task_scope_cancel_after_ns",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeDestroy => RuntimeOpRow {
+                symbol: "hew_task_scope_destroy",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeJoinAll => RuntimeOpRow {
+                symbol: "hew_task_scope_join_all",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeNew => RuntimeOpRow {
+                symbol: "hew_task_scope_new",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeSetCurrent => RuntimeOpRow {
+                symbol: "hew_task_scope_set_current",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskScopeSpawn => RuntimeOpRow {
+                symbol: "hew_task_scope_spawn",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskSetEnv => RuntimeOpRow {
+                symbol: "hew_task_set_env",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskSetResult => RuntimeOpRow {
+                symbol: "hew_task_set_result",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::TaskSpawnThread => RuntimeOpRow {
+                symbol: "hew_task_spawn_thread",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::New) => RuntimeOpRow {
+                symbol: "vec.value.new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Vec)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Len) => RuntimeOpRow {
+                symbol: "vec.value.len",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Vec),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Contains) => RuntimeOpRow {
+                symbol: "vec.value.contains",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Index) => RuntimeOpRow {
+                symbol: "vec.value.index",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::TypeArgument(0)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Get) => RuntimeOpRow {
+                symbol: "vec.value.get",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Option,
+                        &[K::TypeArgument(0)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Push) => RuntimeOpRow {
+                symbol: "vec.value.push",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Value,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Set) => RuntimeOpRow {
+                symbol: "vec.value.set",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Value,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Pop) => RuntimeOpRow {
+                symbol: "vec.value.pop",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Vec),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::Vec),
+                        K::TypeArgument(0),
+                    ])),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Remove) => RuntimeOpRow {
+                symbol: "vec.value.remove",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::Vec),
+                        K::TypeArgument(0),
+                    ])),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Clear) => RuntimeOpRow {
+                symbol: "vec.value.clear",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Vec),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::IndexBorrow) => RuntimeOpRow {
+                symbol: "vec.value.index_borrow",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::Borrowed(K::TypeArgument(0)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::GetBorrow) => RuntimeOpRow {
+                symbol: "vec.value.get_borrow",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::Borrowed(K::Applied(BuiltinType::Option, &[K::TypeArgument(0)])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::TakeFirst) => RuntimeOpRow {
+                symbol: "vec.value.take_first",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Vec),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::Vec),
+                        K::TypeArgument(0),
+                    ])),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::Slice) => RuntimeOpRow {
+                symbol: "vec.value.slice",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Receiver(BuiltinType::Vec)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Vector(VecValueOp::SliceFrom) => RuntimeOpRow {
+                symbol: "vec.value.slice_from",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Receiver(BuiltinType::Vec)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Array(ArrayValueOp::Len) => RuntimeOpRow {
+                symbol: "array.value.len",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::FixedArray,
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Array(ArrayValueOp::Index) => RuntimeOpRow {
+                symbol: "array.value.index",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::FixedArray,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::ArrayElement),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Array(ArrayValueOp::IndexBorrow) => RuntimeOpRow {
+                symbol: "array.value.index_borrow",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::FixedArray,
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::Borrowed(K::ArrayElement),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Array(ArrayValueOp::Set) => RuntimeOpRow {
+                symbol: "array.value.set",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::FixedArray,
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::ArrayElement,
+                            effect: E::Value,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::FixedArray),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::New) => RuntimeOpRow {
+                symbol: "map.value.new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::HashMap)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Len) => RuntimeOpRow {
+                symbol: "map.value.len",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashMap),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Index) => RuntimeOpRow {
+                symbol: "map.value.index",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::IndependentValue(K::TypeArgument(1)),
+                    failures: &[
+                        RuntimeLogicalFailure::CallbackFault,
+                        RuntimeLogicalFailure::IndexOutOfBounds,
+                    ],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Get) => RuntimeOpRow {
+                symbol: "map.value.get",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Option,
+                        &[K::TypeArgument(1)],
+                    )),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::GetBorrow) => RuntimeOpRow {
+                symbol: "map.value.get_borrow",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::Borrowed(K::Applied(BuiltinType::Option, &[K::TypeArgument(1)])),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::ContainsKey) => RuntimeOpRow {
+                symbol: "map.value.contains_key",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Insert) => RuntimeOpRow {
+                symbol: "map.value.insert",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(1),
+                            effect: E::Value,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::HashMap)),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Remove) => RuntimeOpRow {
+                symbol: "map.value.remove",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashMap),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::HashMap),
+                        K::Applied(BuiltinType::Option, &[K::TypeArgument(1)]),
+                    ])),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Clear) => RuntimeOpRow {
+                symbol: "map.value.clear",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashMap),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::HashMap)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Keys) => RuntimeOpRow {
+                symbol: "map.value.keys",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashMap),
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Vec,
+                        &[K::TypeArgument(0)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Values) => RuntimeOpRow {
+                symbol: "map.value.values",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashMap),
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Vec,
+                        &[K::TypeArgument(1)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Map(MapValueOp::Entries) => RuntimeOpRow {
+                symbol: "map.value.entries",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashMap),
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Vec,
+                        &[K::Tuple(&[K::TypeArgument(0), K::TypeArgument(1)])],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::New) => RuntimeOpRow {
+                symbol: "set.value.new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::HashSet)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Len) => RuntimeOpRow {
+                symbol: "set.value.len",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashSet),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Contains) => RuntimeOpRow {
+                symbol: "set.value.contains",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashSet),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Insert) => RuntimeOpRow {
+                symbol: "set.value.insert",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashSet),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::HashSet),
+                        K::Bool,
+                    ])),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Remove) => RuntimeOpRow {
+                symbol: "set.value.remove",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::HashSet),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::TypeArgument(0),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
+                        K::Receiver(BuiltinType::HashSet),
+                        K::Bool,
+                    ])),
+                    failures: &[RuntimeLogicalFailure::CallbackFault],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Clear) => RuntimeOpRow {
+                symbol: "set.value.clear",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashSet),
+                        effect: E::Move,
+                    }],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::HashSet)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::Set(SetValueOp::Elements) => RuntimeOpRow {
+                symbol: "set.value.elements",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::HashSet),
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::Applied(
+                        BuiltinType::Vec,
+                        &[K::TypeArgument(0)],
+                    )),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecAppend => RuntimeOpRow {
+                symbol: "hew_vec_append",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecClear => RuntimeOpRow {
+                symbol: "hew_vec_clear",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecClone => RuntimeOpRow {
+                symbol: "hew_vec_clone",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecCloneLayout => RuntimeOpRow {
+                symbol: "hew_vec_clone_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecCloneOwned => RuntimeOpRow {
+                symbol: "hew_vec_clone_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecContainsLayout => RuntimeOpRow {
+                symbol: "hew_vec_contains_thunk",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecTakeAll => RuntimeOpRow {
+                symbol: "hew_vec_take_all",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecContainsOwned => RuntimeOpRow {
+                symbol: "hew_vec_contains_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecContainsScalar(VecContainsScalarElem::F64) => RuntimeOpRow {
+                symbol: "hew_vec_contains_f64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecContainsScalar(VecContainsScalarElem::I32) => RuntimeOpRow {
+                symbol: "hew_vec_contains_i32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecContainsScalar(VecContainsScalarElem::I64) => RuntimeOpRow {
+                symbol: "hew_vec_contains_i64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecContainsScalar(VecContainsScalarElem::Str) => RuntimeOpRow {
+                symbol: "hew_vec_contains_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::Bool) => RuntimeOpRow {
+                symbol: "hew_vec_get_bool",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecBool,
+            },
+            Self::VecGet(VecGetElem::F32) => RuntimeOpRow {
+                symbol: "hew_vec_get_f32",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::F64) => RuntimeOpRow {
+                symbol: "hew_vec_get_f64",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::I8) => RuntimeOpRow {
+                symbol: "hew_vec_get_i8",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::I16) => RuntimeOpRow {
+                symbol: "hew_vec_get_i16",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::I32) => RuntimeOpRow {
+                symbol: "hew_vec_get_i32",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecI32GetSet,
+            },
+            Self::VecGet(VecGetElem::I64) => RuntimeOpRow {
+                symbol: "hew_vec_get_i64",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::Clone) => RuntimeOpRow {
+                symbol: "hew_vec_get_clone",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::Take) => RuntimeOpRow {
+                symbol: "hew_vec_take_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecGet(VecGetElem::Layout) => RuntimeOpRow {
+                symbol: "hew_vec_get_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecGet(VecGetElem::Owned) => RuntimeOpRow {
+                symbol: "hew_vec_get_owned",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecGet(VecGetElem::Ptr) => RuntimeOpRow {
+                symbol: "hew_vec_get_ptr",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::Str) => RuntimeOpRow {
+                symbol: "hew_vec_get_str",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::U8) => RuntimeOpRow {
+                symbol: "hew_vec_get_u8",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecGet(VecGetElem::U16) => RuntimeOpRow {
+                symbol: "hew_vec_get_u16",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecIsEmpty => RuntimeOpRow {
+                symbol: "hew_vec_is_empty",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecJoinStr => RuntimeOpRow {
+                symbol: "hew_vec_join_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecLen => RuntimeOpRow {
+                symbol: "hew_vec_len",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecNew => RuntimeOpRow {
+                symbol: "Vec::new",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecConstructor,
+            },
+            Self::VecPopBool => RuntimeOpRow {
+                symbol: "hew_vec_pop_bool",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecBool,
+            },
+            Self::VecPopLayout => RuntimeOpRow {
+                symbol: "hew_vec_pop_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecPopOwned => RuntimeOpRow {
+                symbol: "hew_vec_pop_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecPushBool => RuntimeOpRow {
+                symbol: "hew_vec_push_bool",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecBool,
+            },
+            Self::VecPushLayout => RuntimeOpRow {
+                symbol: "hew_vec_push_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecPushOwned => RuntimeOpRow {
+                symbol: "hew_vec_push_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecPushOwnedMove => RuntimeOpRow {
+                symbol: "hew_vec_push_owned_move",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::F32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_f32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::F64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_f64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::I8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_i8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::I16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_i16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::I32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_i32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::I64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_i64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::Ptr,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_ptr",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::Str,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::U8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_u8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Push,
+                elem: VecScalarElem::U16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_push_u16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::F32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_f32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::F64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_f64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::I8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_i8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::I16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_i16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::I32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_i32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::I64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_i64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::Ptr,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_ptr",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::Str,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::U8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_u8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Pop,
+                elem: VecScalarElem::U16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_pop_u16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::F32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_f32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::F64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_f64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::I8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_i8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::I16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_i16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::I32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_i32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecI32GetSet,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::I64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_i64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::Ptr,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_ptr",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::Str,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::U8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_u8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::Set,
+                elem: VecScalarElem::U16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_set_u16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::F32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_f32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::F64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_f64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::I8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_i8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::I16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_i16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::I32,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_i32",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::I64,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_i64",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::Ptr,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_ptr",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::Str,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_str",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::U8,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_u8",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecScalar {
+                op: VecScalarOp::RemoveAt,
+                elem: VecScalarElem::U16,
+            } => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_u16",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+            },
+            Self::VecRemoveAtBool => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_bool",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecBool,
+            },
+            Self::VecRemoveAtLayout => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecRemoveAtOwned => RuntimeOpRow {
+                symbol: "hew_vec_remove_at_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecSetBool => RuntimeOpRow {
+                symbol: "hew_vec_set_bool",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecBool,
+            },
+            Self::VecSetLayout => RuntimeOpRow {
+                symbol: "hew_vec_set_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecSetOwned => RuntimeOpRow {
+                symbol: "hew_vec_set_owned",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecSetOwnedMove => RuntimeOpRow {
+                symbol: "hew_vec_set_owned_move",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecSliceRange(VecSliceElem::Bytesize) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_bytesize",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecSliceRange(VecSliceElem::F64) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_f64",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecSliceRange(VecSliceElem::I32) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_i32",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecSliceRange(VecSliceElem::I64) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_i64",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecSliceRange(VecSliceElem::Layout) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_layout",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecLayout,
+            },
+            Self::VecSliceRange(VecSliceElem::Owned) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_owned",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::VecOwned,
+            },
+            Self::VecSliceRange(VecSliceElem::Ptr) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_ptr",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VecSliceRange(VecSliceElem::Str) => RuntimeOpRow {
+                symbol: "hew_vec_slice_range_str",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
+            Self::VtableDispatchPanicOnOob => RuntimeOpRow {
+                symbol: "hew_vtable_dispatch_panic_on_oob",
+                contract: None,
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+            },
         }
     }
 
-    /// Inverse of [`RuntimeCallFamily::c_symbol`]: recover the typed
-    /// family from its C-ABI symbol. Returns `None` for any string the
-    /// substrate does not recognise — including user-defined extern
-    /// FFI symbols routed via `#[extern_symbol]`, which are open-set
-    /// by design and never need to be in this catalog.
+    /// The C-ABI symbol this operation lowers to, from its row.
     ///
-    /// Bijection with `c_symbol()` is the load-bearing invariant; the
-    /// round-trip is unit-tested below. Adding a new variant requires
-    /// updating both arms in lock-step, which the bijection test
-    /// catches at build time.
+    /// A `Declared` row's symbol is the linker symbol. A `PreStaged` row's is
+    /// the codegen `Terminator::Call` intercept callee name, which the linker
+    /// never has to resolve at the call site.
     #[must_use]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "inverse of the c_symbol enumeration; one arm per symbol"
-    )]
-    pub fn from_c_symbol(sym: &str) -> Option<Self> {
-        if let Some(op) = AsyncIoOp::from_c_symbol(sym) {
-            return Some(Self::AsyncIo(op));
-        }
-        if let Some(op) = TcpOp::from_c_symbol(sym) {
-            return Some(Self::Tcp(op));
-        }
-        if let Some(op) = FileReadOp::from_c_symbol(sym) {
-            return Some(Self::FileRead(op));
-        }
+    pub const fn c_symbol(self) -> &'static str {
+        self.row().symbol
+    }
 
-        if let Some((format, op)) = EncodingOp::from_c_symbol(sym) {
-            return Some(Self::Encoding { format, op });
-        }
-        if let Some(family) = vec_scalar_from_c_symbol(sym) {
-            return Some(family);
-        }
-        let family = match sym {
-            // Actor
-            "hew_actor_ask" => Self::ActorAsk,
-            "hew_actor_ask_with_channel" => Self::ActorAskWithChannel,
-            "hew_actor_cooperate" => Self::ActorCooperate,
-            "hew_actor_demonitor" => Self::ActorDemonitor,
-            "hew_actor_gen_sink_complete" => Self::ActorGenSinkComplete,
-            "hew_actor_gen_sink_register" => Self::ActorGenSinkRegister,
-            "hew_actor_link" => Self::ActorLink,
-            "hew_node_link_remote_location" => Self::LinkRemote,
-            "hew_actor_monitor" => Self::ActorMonitor,
-            "hew_actor_self" => Self::ActorSelf,
-            "hew_actor_send_by_id" => Self::ActorSendById,
-            "hew_actor_unlink" => Self::ActorUnlink,
-            "hew_actor_spawn" => Self::ActorSpawn,
-            // Auto-mutex
-            "hew_auto_mutex_alloc" => Self::AutoMutexAlloc,
-            "hew_auto_mutex_free" => Self::AutoMutexFree,
-            "hew_auto_mutex_lock" => Self::AutoMutexLock,
-            "hew_auto_mutex_unlock" => Self::AutoMutexUnlock,
-            // Bytes
-            "hew_bytes_append" => Self::BytesAppend,
-            "hew_bytes_clear" => Self::BytesClear,
-            "hew_bytes_contains" => Self::BytesContains,
-            "hew_bytes_decode_utf8" => Self::BytesDecodeUtf8,
-            "hew_bytes_decode_utf8_lossy" => Self::BytesDecodeUtf8Lossy,
-            "hew_bytes_get" => Self::BytesGet,
-            "hew_bytes_index" => Self::BytesIndex,
-            "hew_bytes_is_empty" => Self::BytesIsEmpty,
-            "hew_bytes_len" => Self::BytesLen,
-            "hew_bytes_pop" => Self::BytesPop,
-            "hew_bytes_push" => Self::BytesPush,
-            "hew_bytes_set" => Self::BytesSet,
-            "hew_bytes_slice" => Self::BytesSlice,
-            "hew_bytes_slice_from" => Self::BytesSliceFrom,
-            "bytes::new" => Self::BytesNew,
-            // CancellationToken
-            "hew_cancel_token_is_requested" => Self::CancelTokenIsRequested,
-            "hew_cancel_token_release" => Self::CancelTokenRelease,
-            "hew_cancel_token_retain" => Self::CancelTokenRetain,
-            // Channel
-            "hew_channel_recv_layout" => Self::ChannelRecvLayout,
-            "hew_channel_send_layout" => Self::ChannelSendLayout,
-            "hew_channel_try_recv_layout" => Self::ChannelTryRecvLayout,
-            "hew_channel_sender_clone" => Self::ChannelSenderClone,
-            "hew_channel_sender_close" => Self::ChannelSenderClose,
-            "hew_channel_receiver_close" => Self::ChannelReceiverClose,
-            "hew_channel_new" => Self::ChannelPairNew,
-            "hew_channel_pair_free" => Self::ChannelPairFree,
-            "hew_msg_envelope_release" => Self::ActorRequestRelease,
-            "hew_actor_call_free" => Self::ActorCallFree,
-            "hew_actor_ask_wait_take_request" => Self::ActorRequestTake,
-            "hew_channel_pair_is_valid" => Self::ChannelPairIsValid,
-            "hew_channel_pair_sender" => Self::ChannelPairSender,
-            "hew_channel_pair_receiver" => Self::ChannelPairReceiver,
-            // Duplex
-            "hew_duplex_clone" => Self::DuplexClone,
-            "hew_duplex_close" => Self::DuplexClose,
-            "hew_duplex_close_half" => Self::DuplexCloseHalf,
-            "hew_duplex_pair" => Self::DuplexPair,
-            "hew_duplex_payload_free" => Self::DuplexPayloadFree,
-            "hew_duplex_recv" => Self::DuplexRecv,
-            "hew_duplex_recv_half" => Self::DuplexRecvHalf,
-            "hew_duplex_send" => Self::DuplexSend,
-            "hew_duplex_send_half" => Self::DuplexSendHalf,
-            "hew_duplex_try_recv" => Self::DuplexTryRecv,
-            "hew_duplex_try_send" => Self::DuplexTrySend,
-            // Duration
-            "hew_duration_abs" => Self::DurationAbs,
-            "hew_duration_hours" => Self::DurationHours,
-            "hew_duration_is_zero" => Self::DurationIsZero,
-            "hew_duration_micros" => Self::DurationMicros,
-            "hew_duration_millis" => Self::DurationMillis,
-            "hew_duration_mins" => Self::DurationMins,
-            "hew_duration_nanos" => Self::DurationNanos,
-            "hew_duration_secs" => Self::DurationSecs,
-            // Dyn box
-            "hew_dyn_box_alloc" => Self::DynBoxAlloc,
-            "hew_dyn_box_free" => Self::DynBoxFree,
-            // HashMap
-            "hew_hashmap_contains_key_layout" => Self::HashMapContainsKeyLayout,
-            "hew_hashmap_clear_layout" => Self::HashMapClearLayout,
-            "hew_hashmap_clone_layout" => Self::HashMapCloneLayout,
-            "hew_hashmap_entries_layout" => Self::HashMapEntriesLayout,
-            "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
-            "hew_hashmap_get_layout" => Self::HashMapGetLayout,
-            "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
-            "hew_hashmap_keys_layout" => Self::HashMapKeysLayout,
-            "hew_hashmap_len_layout" => Self::HashMapLenLayout,
-            "HashMap::new" => Self::HashMapNew,
-            "hew_hashmap_new_with_layout" => Self::HashMapNewWithLayout,
-            "hew_hashmap_remove_layout" => Self::HashMapRemoveLayout,
-            "hew_hashmap_values_layout" => Self::HashMapValuesLayout,
-            // HashSet
-            "hew_hashset_contains_layout" => Self::HashSetContainsLayout,
-            "hew_hashset_clear_layout" => Self::HashSetClearLayout,
-            "hew_hashset_clone_layout" => Self::HashSetCloneLayout,
-            "hew_hashset_free_layout" => Self::HashSetFreeLayout,
-            "hew_hashset_insert_layout" => Self::HashSetInsertLayout,
-            "hew_hashset_is_empty_layout" => Self::HashSetIsEmptyLayout,
-            "hew_hashset_len_layout" => Self::HashSetLenLayout,
-            "HashSet::new" => Self::HashSetNew,
-            "hew_hashset_new_with_layout" => Self::HashSetNewWithLayout,
-            "hew_hashset_remove_layout" => Self::HashSetRemoveLayout,
-            "hew_hashset_to_vec_layout" => Self::HashSetToVecLayout,
-            // Instant
-            "hew_instant_duration_since" => Self::InstantDurationSince,
-            "hew_instant_elapsed" => Self::InstantElapsed,
-            "hew_instant_now" => Self::InstantNow,
-            // Math intrinsics
-            "sqrt" => Self::MathIntrinsic(MathIntrinsic::Sqrt),
-            "exp" => Self::MathIntrinsic(MathIntrinsic::Exp),
-            "log" => Self::MathIntrinsic(MathIntrinsic::Log),
-            "sin" => Self::MathIntrinsic(MathIntrinsic::Sin),
-            "cos" => Self::MathIntrinsic(MathIntrinsic::Cos),
-            "abs" => Self::MathIntrinsic(MathIntrinsic::AbsI64),
-            "min" => Self::MathIntrinsic(MathIntrinsic::MinI64),
-            "max" => Self::MathIntrinsic(MathIntrinsic::MaxI64),
-            "abs_f" => Self::MathIntrinsic(MathIntrinsic::AbsF64),
-            "min_f" => Self::MathIntrinsic(MathIntrinsic::MinF64),
-            "max_f" => Self::MathIntrinsic(MathIntrinsic::MaxF64),
-            "pow" => Self::MathIntrinsic(MathIntrinsic::Pow),
-            "floor" => Self::MathIntrinsic(MathIntrinsic::Floor),
-            "ceil" => Self::MathIntrinsic(MathIntrinsic::Ceil),
-            "round" => Self::MathIntrinsic(MathIntrinsic::Round),
-            // Node
-            "Node::allow_peer" => Self::NodeAllowPeer,
-            "Node::connect" => Self::NodeConnect,
-            "Node::id" => Self::NodeId,
-            "Node::identity_key" => Self::NodeIdentityKey,
-            "Node::load_keys" => Self::NodeLoadKeys,
-            "Node::lookup" => Self::NodeLookup,
-            "hew_node_monitor_location" => Self::NodeMonitor,
-            "Node::register" => Self::NodeRegister,
-            "Node::set_transport" => Self::NodeSetTransport,
-            "Node::shutdown" => Self::NodeShutdown,
-            "Node::start" => Self::NodeStart,
-            // User metrics (#1862)
-            "hew_metric_counter_register" => Self::MetricCounterRegister,
-            "hew_metric_counter_inc" => Self::MetricCounterInc,
-            "hew_metric_counter_add" => Self::MetricCounterAdd,
-            "hew_metric_gauge_register" => Self::MetricGaugeRegister,
-            "hew_metric_gauge_set" => Self::MetricGaugeSet,
-            "hew_metric_gauge_inc" => Self::MetricGaugeInc,
-            "hew_metric_gauge_dec" => Self::MetricGaugeDec,
-            "hew_metric_gauge_add" => Self::MetricGaugeAdd,
-            "hew_metric_histogram_register" => Self::MetricHistogramRegister,
-            "hew_metric_histogram_register_simple" => Self::MetricHistogramRegisterSimple,
-            "hew_metric_histogram_record" => Self::MetricHistogramRecord,
-            "hew_metric_vec_register" => Self::MetricVecRegister,
-            "hew_metric_vec_with" => Self::MetricVecWith,
-            // Observe
-            "hew_observe_read_u64" => Self::ObserveReadU64,
-            "hew_observe_scrape" => Self::ObserveScrape,
-            "hew_observe_series" => Self::ObserveSeries,
-            "hew_observe_barrier" => Self::ObserveBarrier,
-            // Rc
-            "hew_rc_clone" => Self::RcClone,
-            "hew_rc_downgrade" => Self::RcDowngrade,
-            "hew_rc_drop" => Self::RcDrop,
-            "hew_rc_get" => Self::RcGet,
-            "hew_rc_is_unique" => Self::RcIsUnique,
-            "hew_rc_new" => Self::RcNew,
-            "hew_rc_set" => Self::RcSet,
-            "hew_rc_strong_count" => Self::RcStrongCount,
-            "hew_rc_weak_count" => Self::RcWeakCount,
-            "hew_weak_clone_rc" => Self::WeakCloneRc,
-            "hew_weak_drop_rc" => Self::WeakDropRc,
-            "hew_weak_upgrade_rc" => Self::WeakUpgradeRc,
-            // RecvHalf
-            "hew_recv_half_recv" => Self::RecvHalfRecv,
-            "hew_recv_half_try_recv" => Self::RecvHalfTryRecv,
-            // Regex
-            "hew_regex_capture" => Self::RegexCapture,
-            "hew_regex_compile" => Self::RegexCompile,
-            "hew_regex_free_capture" => Self::RegexFreeCapture,
-            "hew_regex_handle" => Self::RegexHandle,
-            "hew_regex_match" => Self::RegexMatch,
-            // RemotePid<T>::send intercept
-            "hew_remote_pid_send" => Self::RemotePidSend,
-            // Reply channel
-            "hew_reply_channel_cancel" => Self::ReplyChannelCancel,
-            "hew_reply_channel_free" => Self::ReplyChannelFree,
-            "hew_reply_channel_new" => Self::ReplyChannelNew,
-            "hew_reply_payload_free" => Self::ReplyPayloadFree,
-            "hew_reply_wait" => Self::ReplyWait,
-            // Select
-            "hew_select_first" => Self::SelectFirst,
-            // SendHalf
-            "hew_send_half_send" => Self::SendHalfSend,
-            "hew_send_half_try_send" => Self::SendHalfTrySend,
-            // Sink
-            "hew_sink_close" => Self::SinkClose,
-            "hew_sink_peer_closed" => Self::SinkPeerClosed,
-            "hew_sink_write_bytes" => Self::SinkWrite(StreamElementKind::Bytes),
-            "hew_sink_write_string" => Self::SinkWrite(StreamElementKind::String),
-            "hew_sink_try_write_bytes" => Self::SinkTryWrite(StreamElementKind::Bytes),
-            "hew_sink_try_write_string" => Self::SinkTryWrite(StreamElementKind::String),
-            // Stream
-            "hew_stream_close" => Self::StreamClose,
-            "hew_stream_next_layout" => Self::StreamNextLayout,
-            "hew_stream_send_layout" => Self::StreamSendLayout,
-            "hew_stream_try_next_layout" => Self::StreamTryNextLayout,
-            // String
-            "hew_string_byte_length" => Self::StringByteLen,
-            "hew_string_char_at" => Self::StringCharAt,
-            "hew_string_char_at_utf8" => Self::StringCharAtUtf8,
-            "hew_string_char_count" => Self::StringCharCount,
-            "hew_string_concat" => Self::StringConcat,
-            "hew_string_equals" => Self::StringEquals,
-            "hew_string_compare" => Self::StringCompare,
-            "hew_string_starts_with" => Self::StringStartsWith,
-            "hew_string_ends_with" => Self::StringEndsWith,
-            "hew_string_contains" => Self::StringContains,
-            "hew_string_is_empty" => Self::StringIsEmpty,
-            "hew_string_is_digit" => Self::StringIsDigit,
-            "hew_string_is_alpha" => Self::StringIsAlpha,
-            "hew_string_is_alphanumeric" => Self::StringIsAlphanumeric,
-            "hew_structural_format" => Self::StructuralFormat,
-            "hew_string_find" => Self::StringFind,
-            "hew_string_get" => Self::StringGet,
-            "hew_string_index" => Self::StringIndex,
-            "hew_string_length" => Self::StringLen,
-            "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
-            "hew_string_slice_codepoints_from" => Self::StringSliceCodepointsFrom,
-            "hew_string_repeat" => Self::StringRepeat,
-            "hew_string_replace" => Self::StringReplace,
-            "hew_string_clone" => Self::StringClone,
-            "hew_string_split" => Self::StringSplit,
-            "hew_string_lines" => Self::StringLines,
-            "hew_string_chars" => Self::StringChars,
-            "hew_string_slice" => Self::StringSlice,
-            "hew_string_to_lowercase" => Self::StringToLowercase,
-            "hew_string_to_bytes" => Self::StringToBytes,
-            "hew_string_to_uppercase" => Self::StringToUppercase,
-            "hew_string_trim" => Self::StringTrim,
-            "hew_u8_to_string" => Self::U8ToString,
-            "hew_int_to_string" => Self::I32ToString,
-            "hew_i64_to_string" => Self::I64ToString,
-            "hew_uint_to_string" => Self::U32ToString,
-            "hew_u64_to_string" => Self::U64ToString,
-            "hew_float_to_string" => Self::F64ToString,
-            "hew_char_to_string" => Self::CharToString,
-            "hew_exit" => Self::ProcessExit,
-            "hew_io_write_err" => Self::StderrWrite,
-            "hew_bool_to_string" => Self::BoolToString,
-            "hew_println_int" => Self::Print {
-                kind: PrintKind::I64,
-                newline: true,
-            },
-            "hew_println_bool" => Self::Print {
-                kind: PrintKind::Bool,
-                newline: true,
-            },
-            "hew_println_str" => Self::Print {
-                kind: PrintKind::Str,
-                newline: true,
-            },
-            "hew_println_f64" => Self::Print {
-                kind: PrintKind::F64,
-                newline: true,
-            },
-            // Supervisor
-            "hew_supervisor_direct_id" => Self::SupervisorDirectId,
-            "hew_supervisor_child_get" => Self::SupervisorChildGet,
-            "hew_local_pid_supervisor_child_get" => Self::LocalPidSupervisorChildGet,
-            "hew_supervisor_nested_get" => Self::SupervisorNestedGet,
-            "hew_supervisor_pool_child_get" => Self::SupervisorPoolChildGet,
-            "hew_local_pid_supervisor_pool_child_ref_get" => {
-                Self::LocalPidSupervisorPoolChildRefGet
-            }
-            "hew_supervisor_pool_len" => Self::SupervisorPoolLen,
-            "hew_supervisor_stop" => Self::SupervisorStop,
-            "hew_supervisor_restart_await_blocking" => Self::SupervisorRestartAwaitBlocking,
-            // Active transport attach
-            "hew_tcp_attach_local" => Self::TcpAttachLocal,
-            "hew_tls_attach_local" => Self::TlsAttachLocal,
-            "hew_ws_attach_local" => Self::WebSocketAttachLocal,
-            // Task
-            "hew_task_await_blocking" => Self::TaskAwaitBlocking,
-            "hew_task_complete_threaded" => Self::TaskCompleteThreaded,
-            "hew_task_completion_observe" => Self::TaskCompletionObserve,
-            "hew_task_completion_unobserve" => Self::TaskCompletionUnobserve,
-            "hew_task_free" => Self::TaskFree,
-            "hew_checked_generator_free" => Self::GeneratorFree,
-            "hew_task_get_env" => Self::TaskGetEnv,
-            "hew_task_get_error" => Self::TaskGetError,
-            "hew_task_get_result" => Self::TaskGetResult,
-            "hew_task_new" => Self::TaskNew,
-            "hew_task_scope_cancel_after_ns" => Self::TaskScopeCancelAfterNs,
-            "hew_task_scope_destroy" => Self::TaskScopeDestroy,
-            "hew_task_scope_join_all" => Self::TaskScopeJoinAll,
-            "hew_task_scope_new" => Self::TaskScopeNew,
-            "hew_task_scope_set_current" => Self::TaskScopeSetCurrent,
-            "hew_task_scope_spawn" => Self::TaskScopeSpawn,
-            "hew_task_set_env" => Self::TaskSetEnv,
-            "hew_task_set_result" => Self::TaskSetResult,
-            "hew_task_spawn_thread" => Self::TaskSpawnThread,
-            // Vec
-            "hew_vec_append" => Self::VecAppend,
-            "hew_vec_clear" => Self::VecClear,
-            "hew_vec_clone" => Self::VecClone,
-            "hew_vec_clone_layout" => Self::VecCloneLayout,
-            "hew_vec_clone_owned" => Self::VecCloneOwned,
-            "hew_vec_take_all" => Self::VecTakeAll,
-            "hew_vec_contains_thunk" => Self::VecContainsLayout,
-            "hew_vec_contains_owned" => Self::VecContainsOwned,
-            "hew_vec_contains_f64" => Self::VecContainsScalar(VecContainsScalarElem::F64),
-            "hew_vec_contains_i32" => Self::VecContainsScalar(VecContainsScalarElem::I32),
-            "hew_vec_contains_i64" => Self::VecContainsScalar(VecContainsScalarElem::I64),
-            "hew_vec_contains_str" => Self::VecContainsScalar(VecContainsScalarElem::Str),
-            "hew_vec_get_bool" => Self::VecGet(VecGetElem::Bool),
-            "hew_vec_get_f32" => Self::VecGet(VecGetElem::F32),
-            "hew_vec_get_f64" => Self::VecGet(VecGetElem::F64),
-            "hew_vec_get_i8" => Self::VecGet(VecGetElem::I8),
-            "hew_vec_get_i16" => Self::VecGet(VecGetElem::I16),
-            "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
-            "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
-            "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
-            "hew_vec_take_owned" => Self::VecGet(VecGetElem::Take),
-            "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
-            "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
-            "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
-            "hew_vec_get_str" => Self::VecGet(VecGetElem::Str),
-            "hew_vec_get_u8" => Self::VecGet(VecGetElem::U8),
-            "hew_vec_get_u16" => Self::VecGet(VecGetElem::U16),
-            "hew_vec_is_empty" => Self::VecIsEmpty,
-            "hew_vec_join_str" => Self::VecJoinStr,
-            "hew_vec_len" => Self::VecLen,
-            "supervisor.pool.member" => Self::SupervisorPool(SupervisorPoolOp::Member),
-            "supervisor.pool.get" => Self::SupervisorPool(SupervisorPoolOp::Get),
-            "supervisor.pool.await_restart_member" => {
-                Self::SupervisorPool(SupervisorPoolOp::AwaitRestartMember)
-            }
-            "array.value.len" => Self::Array(ArrayValueOp::Len),
-            "array.value.index" => Self::Array(ArrayValueOp::Index),
-            "array.value.index_borrow" => Self::Array(ArrayValueOp::IndexBorrow),
-            "array.value.set" => Self::Array(ArrayValueOp::Set),
-            "vec.value.new" => Self::Vector(VecValueOp::New),
-            "map.value.new" => Self::Map(MapValueOp::New),
-            "map.value.len" => Self::Map(MapValueOp::Len),
-            "map.value.index" => Self::Map(MapValueOp::Index),
-            "map.value.get" => Self::Map(MapValueOp::Get),
-            "map.value.get_borrow" => Self::Map(MapValueOp::GetBorrow),
-            "map.value.contains_key" => Self::Map(MapValueOp::ContainsKey),
-            "map.value.insert" => Self::Map(MapValueOp::Insert),
-            "map.value.remove" => Self::Map(MapValueOp::Remove),
-            "map.value.clear" => Self::Map(MapValueOp::Clear),
-            "map.value.keys" => Self::Map(MapValueOp::Keys),
-            "map.value.values" => Self::Map(MapValueOp::Values),
-            "map.value.entries" => Self::Map(MapValueOp::Entries),
-            "set.value.new" => Self::Set(SetValueOp::New),
-            "set.value.len" => Self::Set(SetValueOp::Len),
-            "set.value.contains" => Self::Set(SetValueOp::Contains),
-            "set.value.insert" => Self::Set(SetValueOp::Insert),
-            "set.value.remove" => Self::Set(SetValueOp::Remove),
-            "set.value.clear" => Self::Set(SetValueOp::Clear),
-            "set.value.elements" => Self::Set(SetValueOp::Elements),
-            "vec.value.len" => Self::Vector(VecValueOp::Len),
-            "vec.value.contains" => Self::Vector(VecValueOp::Contains),
-            "vec.value.index" => Self::Vector(VecValueOp::Index),
-            "vec.value.get" => Self::Vector(VecValueOp::Get),
-            "vec.value.push" => Self::Vector(VecValueOp::Push),
-            "vec.value.set" => Self::Vector(VecValueOp::Set),
-            "vec.value.pop" => Self::Vector(VecValueOp::Pop),
-            "vec.value.remove" => Self::Vector(VecValueOp::Remove),
-            "vec.value.clear" => Self::Vector(VecValueOp::Clear),
-            "vec.value.index_borrow" => Self::Vector(VecValueOp::IndexBorrow),
-            "vec.value.get_borrow" => Self::Vector(VecValueOp::GetBorrow),
-            "vec.value.take_first" => Self::Vector(VecValueOp::TakeFirst),
-            "vec.value.slice" => Self::Vector(VecValueOp::Slice),
-            "vec.value.slice_from" => Self::Vector(VecValueOp::SliceFrom),
-            "Vec::new" => Self::VecNew,
-            "hew_vec_pop_bool" => Self::VecPopBool,
-            "hew_vec_pop_layout" => Self::VecPopLayout,
-            "hew_vec_pop_owned" => Self::VecPopOwned,
-            "hew_vec_push_bool" => Self::VecPushBool,
-            "hew_vec_push_layout" => Self::VecPushLayout,
-            "hew_vec_push_owned" => Self::VecPushOwned,
-            "hew_vec_push_owned_move" => Self::VecPushOwnedMove,
-            "hew_vec_remove_at_bool" => Self::VecRemoveAtBool,
-            "hew_vec_remove_at_layout" => Self::VecRemoveAtLayout,
-            "hew_vec_remove_at_owned" => Self::VecRemoveAtOwned,
-            "hew_vec_set_bool" => Self::VecSetBool,
-            "hew_vec_set_layout" => Self::VecSetLayout,
-            "hew_vec_set_owned" => Self::VecSetOwned,
-            "hew_vec_set_owned_move" => Self::VecSetOwnedMove,
-            "hew_vec_slice_range_bytesize" => Self::VecSliceRange(VecSliceElem::Bytesize),
-            "hew_vec_slice_range_f64" => Self::VecSliceRange(VecSliceElem::F64),
-            "hew_vec_slice_range_i32" => Self::VecSliceRange(VecSliceElem::I32),
-            "hew_vec_slice_range_i64" => Self::VecSliceRange(VecSliceElem::I64),
-            "hew_vec_slice_range_layout" => Self::VecSliceRange(VecSliceElem::Layout),
-            "hew_vec_slice_range_owned" => Self::VecSliceRange(VecSliceElem::Owned),
-            "hew_vec_slice_range_ptr" => Self::VecSliceRange(VecSliceElem::Ptr),
-            "hew_vec_slice_range_str" => Self::VecSliceRange(VecSliceElem::Str),
-            // Vtable
-            "hew_vtable_dispatch_panic_on_oob" => Self::VtableDispatchPanicOnOob,
-            _ => return None,
-        };
-        Some(family)
+    /// The operation that owns a C symbol, when the symbol names exactly one.
+    ///
+    /// This is the row table's `symbol` column read backwards, so a new
+    /// operation needs no reverse arm. A symbol several rows share names no
+    /// single operation: `hew_print_value` carries its element type and its
+    /// newline flag beside the symbol, so it does not identify a row.
+    #[must_use]
+    pub fn from_c_symbol(sym: &str) -> Option<Self> {
+        static BY_SYMBOL: std::sync::OnceLock<
+            std::collections::HashMap<&'static str, Option<RuntimeCallFamily>>,
+        > = std::sync::OnceLock::new();
+        BY_SYMBOL
+            .get_or_init(|| {
+                let mut symbols = std::collections::HashMap::new();
+                for family in all_runtime_call_families() {
+                    symbols
+                        .entry(family.row().symbol)
+                        .and_modify(|owner: &mut Option<RuntimeCallFamily>| *owner = None)
+                        .or_insert(Some(family));
+                }
+                symbols
+            })
+            .get(sym)
+            .copied()
+            .flatten()
     }
 
     /// Recover a family that is intentionally carried on MIR
@@ -4064,75 +6714,19 @@ impl RuntimeCallFamily {
         self.is_mir_emitter_family() && !self.is_synthetic_mir_symbol()
     }
 
-    /// Codegen ABI partition for collection direct-call routing.
+    /// ABI-routing shape for collection calls that need bespoke marshalling.
     #[must_use]
     pub const fn abi_shape(self) -> RuntimeCallAbiShape {
-        match self {
-            Self::VecPushBool
-            | Self::VecGet(VecGetElem::Bool)
-            | Self::VecSetBool
-            | Self::VecPopBool
-            | Self::VecRemoveAtBool => RuntimeCallAbiShape::VecBool,
-            Self::VecGet(VecGetElem::I32)
-            | Self::VecScalar {
-                op: VecScalarOp::Set,
-                elem: VecScalarElem::I32,
-            } => RuntimeCallAbiShape::VecI32GetSet,
-            Self::VecScalar { .. } => RuntimeCallAbiShape::VecScalarDirect,
-            Self::VecNew => RuntimeCallAbiShape::VecConstructor,
-            Self::VecPushLayout
-            | Self::VecGet(VecGetElem::Layout)
-            | Self::VecSetLayout
-            | Self::VecPopLayout
-            | Self::VecContainsLayout
-            | Self::VecRemoveAtLayout
-            | Self::VecCloneLayout
-            | Self::VecSliceRange(VecSliceElem::Layout) => RuntimeCallAbiShape::VecLayout,
-            Self::VecGet(VecGetElem::Take | VecGetElem::Owned)
-            | Self::VecPushOwned
-            | Self::VecPushOwnedMove
-            | Self::VecSetOwned
-            | Self::VecSetOwnedMove
-            | Self::VecPopOwned
-            | Self::VecRemoveAtOwned
-            | Self::VecCloneOwned
-            | Self::VecTakeAll
-            | Self::VecContainsOwned
-            | Self::VecSliceRange(VecSliceElem::Owned) => RuntimeCallAbiShape::VecOwned,
-            Self::HashMapInsertLayout
-            | Self::HashMapContainsKeyLayout
-            | Self::HashMapRemoveLayout
-            | Self::HashMapLenLayout
-            | Self::HashMapKeysLayout
-            | Self::HashMapValuesLayout
-            | Self::HashMapCloneLayout
-            | Self::HashMapEntriesLayout
-            | Self::HashMapClearLayout
-            | Self::HashSetInsertLayout
-            | Self::HashSetContainsLayout
-            | Self::HashSetRemoveLayout
-            | Self::HashSetLenLayout
-            | Self::HashSetIsEmptyLayout
-            | Self::HashSetToVecLayout
-            | Self::HashSetCloneLayout
-            | Self::HashSetClearLayout => RuntimeCallAbiShape::HashCollectionLayoutOp,
-            Self::HashMapGetLayout => RuntimeCallAbiShape::HashMapLayoutGet,
-            Self::HashMapNew
-            | Self::HashMapNewWithLayout
-            | Self::HashSetNew
-            | Self::HashSetNewWithLayout => RuntimeCallAbiShape::HashCollectionConstructor,
-            Self::BytesNew => RuntimeCallAbiShape::BytesConstructor,
-            _ => RuntimeCallAbiShape::Other,
-        }
+        self.row().abi_shape
     }
 
     const fn collection_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         match self {
-            Self::Array(op) => Some(op.contract()),
-            Self::SupervisorPool(op) => Some(op.contract()),
-            Self::Vector(op) => Some(op.contract()),
-            Self::Map(op) => Some(op.contract()),
-            Self::Set(op) => Some(op.contract()),
+            Self::Array(_)
+            | Self::SupervisorPool(_)
+            | Self::Vector(_)
+            | Self::Map(_)
+            | Self::Set(_) => self.row().contract,
             _ => None,
         }
     }
@@ -4296,313 +6890,11 @@ impl RuntimeCallFamily {
         }
     }
 
-    /// Exact semantic operation contract currently admitted by ownership SIR.
-    /// Families outside this deliberately small surface fail closed.
+    /// Exact semantic operation contract ownership SIR admits. An operation
+    /// whose row publishes no contract fails closed.
     #[must_use]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat per-family contract table reads more clearly as one match \
-                  than split across helper functions"
-    )]
     pub const fn semantic_contract(self) -> Option<RuntimeSemanticContract> {
-        use RuntimeArgumentEffect::{Borrow, Copy, Move};
-        use RuntimeResultEffect::{
-            BitCopy, FreshOwned, IndependentValue, Never, Unit, UpdatedReceiver,
-        };
-        use RuntimeValueKind::{Bool, Bytes, Named, String, Unit as UnitKind, I64, U8};
-
-        const BYTES_INDEX: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Borrow,
-            },
-            RuntimeArgumentContract {
-                ty: I64,
-                effect: Copy,
-            },
-        ];
-        const BYTES_PUSH: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Move,
-            },
-            RuntimeArgumentContract {
-                ty: U8,
-                effect: Copy,
-            },
-        ];
-        const BYTES_APPEND: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Move,
-            },
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Borrow,
-            },
-        ];
-        const BYTES_CLEAR: &[RuntimeArgumentContract] = &[RuntimeArgumentContract {
-            ty: Bytes,
-            effect: Move,
-        }];
-        const BYTES_CONTAINS: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Borrow,
-            },
-            RuntimeArgumentContract {
-                ty: U8,
-                effect: Copy,
-            },
-        ];
-        const BYTES_SET: &[RuntimeArgumentContract] = &[
-            RuntimeArgumentContract {
-                ty: Bytes,
-                effect: Move,
-            },
-            RuntimeArgumentContract {
-                ty: I64,
-                effect: Copy,
-            },
-            RuntimeArgumentContract {
-                ty: U8,
-                effect: Copy,
-            },
-        ];
-
-        if let Some(contract) = self.collection_semantic_contract() {
-            return Some(contract);
-        }
-
-        if let Some(contract) = self.text_variant_semantic_contract() {
-            return Some(contract);
-        }
-
-        if let Some(contract) = self.time_semantic_contract() {
-            return Some(contract);
-        }
-
-        Some(match self {
-            Self::AsyncIo(op) => op.contract(),
-            Self::FileRead(op) => op.contract(),
-            Self::Tcp(op) => op.contract(),
-            Self::StreamClose => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::Receiver(BuiltinType::Stream),
-                    effect: RuntimeArgumentEffect::Move,
-                }],
-                RuntimeResultEffect::Unit,
-                &[],
-            ),
-            Self::SinkClose => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::Receiver(BuiltinType::Sink),
-                    effect: RuntimeArgumentEffect::Move,
-                }],
-                RuntimeResultEffect::Unit,
-                &[],
-            ),
-            Self::ChannelSenderClone => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Sender),
-                    effect: RuntimeArgumentEffect::Borrow,
-                }],
-                RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalf(
-                    ChannelHalfKind::Sender,
-                )),
-                &[],
-            ),
-            Self::ChannelSenderClose => channel_sender_close_contract(),
-            Self::ChannelReceiverClose => channel_receiver_close_contract(),
-            Self::ChannelPairNew => channel_pair_new_contract(),
-            Self::ChannelPairFree => channel_pair_free_contract(),
-            Self::ActorCallFree => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::Receiver(BuiltinType::ActorCall),
-                    effect: RuntimeArgumentEffect::Move,
-                }],
-                RuntimeResultEffect::Unit,
-                &[],
-            ),
-            Self::ActorRequestRelease => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::ActorRequestOwner,
-                    effect: RuntimeArgumentEffect::Move,
-                }],
-                RuntimeResultEffect::Unit,
-                &[],
-            ),
-            Self::ActorRequestTake => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: RuntimeValueKind::ActorRequestAdmission,
-                    effect: RuntimeArgumentEffect::Borrow,
-                }],
-                RuntimeResultEffect::FreshOwned(RuntimeValueKind::ActorRequestOwner),
-                &[],
-            ),
-            Self::ChannelPairIsValid => channel_pair_is_valid_contract(),
-            Self::ChannelPairSender => channel_pair_half_contract(true),
-            Self::ChannelPairReceiver => channel_pair_half_contract(false),
-            Self::Encoding { format, op } => op.contract(format),
-            Self::StringCompare => runtime_semantic_contract(
-                SIR_STRING_PAIR_BORROW,
-                BitCopy(RuntimeValueKind::I32),
-                SIR_NO_FAILURES,
-            ),
-            Self::StringEquals
-            | Self::StringStartsWith
-            | Self::StringEndsWith
-            | Self::StringContains => {
-                runtime_semantic_contract(SIR_STRING_PAIR_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
-            }
-            Self::RegexMatch => {
-                runtime_semantic_contract(SIR_REGEX_MATCH, BitCopy(Bool), SIR_NO_FAILURES)
-            }
-            Self::RegexHandle => runtime_semantic_contract(
-                SIR_I64_COPY,
-                BitCopy(RuntimeValueKind::NamedOpaque(
-                    "std.text.regex.PatternHandle",
-                )),
-                SIR_NO_FAILURES,
-            ),
-            Self::StringIsEmpty
-            | Self::StringIsDigit
-            | Self::StringIsAlpha
-            | Self::StringIsAlphanumeric => {
-                runtime_semantic_contract(SIR_STRING_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
-            }
-            Self::StringConcat => runtime_semantic_contract(
-                SIR_STRING_PAIR_BORROW,
-                FreshOwned(String),
-                SIR_NO_FAILURES,
-            ),
-            Self::StringLen => {
-                runtime_semantic_contract(SIR_STRING_BORROW, BitCopy(I64), SIR_NO_FAILURES)
-            }
-            Self::U8ToString => {
-                runtime_semantic_contract(SIR_U8_COPY, FreshOwned(String), SIR_NO_FAILURES)
-            }
-            Self::I64ToString => {
-                runtime_semantic_contract(SIR_I64_COPY, FreshOwned(String), SIR_NO_FAILURES)
-            }
-            // The remaining scalar conversions differ only in the width they
-            // copy in; every one returns a fresh owned string and cannot fail.
-            Self::I32ToString
-            | Self::U32ToString
-            | Self::U64ToString
-            | Self::F64ToString
-            | Self::CharToString => {
-                let argument = match self {
-                    Self::I32ToString => SIR_I32_COPY,
-                    Self::U32ToString => SIR_U32_COPY,
-                    Self::U64ToString => SIR_U64_COPY,
-                    Self::F64ToString => SIR_F64_COPY,
-                    _ => SIR_CHAR_COPY,
-                };
-                runtime_semantic_contract(argument, FreshOwned(String), SIR_NO_FAILURES)
-            }
-            Self::Print { kind, .. } => {
-                runtime_semantic_contract(kind.arguments(), Unit, SIR_NO_FAILURES)
-            }
-            Self::ProcessExit => runtime_semantic_contract(SIR_I64_COPY, Never, SIR_NO_FAILURES),
-            Self::StderrWrite => {
-                runtime_semantic_contract(SIR_STRING_BORROW, Unit, SIR_NO_FAILURES)
-            }
-            Self::BoolToString => {
-                runtime_semantic_contract(SIR_BOOL_COPY, FreshOwned(String), SIR_NO_FAILURES)
-            }
-            Self::MathIntrinsic(kind) => kind.semantic_contract(),
-            Self::BytesNew => runtime_semantic_contract(&[], FreshOwned(Bytes), SIR_NO_FAILURES),
-            Self::BytesLen => {
-                runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(I64), SIR_NO_FAILURES)
-            }
-            Self::BytesIsEmpty => {
-                runtime_semantic_contract(SIR_BYTES_BORROW, BitCopy(Bool), SIR_NO_FAILURES)
-            }
-            Self::BytesClear => {
-                runtime_semantic_contract(BYTES_CLEAR, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
-            }
-            Self::BytesContains => {
-                runtime_semantic_contract(BYTES_CONTAINS, BitCopy(Bool), SIR_NO_FAILURES)
-            }
-            Self::BytesSet => {
-                runtime_semantic_contract(BYTES_SET, UpdatedReceiver(Bytes), SIR_INDEX_FAILURES)
-            }
-            Self::BytesIndex => {
-                runtime_semantic_contract(BYTES_INDEX, BitCopy(U8), SIR_INDEX_FAILURES)
-            }
-            Self::BytesPush => {
-                runtime_semantic_contract(BYTES_PUSH, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
-            }
-            // `pop` both shrinks the receiver and hands one byte to the
-            // caller; an empty buffer answers `None` rather than failing.
-            Self::BytesPop => runtime_semantic_contract(
-                BYTES_CLEAR,
-                RuntimeResultEffect::UpdatedReceiverAndValue(RuntimeValueKind::Tuple(&[
-                    Bytes,
-                    RuntimeValueKind::Applied(BuiltinType::Option, &[U8]),
-                ])),
-                SIR_NO_FAILURES,
-            ),
-            Self::BytesAppend => {
-                runtime_semantic_contract(BYTES_APPEND, UpdatedReceiver(Bytes), SIR_NO_FAILURES)
-            }
-            Self::NodeStart => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: Named("std.builtins.NodeConfig"),
-                    effect: Move,
-                }],
-                IndependentValue(RuntimeValueKind::Applied(
-                    BuiltinType::Result,
-                    &[
-                        UnitKind,
-                        RuntimeValueKind::MonomorphicBuiltin(BuiltinType::NodeError),
-                    ],
-                )),
-                SIR_NO_FAILURES,
-            ),
-            Self::NodeConnect => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: String,
-                    effect: Borrow,
-                }],
-                IndependentValue(RuntimeValueKind::Applied(
-                    BuiltinType::Result,
-                    &[
-                        UnitKind,
-                        RuntimeValueKind::MonomorphicBuiltin(BuiltinType::NodeError),
-                    ],
-                )),
-                SIR_NO_FAILURES,
-            ),
-            Self::NodeRegister => runtime_semantic_contract(
-                &[
-                    RuntimeArgumentContract {
-                        ty: String,
-                        effect: Borrow,
-                    },
-                    RuntimeArgumentContract {
-                        ty: RuntimeValueKind::Receiver(BuiltinType::LocalPid),
-                        effect: Borrow,
-                    },
-                ],
-                BitCopy(RuntimeValueKind::I32),
-                SIR_NO_FAILURES,
-            ),
-            Self::NodeLookup => runtime_semantic_contract(
-                &[RuntimeArgumentContract {
-                    ty: String,
-                    effect: Borrow,
-                }],
-                IndependentValue(RuntimeValueKind::NodeLookupResult),
-                SIR_NO_FAILURES,
-            ),
-            Self::NodeShutdown => runtime_semantic_contract(&[], Unit, SIR_NO_FAILURES),
-            Self::NodeIdentityKey => {
-                runtime_semantic_contract(&[], FreshOwned(String), SIR_NO_FAILURES)
-            }
-            _ => return None,
-        })
+        self.row().contract
     }
 
     /// Return-value ownership for the closed scalar Vec ABI surface.
@@ -5120,6 +7412,36 @@ impl RuntimeCallFamily {
     }
 }
 
+/// How the backend reaches one runtime operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeStaging {
+    /// An ordinary declared call to the row's linker symbol.
+    Declared,
+    /// Codegen intercepts the call by callee identity and materializes the ABI
+    /// itself, so the row's symbol is not a name the linker resolves at the
+    /// call site.
+    PreStaged,
+}
+
+/// Everything the compiler knows about one runtime operation, in one place.
+///
+/// The linker symbol and the reverse lookup from it, the semantic contract
+/// ownership SIR verifies, whether codegen pre-stages the call, and the
+/// collection marshalling shape are all fields here rather than separate
+/// per-operation tables that can disagree. Adding an operation is a row and a
+/// runtime function; a row missing a field does not compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RuntimeOpRow {
+    /// The C linker symbol, or the catalog identity for a constructor whose
+    /// ABI the backend materializes from the destination type.
+    pub symbol: &'static str,
+    /// The exact operation contract ownership SIR admits. `None` fails closed:
+    /// the operation publishes no verified ownership surface.
+    pub contract: Option<RuntimeSemanticContract>,
+    pub staging: RuntimeStaging,
+    pub abi_shape: RuntimeCallAbiShape,
+}
+
 /// ABI-routing shape for collection calls that require bespoke codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallAbiShape {
@@ -5471,111 +7793,6 @@ impl RuntimeDropDescriptor {
     }
 }
 
-/// Closed spelling table for the scalar Vec operation matrix.
-///
-/// Scalar Vec calls deliberately remain generic codegen calls once their
-/// checked collection operation has authorized this family.  The spelling is
-/// centralized here so the producer, inverse lookup, and coverage tests
-/// cannot drift one operation or scalar element at a time.
-const fn vec_scalar_c_symbol(op: VecScalarOp, elem: VecScalarElem) -> &'static str {
-    use VecScalarElem as E;
-    use VecScalarOp as O;
-
-    match (op, elem) {
-        (O::Push, E::F32) => "hew_vec_push_f32",
-        (O::Push, E::F64) => "hew_vec_push_f64",
-        (O::Push, E::I8) => "hew_vec_push_i8",
-        (O::Push, E::I16) => "hew_vec_push_i16",
-        (O::Push, E::I32) => "hew_vec_push_i32",
-        (O::Push, E::I64) => "hew_vec_push_i64",
-        (O::Push, E::Ptr) => "hew_vec_push_ptr",
-        (O::Push, E::Str) => "hew_vec_push_str",
-        (O::Push, E::U8) => "hew_vec_push_u8",
-        (O::Push, E::U16) => "hew_vec_push_u16",
-        (O::Pop, E::F32) => "hew_vec_pop_f32",
-        (O::Pop, E::F64) => "hew_vec_pop_f64",
-        (O::Pop, E::I8) => "hew_vec_pop_i8",
-        (O::Pop, E::I16) => "hew_vec_pop_i16",
-        (O::Pop, E::I32) => "hew_vec_pop_i32",
-        (O::Pop, E::I64) => "hew_vec_pop_i64",
-        (O::Pop, E::Ptr) => "hew_vec_pop_ptr",
-        (O::Pop, E::Str) => "hew_vec_pop_str",
-        (O::Pop, E::U8) => "hew_vec_pop_u8",
-        (O::Pop, E::U16) => "hew_vec_pop_u16",
-        (O::Set, E::F32) => "hew_vec_set_f32",
-        (O::Set, E::F64) => "hew_vec_set_f64",
-        (O::Set, E::I8) => "hew_vec_set_i8",
-        (O::Set, E::I16) => "hew_vec_set_i16",
-        (O::Set, E::I32) => "hew_vec_set_i32",
-        (O::Set, E::I64) => "hew_vec_set_i64",
-        (O::Set, E::Ptr) => "hew_vec_set_ptr",
-        (O::Set, E::Str) => "hew_vec_set_str",
-        (O::Set, E::U8) => "hew_vec_set_u8",
-        (O::Set, E::U16) => "hew_vec_set_u16",
-        (O::RemoveAt, E::F32) => "hew_vec_remove_at_f32",
-        (O::RemoveAt, E::F64) => "hew_vec_remove_at_f64",
-        (O::RemoveAt, E::I8) => "hew_vec_remove_at_i8",
-        (O::RemoveAt, E::I16) => "hew_vec_remove_at_i16",
-        (O::RemoveAt, E::I32) => "hew_vec_remove_at_i32",
-        (O::RemoveAt, E::I64) => "hew_vec_remove_at_i64",
-        (O::RemoveAt, E::Ptr) => "hew_vec_remove_at_ptr",
-        (O::RemoveAt, E::Str) => "hew_vec_remove_at_str",
-        (O::RemoveAt, E::U8) => "hew_vec_remove_at_u8",
-        (O::RemoveAt, E::U16) => "hew_vec_remove_at_u16",
-    }
-}
-
-fn vec_scalar_from_c_symbol(sym: &str) -> Option<RuntimeCallFamily> {
-    use RuntimeCallFamily::VecScalar;
-    use VecScalarElem as E;
-    use VecScalarOp as O;
-
-    let (op, elem) = match sym {
-        "hew_vec_push_f32" => (O::Push, E::F32),
-        "hew_vec_push_f64" => (O::Push, E::F64),
-        "hew_vec_push_i8" => (O::Push, E::I8),
-        "hew_vec_push_i16" => (O::Push, E::I16),
-        "hew_vec_push_i32" => (O::Push, E::I32),
-        "hew_vec_push_i64" => (O::Push, E::I64),
-        "hew_vec_push_ptr" => (O::Push, E::Ptr),
-        "hew_vec_push_str" => (O::Push, E::Str),
-        "hew_vec_push_u8" => (O::Push, E::U8),
-        "hew_vec_push_u16" => (O::Push, E::U16),
-        "hew_vec_pop_f32" => (O::Pop, E::F32),
-        "hew_vec_pop_f64" => (O::Pop, E::F64),
-        "hew_vec_pop_i8" => (O::Pop, E::I8),
-        "hew_vec_pop_i16" => (O::Pop, E::I16),
-        "hew_vec_pop_i32" => (O::Pop, E::I32),
-        "hew_vec_pop_i64" => (O::Pop, E::I64),
-        "hew_vec_pop_ptr" => (O::Pop, E::Ptr),
-        "hew_vec_pop_str" => (O::Pop, E::Str),
-        "hew_vec_pop_u8" => (O::Pop, E::U8),
-        "hew_vec_pop_u16" => (O::Pop, E::U16),
-        "hew_vec_set_f32" => (O::Set, E::F32),
-        "hew_vec_set_f64" => (O::Set, E::F64),
-        "hew_vec_set_i8" => (O::Set, E::I8),
-        "hew_vec_set_i16" => (O::Set, E::I16),
-        "hew_vec_set_i32" => (O::Set, E::I32),
-        "hew_vec_set_i64" => (O::Set, E::I64),
-        "hew_vec_set_ptr" => (O::Set, E::Ptr),
-        "hew_vec_set_str" => (O::Set, E::Str),
-        "hew_vec_set_u8" => (O::Set, E::U8),
-        "hew_vec_set_u16" => (O::Set, E::U16),
-        "hew_vec_remove_at_f32" => (O::RemoveAt, E::F32),
-        "hew_vec_remove_at_f64" => (O::RemoveAt, E::F64),
-        "hew_vec_remove_at_i8" => (O::RemoveAt, E::I8),
-        "hew_vec_remove_at_i16" => (O::RemoveAt, E::I16),
-        "hew_vec_remove_at_i32" => (O::RemoveAt, E::I32),
-        "hew_vec_remove_at_i64" => (O::RemoveAt, E::I64),
-        "hew_vec_remove_at_ptr" => (O::RemoveAt, E::Ptr),
-        "hew_vec_remove_at_str" => (O::RemoveAt, E::Str),
-        "hew_vec_remove_at_u8" => (O::RemoveAt, E::U8),
-        "hew_vec_remove_at_u16" => (O::RemoveAt, E::U16),
-        _ => return None,
-    };
-    Some(VecScalar { op, elem })
-}
-
 // =============================================================================
 // Test-only enumeration helpers
 // =============================================================================
@@ -5682,189 +7899,11 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
     ]
 }
 
-/// Families pre-staged (Channel, Stream, Sink, `Node::lookup`,
-/// math intrinsics, `RemotePidSend`, `RemoteActorAsk`, `TcpAttachLocal`,
-/// the `HashMap::new` / `HashSet::new` constructor surface forms, and
-/// the `keys()` / `values()` projection ops).
-/// Their `c_symbol()` is NOT in `known_runtime_symbols` today
-/// because they go through `Terminator::Call` callee-name intercepts
-/// (codegen callee-name intercept), not `Instr::CallRuntimeAbi`. The bijection test
-/// explicitly excludes them from the allowlist-coverage assertion.
-///
-/// When the follow-up wires the producers, the symbols join the allowlist and
-/// this list shrinks.
-#[must_use]
-/// `channel.new`'s allocation: one capacity in, one owned pair out.
-const fn channel_pair_new_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::I64,
-            effect: RuntimeArgumentEffect::Copy,
-        }],
-        RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelPair),
-        &[],
-    )
-}
-
-/// Freeing the pair consumes it and reports nothing.
-const fn channel_pair_free_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::ChannelPair,
-            effect: RuntimeArgumentEffect::Move,
-        }],
-        RuntimeResultEffect::Unit,
-        &[],
-    )
-}
-
-/// Whether the allocation succeeded; the pair stays with the caller.
-const fn channel_pair_is_valid_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::ChannelPair,
-            effect: RuntimeArgumentEffect::Borrow,
-        }],
-        RuntimeResultEffect::BitCopy(RuntimeValueKind::Bool),
-        &[],
-    )
-}
-
-/// Extracting one half borrows the pair and hands back an owned endpoint.
-/// The pair keeps its own obligation: freeing it releases whatever was not
-/// extracted.
-const fn channel_pair_half_contract(sender: bool) -> RuntimeSemanticContract {
-    const PAIR: RuntimeArgumentContract = RuntimeArgumentContract {
-        ty: RuntimeValueKind::ChannelPair,
-        effect: RuntimeArgumentEffect::Borrow,
-    };
-    if sender {
-        runtime_semantic_contract(
-            &[PAIR],
-            RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalfResult(
-                ChannelHalfKind::Sender,
-            )),
-            &[],
-        )
-    } else {
-        runtime_semantic_contract(
-            &[PAIR],
-            RuntimeResultEffect::FreshOwned(RuntimeValueKind::ChannelHalfResult(
-                ChannelHalfKind::Receiver,
-            )),
-            &[],
-        )
-    }
-}
-
-/// Closing the write half consumes it and reports nothing.
-const fn channel_sender_close_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Sender),
-            effect: RuntimeArgumentEffect::Move,
-        }],
-        RuntimeResultEffect::Unit,
-        &[],
-    )
-}
-
-/// Closing the read half consumes it and reports nothing.
-const fn channel_receiver_close_contract() -> RuntimeSemanticContract {
-    runtime_semantic_contract(
-        &[RuntimeArgumentContract {
-            ty: RuntimeValueKind::ChannelHalf(ChannelHalfKind::Receiver),
-            effect: RuntimeArgumentEffect::Move,
-        }],
-        RuntimeResultEffect::Unit,
-        &[],
-    )
-}
-
+/// True when codegen intercepts the call by callee identity instead of
+/// declaring the row's symbol at the call site.
 #[must_use]
 pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
-    use RuntimeCallFamily as F;
-    matches!(
-        family,
-        F::ActorGenSinkComplete
-            | F::ActorGenSinkRegister
-            | F::ChannelRecvLayout
-            | F::ChannelSendLayout
-            | F::ChannelTryRecvLayout
-            | F::ChannelSenderClone
-            | F::ChannelSenderClose
-            | F::ChannelReceiverClose
-            | F::ChannelPairNew
-            | F::ChannelPairFree
-            | F::ActorRequestRelease
-            | F::ActorCallFree
-            | F::ActorRequestTake
-            | F::ChannelPairIsValid
-            | F::ChannelPairSender
-            | F::ChannelPairReceiver
-            | F::HashMapKeysLayout
-            | F::HashMapEntriesLayout
-            | F::HashMapNew
-            | F::HashMapValuesLayout
-            | F::HashSetNew
-            | F::MathIntrinsic(_)
-            | F::BytesNew
-            | F::HashMapClearLayout
-            | F::HashMapCloneLayout
-            | F::HashSetClearLayout
-            | F::HashSetCloneLayout
-            | F::HashSetToVecLayout
-            | F::NodeAllowPeer
-            | F::NodeConnect
-            | F::NodeId
-            | F::NodeIdentityKey
-            | F::NodeLoadKeys
-            | F::NodeLookup
-            | F::NodeRegister
-            | F::NodeSetTransport
-            | F::NodeShutdown
-            | F::NodeStart
-            | F::RemotePidSend
-            | F::SinkClose
-            | F::SinkPeerClosed
-            | F::SinkWrite(_)
-            | F::SinkTryWrite(_)
-            | F::StreamClose
-            | F::StreamNextLayout
-            | F::StreamSendLayout
-            | F::StreamTryNextLayout
-            | F::TcpAttachLocal
-            | F::TlsAttachLocal
-            | F::WebSocketAttachLocal
-            | F::VecCloneLayout
-            | F::VecCloneOwned
-            | F::VecTakeAll
-            | F::VecAppend
-            | F::VecClear
-            | F::VecClone
-            | F::VecContainsLayout
-            | F::VecContainsOwned
-            | F::VecContainsScalar(_)
-            | F::VecGet(VecGetElem::Clone | VecGetElem::Take)
-            | F::VecNew
-            | F::VecPopBool
-            | F::VecPopLayout
-            | F::VecPopOwned
-            | F::VecPushBool
-            | F::VecPushLayout
-            | F::VecPushOwned
-            | F::VecPushOwnedMove
-            | F::VecScalar { .. }
-            | F::VecRemoveAtBool
-            | F::VecRemoveAtLayout
-            | F::VecRemoveAtOwned
-            | F::VecSetBool
-            | F::VecSetLayout
-            | F::VecSetOwned
-            | F::VecSetOwnedMove
-            | F::VecIsEmpty
-            | F::VecJoinStr
-    )
+    matches!(family.row().staging, RuntimeStaging::PreStaged)
 }
 
 // =============================================================================
@@ -6042,19 +8081,22 @@ mod tests {
         );
     }
 
+    /// `from_c_symbol` reads the row table's symbol column backwards, so a
+    /// shared symbol silently costs an operation its reverse lookup. The print
+    /// operations are the one sanctioned sharing: their element type and
+    /// newline flag ride beside the symbol. Anything else sharing a symbol is
+    /// a table defect.
     #[test]
-    fn runtime_call_family_c_symbol_is_unique() {
+    fn only_the_print_operations_share_a_c_symbol() {
         let mut seen: HashMap<&'static str, RuntimeCallFamily> = HashMap::new();
         for family in all_runtime_call_families() {
-            if matches!(family, RuntimeCallFamily::Print { .. }) {
-                continue; // These operations carry attributes beyond the shared ABI symbol.
-            }
-            let sym = family.c_symbol();
-            if let Some(prev) = seen.insert(sym, family) {
-                panic!(
-                    "c_symbol collision: both {prev:?} and {family:?} \
-                     produce {sym:?} — the bijection requires every variant \
-                     to map to a unique symbol"
+            let symbol = family.row().symbol;
+            if let Some(previous) = seen.insert(symbol, family) {
+                assert!(
+                    matches!(family, RuntimeCallFamily::Print { .. })
+                        && matches!(previous, RuntimeCallFamily::Print { .. }),
+                    "{previous:?} and {family:?} both claim {symbol:?}, so neither \
+                     lifts back out of a C symbol"
                 );
             }
         }
@@ -6069,13 +8111,10 @@ mod tests {
         }
     }
 
-    /// Bijection (inverse): every family variant round-trips through
-    /// `from_c_symbol(family.c_symbol()) == Some(family)`. A new
-    /// variant that adds a `c_symbol` arm but forgets the matching
-    /// inverse arm fires here. This is the load-bearing invariant for
-    /// the seam-#1 producer: `record_runtime_method_call_rewrite` uses
-    /// `from_c_symbol` to lift a checker-resolved C symbol back into a
-    /// typed descriptor.
+    /// Every operation lifts back out of its own symbol.
+    /// `record_runtime_method_call_rewrite` turns a checker-resolved C symbol
+    /// into a typed descriptor this way, so an operation the reverse lookup
+    /// drops is unreachable from that producer.
     #[test]
     fn runtime_call_family_round_trips_through_from_c_symbol() {
         for family in all_runtime_call_families() {

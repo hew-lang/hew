@@ -3091,12 +3091,8 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
             state Idle,
             state Running,
 
-            on Tick: Idle => .Running {
-                .Running
-            }
-            on Tick: Running => .Idle {
-                .Idle
-            }
+            on Tick: Idle => .Running,
+            on Tick: Running => .Idle,
         }
 
         fn main() {

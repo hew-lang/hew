@@ -295,9 +295,7 @@ fn binop_in_machine_transition_body_rejected() {
                 let _ = 1..10;
                 B { n: 0 }
             }
-            on Go: B => A {
-                A { n: 0 }
-            }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -336,8 +334,8 @@ fn binop_in_machine_state_entry_rejected() {
             state B { n: i32, },
 
 
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -372,8 +370,8 @@ fn binop_in_machine_state_exit_rejected() {
             state B { n: i32, },
 
 
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -406,11 +404,9 @@ fn binop_in_machine_transition_guard_rejected() {
             state B { n: i32, },
 
 
-            on Go: A => B when in_range(0..2) {
-                B { n: 0 }
-            }
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B when in_range(0..2) { n: 0 }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );

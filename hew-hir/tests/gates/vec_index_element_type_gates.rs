@@ -329,7 +329,7 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle,
             state Done,
-            on Go: Idle => .Done when make_units()[0] == () {{ .Done }}
+            on Go: Idle => .Done when make_units()[0] == (),
             on Go: Idle => .Idle,
             on Go: Done => .Done,
             on Reset: Done => .Idle,

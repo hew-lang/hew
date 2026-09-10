@@ -3915,7 +3915,7 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
 /// never by calling `.step(...)` or constructing a payload.
 fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckOutput) {
     let module = hew_parser::parse(
-        "machine Light {\n    events {\n        Flip,\n    }\n\n    state On,\n    state Off,\n\n    on Flip: On => Off {\n        .Off\n    }\n    on Flip: Off => On {\n        .On\n    }\n}\n",
+        "machine Light {\n    events {\n        Flip,\n    }\n\n    state On,\n    state Off,\n\n    on Flip: On => Off,\n    on Flip: Off => On,\n}\n",
     );
     assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
     let mut root = hew_parser::parse(root_source);

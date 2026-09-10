@@ -2340,8 +2340,8 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
                 events { Toggle, }
                 state Closed,
                 state Open,
-                on Toggle: Closed => .Open { Open }
-                on Toggle: Open => .Closed { Closed }
+                on Toggle: Closed => .Open,
+                on Toggle: Open => .Closed,
             }
             fn main() {}
             ",

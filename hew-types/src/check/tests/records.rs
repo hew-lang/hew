@@ -1484,7 +1484,7 @@ mod assoc_types_slice2 {
             machine M<T: Eq<U>, U> {
                 events { Tick, }
                 state Idle,
-                on Tick: Idle => .Idle { .Idle }
+                on Tick: Idle => .Idle,
             }
             fn main() {}
             ",
@@ -2083,9 +2083,7 @@ mod assoc_types_slice2 {
                     let _g = gen { yield 1; };
                     Open
                 }
-                on Toggle: Open => Closed {
-                    Closed
-                }
+                on Toggle: Open => Closed,
             }
             fn main() {}
             ",
@@ -2116,9 +2114,7 @@ mod assoc_types_slice2 {
                     await pending;
                     Open
                 }
-                on Toggle: Open => Closed {
-                    Closed
-                }
+                on Toggle: Open => Closed,
             }
             fn main() {}
             ",
@@ -2153,7 +2149,7 @@ mod assoc_types_slice2 {
                     Filled { items: v }
                 }
                 on Append(item): Filled => Filled reenter {
-                    var v = self.items;
+                    var v = state.items;
                     v.push(item);
                     Filled { items: v }
                 }

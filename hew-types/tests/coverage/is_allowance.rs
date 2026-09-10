@@ -324,9 +324,7 @@ fn machine_is_machine_rejected() {
                 state Filling,
                 state Draining,
 
-                on Fill: Filling => Draining {
-                    Tank.Draining
-                }
+                on Fill: Filling => Draining,
 
                 default { state }
             }

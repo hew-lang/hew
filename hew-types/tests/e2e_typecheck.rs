@@ -5917,8 +5917,8 @@ fn monomorphic_machine_channel_element_admitted() {
             }
             state Off,
             state On,
-            on Flip: Off => .On { .On }
-            on Flip: On => .Off { .Off }
+            on Flip: Off => .On,
+            on Flip: On => .Off,
         }
 
         fn main() {

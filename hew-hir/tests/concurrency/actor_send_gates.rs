@@ -147,9 +147,7 @@ fn actor_spawn_and_send_in_machine_transition_refused_by_purity() {
                 c.send(3);
                 Active
             }
-            on Tick: Idle => Active {
-                Active
-            }
+            on Tick: Idle => Active,
         }
         ",
     );

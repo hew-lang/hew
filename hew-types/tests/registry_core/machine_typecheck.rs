@@ -1436,8 +1436,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1480,8 +1480,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1521,8 +1521,8 @@ machine Lifecycle<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1567,8 +1567,8 @@ machine Lifecycle<T: NonExistentTrait> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1713,8 +1713,8 @@ fn machine_state_entry_reads_the_selected_input_payload() {
             },
 
 
-            on Push: Open => .Closed { .Closed }
-            on Pull: Closed => .Open { .Open }
+            on Push: Open => .Closed,
+            on Pull: Closed => .Open,
             default { state }
         }
         ",
@@ -1746,12 +1746,8 @@ fn generic_machine_instantiated_with_a_handle_is_refused_at_the_use_site() {
             events { Put { value: T }, Clear }
             state Empty,
             state Full { value: T },
-            on Put: Empty => Full {
-                .Full { value: event.value }
-            }
-            on Clear: Full => Empty {
-                .Empty
-            }
+            on Put: Empty => Full { value: event.value }
+            on Clear: Full => Empty,
             default { state }
         }
         fn main() {
@@ -1781,12 +1777,8 @@ fn generic_machine_instantiated_with_a_value_type_is_admitted() {
             events { Put { value: T }, Clear }
             state Empty,
             state Full { value: T },
-            on Put: Empty => Full {
-                .Full { value: event.value }
-            }
-            on Clear: Full => Empty {
-                .Empty
-            }
+            on Put: Empty => Full { value: event.value }
+            on Clear: Full => Empty,
             default { state }
         }
         fn main() {
@@ -1824,12 +1816,8 @@ fn generic_machine_no_argument_could_purify_is_refused_at_the_declaration() {
             events { Put { value: T }, Clear }
             state Empty,
             state Full { value: Pair<T> },
-            on Put: Empty => Empty {
-                .Empty
-            }
-            on Clear: Full => Empty {
-                .Empty
-            }
+            on Put: Empty => Empty,
+            on Clear: Full => Empty,
             default { state }
         }
         fn main() {}
@@ -1908,7 +1896,7 @@ fn machine_state_entry_supervisor_spawn_refused_as_impure() {
                     let s = spawn Root(value: 1);
                 }
             },
-            on Tick: Idle => Idle reenter { .Idle }
+            on Tick: Idle => Idle reenter,
         }
         fn main() {}
         ",
@@ -1944,8 +1932,8 @@ fn machine_state_entry_unknown_input_field_errors() {
             },
 
 
-            on Push: Open => .Closed { .Closed }
-            on Pull: Closed => .Open { .Open }
+            on Push: Open => .Closed,
+            on Pull: Closed => .Open,
             default { state }
         }
         ",
@@ -2201,8 +2189,8 @@ machine Holder<T> where T: Resource {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2243,8 +2231,8 @@ machine Holder<T> where T: Resource {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2289,8 +2277,8 @@ machine Bogus where U: Resource {
     state Active,
 
 
-    on Start: Idle => .Active { .Active }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active,
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2335,8 +2323,8 @@ machine Twin<T: Resource> where T: Resource {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2392,8 +2380,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2433,8 +2421,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2485,8 +2473,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2564,8 +2552,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2626,8 +2614,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2671,8 +2659,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2715,8 +2703,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2763,8 +2751,8 @@ machine Holder<T: Resource> {
     state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2800,8 +2788,8 @@ fn machine_const_param_decl_is_refused() {
 
     state Empty,
     state Full,
-    on Write: Empty => .Full { .Full }
-    on Drain: Full => .Empty { .Empty }
+    on Write: Empty => .Full,
+    on Drain: Full => .Empty,
     default { state }
 }
 ";

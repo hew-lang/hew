@@ -29,8 +29,8 @@ pub machine Toggle {
 
     state Off,
     state On,
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 ";
     let root_src = r"
@@ -176,7 +176,7 @@ machine RunLifecycle {
     events { Finish, }
     state Running,
     state Completed,
-    on Finish: Running => Completed { Completed }
+    on Finish: Running => Completed,
     default { state }
 }
 
@@ -201,8 +201,8 @@ pub machine Toggle {
     events { Flip, }
     state Off,
     state On,
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 ";
     let root_src = r"
@@ -245,8 +245,8 @@ pub machine Toggle {
     events { Flip, }
     state Off,
     state On,
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 
 pub fn initial() -> Toggle { Toggle.Off }

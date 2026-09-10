@@ -48,9 +48,9 @@ fn machine_rejects_direct_and_transitive_effects() {
 #[test]
 fn machine_requires_guard_fallback_and_target_payload() {
     for source in [
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened when true { .Opened } on Open: Opened => Opened { .Opened } } fn main() {}",
+        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened when true, on Open: Opened => Opened, } fn main() {}",
         "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Closed } default { state } } fn main() {}",
-        "machine Gate { events { Open, } state Closed, state Opened { label: string }, on Open: Closed => Opened { .Opened { label: 3 } } default { state } } fn main() {}",
+        "machine Gate { events { Open, } state Closed, state Opened { label: string }, on Open: Closed => Opened { label: 3 } default { state } } fn main() {}",
     ] {
         let parsed = hew_parser::parse(source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -61,7 +61,7 @@ fn machine_requires_guard_fallback_and_target_payload() {
 
 #[test]
 fn machine_step_report_uses_normal_must_use_diagnostic() {
-    let source = "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Opened } default { state } } fn main() { var gate: Gate = .Closed; gate.step(.Open); }";
+    let source = "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } } fn main() { var gate: Gate = .Closed; gate.step(.Open); }";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
@@ -125,7 +125,7 @@ fn normalize_walks_a_shared_import_dag_once() {
     }
 
     let machine = hew_parser::parse(
-        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Opened } default { state } }",
+        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened, default { state } }",
     );
     assert!(machine.errors.is_empty(), "{:?}", machine.errors);
 

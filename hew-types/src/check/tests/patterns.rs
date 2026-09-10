@@ -1543,9 +1543,7 @@ fn generic_machine_struct_state_bare_constructor_infers() {
             state Faulted { code: i64, },
 
 
-            on Crash: Running => .Faulted {
-                Faulted { code: event.code }
-            }
+            on Crash: Running => .Faulted { code: event.code }
             on Crash: Faulted => .Faulted {
                 state
             }
@@ -1576,7 +1574,7 @@ fn generic_machine_struct_state_qualified_constructor_infers() {
             state Faulted { code: i64, },
 
 
-            on Crash: Running => .Faulted {
+            on Crash: Running => _ {
                 Work.Faulted { code: event.code }
             }
             on Crash: Faulted => .Faulted {
@@ -1610,18 +1608,14 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
             state Opened { handle: i64, },
 
 
-            on OpenDoor: Closed => .Opened {
+            on OpenDoor: Closed => _ {
                 Door.Opened { handle: event.id }
             }
-            on CloseDoor: Opened => .Closed {
-                .Closed
-            }
-            on OpenDoor: Opened => .Opened {
+            on CloseDoor: Opened => .Closed,
+            on OpenDoor: Opened => _ {
                 Door.Opened { handle: event.id }
             }
-            on CloseDoor: Closed => .Closed {
-                .Closed
-            }
+            on CloseDoor: Closed => .Closed,
         }
         fn main() {}
         ",
@@ -1635,7 +1629,7 @@ fn non_generic_machine_struct_state_constructor_regression_free() {
 }
 
 #[test]
-fn machine_transition_self_field_reads_source_payload() {
+fn machine_transition_state_field_reads_source_payload() {
     let output = check_source(
         r"
         machine Counter {
@@ -1648,18 +1642,10 @@ fn machine_transition_self_field_reads_source_payload() {
             state NonZero { value: i64, },
 
 
-            on Inc: Zero => .NonZero {
-                NonZero { value: 1 }
-            }
-            on Inc: NonZero => .NonZero reenter {
-                NonZero { value: self.value + 1 }
-            }
-            on Reset: NonZero => .Zero {
-                .Zero
-            }
-            on Reset: Zero => .Zero reenter {
-                .Zero
-            }
+            on Inc: Zero => .NonZero { value: 1 }
+            on Inc: NonZero => .NonZero reenter { value: state.value + 1 }
+            on Reset: NonZero => .Zero,
+            on Reset: Zero => .Zero reenter,
         }
         fn main() {}
         ",
@@ -1688,11 +1674,9 @@ fn machine_transition_body_must_produce_the_fixed_target() {
             state NonZero { value: i64, },
 
             on Reset: NonZero => .Zero {
-                self
+                state
             }
-            on Reset: Zero => .Zero reenter {
-                .Zero
-            }
+            on Reset: Zero => .Zero reenter,
         }
         fn main() {}
         ",
@@ -1726,15 +1710,11 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
             state Running { handle: T, },
 
 
-            on Initialise: Created => .Created {
-                .Created
-            }
+            on Initialise: Created => .Created,
             on Initialise: Running => .Running {
                 state
             }
-            on Started: Created => .Running {
-                Running { handle: event.handle }
-            }
+            on Started: Created => .Running { handle: event.handle }
             on Started: Running => .Running {
                 state
             }

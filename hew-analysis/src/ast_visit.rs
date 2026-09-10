@@ -774,9 +774,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Return(Some(operand)) => {
                 self.walk_expr(&operand.0, &operand.1, body);
             }
-            Expr::Tuple(elements) | Expr::Array(elements) | Expr::Race(elements) => {
+            Expr::Tuple(elements) | Expr::Race(elements) => {
                 for element in elements {
                     self.walk_expr(&element.0, &element.1, body);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let operand = element.expr();
+                    self.walk_expr(&operand.0, &operand.1, body);
                 }
             }
             Expr::ArrayRepeat { value, count } => {

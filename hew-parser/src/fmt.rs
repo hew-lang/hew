@@ -219,6 +219,30 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// `{ ..base, name: value, ... }` — the one record-literal body spelling.
+    /// The base comes first: it supplies every field the literal does not name,
+    /// so reading it first reads the value in the order it is built.
+    fn format_record_literal_body(
+        &mut self,
+        fields: &[(String, Spanned<Expr>)],
+        base: Option<&Spanned<Expr>>,
+    ) {
+        self.write(" { ");
+        if let Some(base) = base {
+            self.write("..");
+            self.format_expr(&base.0);
+            if !fields.is_empty() {
+                self.write(", ");
+            }
+        }
+        self.comma_sep(fields, |f, (name, value)| {
+            f.write(name);
+            f.write(": ");
+            f.format_expr(&value.0);
+        });
+        self.write(" }");
+    }
+
     fn format_path(&mut self, path: &Path) {
         self.write(&path.source_spelling());
     }
@@ -2317,9 +2341,12 @@ impl<'a> Formatter<'a> {
                         .as_ref()
                         .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
             }),
-            Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
+            Expr::Tuple(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Expr::Array(elements) => elements
+                .iter()
+                .all(|element| Self::can_format_expr_inline(&element.expr().0)),
             Expr::MapLiteral { entries } => entries.iter().all(|(key, value)| {
                 Self::can_format_expr_inline(&key.0) && Self::can_format_expr_inline(&value.0)
             }),
@@ -3014,20 +3041,7 @@ impl<'a> Formatter<'a> {
                 self.write(".");
                 self.write(&context.name);
                 if let Some(record) = &context.record {
-                    self.write(" { ");
-                    self.comma_sep(&record.fields, |f, (name, value)| {
-                        f.write(name);
-                        f.write(": ");
-                        f.format_expr(&value.0);
-                    });
-                    if let Some(base) = &record.base {
-                        if !record.fields.is_empty() {
-                            self.write(", ");
-                        }
-                        self.write("..");
-                        self.format_expr(&base.0);
-                    }
-                    self.write(" }");
+                    self.format_record_literal_body(&record.fields, record.base.as_deref());
                 }
             }
             Expr::GenericApplySuffix { target, type_args } => {
@@ -3052,20 +3066,7 @@ impl<'a> Formatter<'a> {
                 base,
             } => {
                 self.format_receiver(&target.0);
-                self.write(" { ");
-                self.comma_sep(fields, |f, (name, value)| {
-                    f.write(name);
-                    f.write(": ");
-                    f.format_expr(&value.0);
-                });
-                if let Some(base) = base {
-                    if !fields.is_empty() {
-                        self.write(", ");
-                    }
-                    self.write("..");
-                    self.format_expr(&base.0);
-                }
-                self.write(" }");
+                self.format_record_literal_body(fields, base.as_deref());
             }
             Expr::QualifiedAssoc(assoc) => {
                 self.write("<");
@@ -3087,9 +3088,14 @@ impl<'a> Formatter<'a> {
                 self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
                 self.write(")");
             }
-            Expr::Array(elems) => {
+            Expr::Array(elements) => {
                 self.write("[");
-                self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
+                self.comma_sep(elements, |f, element| {
+                    if element.is_spread() {
+                        f.write("..");
+                    }
+                    f.format_expr(&element.expr().0);
+                });
                 self.write("]");
             }
             Expr::ArrayRepeat { value, count } => {
@@ -3351,20 +3357,7 @@ impl<'a> Formatter<'a> {
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }
-                self.write(" { ");
-                self.comma_sep(fields, |f, (fname, fval)| {
-                    f.write(fname);
-                    f.write(": ");
-                    f.format_expr(&fval.0);
-                });
-                if let Some(base_expr) = base {
-                    if !fields.is_empty() {
-                        self.write(", ");
-                    }
-                    self.write("..");
-                    self.format_expr(&base_expr.0);
-                }
-                self.write(" }");
+                self.format_record_literal_body(fields, base.as_deref());
             }
             Expr::Select { arms, timeout } => {
                 self.write("select {\n");

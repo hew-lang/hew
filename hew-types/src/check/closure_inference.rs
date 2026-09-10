@@ -298,9 +298,14 @@ fn esc_visit_expr(
                 esc_visit_arg(&base.0, name, in_fork, acc);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) => {
+        Expr::Tuple(items) => {
             for (e, _) in items {
                 esc_visit_arg(e, name, in_fork, acc);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                esc_visit_arg(&element.expr().0, name, in_fork, acc);
             }
         }
         Expr::ArrayRepeat { value, count } => {

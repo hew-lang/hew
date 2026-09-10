@@ -278,9 +278,14 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 }
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for item in items {
                 find_in_expr(ctx, levels, &item.0, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                find_in_expr(ctx, levels, &element.expr().0, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -692,9 +697,12 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                 bounded_expr_has_sleep(&expr.0)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             items.iter().any(|item| bounded_expr_has_sleep(&item.0))
         }
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| bounded_expr_has_sleep(&element.expr().0)),
         Expr::ArrayRepeat { value, count } => {
             bounded_expr_has_sleep(&value.0) || bounded_expr_has_sleep(&count.0)
         }
@@ -948,9 +956,12 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                 expr_assigns_identifier(&expr.0, name)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => items
+        Expr::Tuple(items) | Expr::Race(items) => items
             .iter()
             .any(|item| expr_assigns_identifier(&item.0, name)),
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| expr_assigns_identifier(&element.expr().0, name)),
         Expr::ArrayRepeat { value, count } => {
             expr_assigns_identifier(&value.0, name) || expr_assigns_identifier(&count.0, name)
         }

@@ -326,9 +326,14 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(v, calls);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             for e in exprs {
                 collect_calls_in_expr(e, calls);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                collect_calls_in_expr(element.expr(), calls);
             }
         }
         Expr::Range { start, end, .. } => {

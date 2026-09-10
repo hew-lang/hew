@@ -133,7 +133,10 @@ fn literal_coercion_array_literal_to_fixed_array() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..6;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
-    let expr = Expr::Array(vec![make_int_literal(1, 1..2), make_int_literal(2, 4..5)]);
+    let expr = Expr::Array(vec![
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+    ]);
 
     let result = checker.check_against(&expr, &span, &expected);
 
@@ -155,9 +158,9 @@ fn literal_coercion_array_literal_length_mismatch() {
     let span = 0..9;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
     let expr = Expr::Array(vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ]);
 
     let result = checker.check_against(&expr, &span, &expected);
@@ -185,11 +188,11 @@ fn literal_coercion_array_literal_element_mismatch() {
     let string_span = 1..4;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
     let expr = Expr::Array(vec![
-        (
+        ArrayElement::Value((
             Expr::Literal(Literal::String("x".to_string())),
             string_span.clone(),
-        ),
-        make_int_literal(2, 6..7),
+        )),
+        ArrayElement::Value(make_int_literal(2, 6..7)),
     ]);
 
     let result = checker.check_against(&expr, &span, &expected);

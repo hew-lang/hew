@@ -477,9 +477,14 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                collect_inlay_hints_from_expr(source, &element.expr().0, tc, hints);
             }
         }
         Expr::ArrayRepeat { value, count } => {

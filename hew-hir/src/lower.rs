@@ -17,12 +17,13 @@ use std::{
 };
 
 use hew_parser::ast::{
-    condition_exprs, ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp,
-    ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Param,
-    Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker as AstResourceMarker,
-    RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
+    CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
+    VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -10295,9 +10296,14 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_private_refs(&e.0, pf, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_private_refs(&element.expr().0, pf, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -18359,7 +18365,19 @@ impl LowerCtx {
                 (HirExprKind::Scope { body: hir_body }, result_ty)
             }
             Expr::ForkChild { expr } => {
-                if let Expr::Array(branches) | Expr::Tuple(branches) = &expr.0 {
+                let array_branches: Option<Vec<Spanned<Expr>>> = match &expr.0 {
+                    Expr::Array(elements) => Some(
+                        elements
+                            .iter()
+                            .map(|element| element.expr().clone())
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+                if let Some(branches) = array_branches.as_deref().or(match &expr.0 {
+                    Expr::Tuple(branches) => Some(branches.as_slice()),
+                    _ => None,
+                }) {
                     let Some(Ty::Task(output)) = self.expr_types.get(&self.mk_key(&span)) else {
                         return self
                             .unsupported_expr(span, "fork batch has no checked task result");
@@ -21231,10 +21249,10 @@ impl LowerCtx {
 
     fn lower_array_literal(
         &mut self,
-        elems: &[Spanned<Expr>],
+        elements: &[ArrayElement],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, _)) = self.array_literal_ty(span) else {
+        let Some((vec_ty, elem_ty)) = self.array_literal_ty(span) else {
             return (
                 HirExprKind::Unsupported("array literal missing checker element type".into()),
                 ResolvedTy::Unit,
@@ -21242,17 +21260,15 @@ impl LowerCtx {
         };
 
         if matches!(vec_ty, ResolvedTy::Array(_, _)) {
-            let elements = elems
+            // The checker refuses a spread against a fixed-size array type, so
+            // every element here contributes exactly one slot.
+            let elements = elements
                 .iter()
-                .map(|element| self.lower_expr(element, IntentKind::Read))
+                .map(|element| self.lower_expr(element.expr(), IntentKind::Read))
                 .collect();
             return (HirExprKind::ArrayLiteral { elements }, vec_ty);
         }
 
-        let lowered_elems: Vec<HirExpr> = elems
-            .iter()
-            .map(|elem| self.lower_expr(elem, IntentKind::Read))
-            .collect();
         let block_scope = self.ids.scope();
         self.push_scope();
         let temp_name = format!("__hew_array_{}", self.ids.binding().0);
@@ -21266,22 +21282,36 @@ impl LowerCtx {
             ),
             span: span.clone(),
         };
-        let mut statements = Vec::with_capacity(lowered_elems.len() + 1);
+        let mut statements = Vec::with_capacity(elements.len() + 1);
         statements.push(init_stmt);
-        for elem in lowered_elems {
-            let vec_ref = self.make_binding_ref(
-                temp_name.clone(),
-                temp_binding_id,
-                vec_ty.clone(),
-                IntentKind::Read,
-                elem.span.clone(),
-            );
-            let push_expr = self.make_vec_push_expr(vec_ref, elem, span.clone());
-            statements.push(HirStmt {
-                node: self.ids.node(),
-                kind: HirStmtKind::Expr(push_expr),
-                span: span.clone(),
-            });
+        for element in elements {
+            match element {
+                ArrayElement::Value(value) => {
+                    let lowered = self.lower_expr(value, IntentKind::Read);
+                    let vec_ref = self.make_binding_ref(
+                        temp_name.clone(),
+                        temp_binding_id,
+                        vec_ty.clone(),
+                        IntentKind::Read,
+                        lowered.span.clone(),
+                    );
+                    let push_expr = self.make_vec_push_expr(vec_ref, lowered, span.clone());
+                    statements.push(HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(push_expr),
+                        span: span.clone(),
+                    });
+                }
+                ArrayElement::Spread(operand) => {
+                    let spread_stmt = self.lower_array_spread(
+                        operand,
+                        (&temp_name, temp_binding_id, &vec_ty),
+                        &elem_ty,
+                        &mut statements,
+                    );
+                    statements.push(spread_stmt);
+                }
+            }
         }
         let tail = self.make_binding_ref(
             temp_name,
@@ -21303,6 +21333,152 @@ impl LowerCtx {
             }),
             vec_ty,
         )
+    }
+
+    /// `..operand` inside a bracket literal: walk the operand by index and push
+    /// each element onto the literal's vector, in order.
+    ///
+    /// Each `Index` read is the same element read `for x in v` performs, so an
+    /// owned element is copied into the new vector and the operand keeps its
+    /// own. The operand is therefore a retain, not a transfer — the value stays
+    /// usable after the literal, exactly as passing it to a call would leave it.
+    ///
+    /// A place operand (identifier, field, index) is re-read on each iteration
+    /// rather than bound to a temp: a `Read`-load of an owned place would give
+    /// the temp a second owner of the same heap. A value-producing operand
+    /// keeps an eval-once temp so a side-effecting source runs once.
+    fn lower_array_spread(
+        &mut self,
+        operand: &Spanned<Expr>,
+        target: (&str, BindingId, &ResolvedTy),
+        elem_ty: &ResolvedTy,
+        statements: &mut Vec<HirStmt>,
+    ) -> HirStmt {
+        let (vec_name, vec_id, vec_ty) = target;
+        let operand_span = operand.1.clone();
+        let source_is_place = matches!(
+            operand.0,
+            Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. }
+        );
+
+        let source_ty = self
+            .expr_types
+            .get(&self.mk_key(&operand_span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .unwrap_or_else(|| vec_ty.clone());
+
+        let source_ref: Option<(String, BindingId)> = if source_is_place {
+            None
+        } else {
+            let lowered = self.lower_expr(operand, IntentKind::Read);
+            let source_name = format!("__hew_spread_{}", self.ids.binding().0);
+            let source_binding = self.bind(
+                source_name.clone(),
+                source_ty.clone(),
+                false,
+                operand_span.clone(),
+            );
+            let source_id = source_binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(source_binding, Some(lowered)),
+                span: operand_span.clone(),
+            });
+            Some((source_name, source_id))
+        };
+
+        let source_expr = |this: &mut Self| match &source_ref {
+            Some((name, id)) => this.make_binding_ref(
+                name.clone(),
+                *id,
+                source_ty.clone(),
+                IntentKind::Read,
+                operand_span.clone(),
+            ),
+            None => this.lower_expr(operand, IntentKind::Read),
+        };
+
+        let length_receiver = source_expr(self);
+        let length_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len),
+            vec![length_receiver],
+            &ResolvedTy::I64,
+            &operand_span,
+        );
+        let length = self.make_expr(
+            length_kind,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+
+        let index_name = format!("__hew_spread_i_{}", self.ids.binding().0);
+        let index_binding = self.bind(
+            index_name.clone(),
+            ResolvedTy::I64,
+            false,
+            operand_span.clone(),
+        );
+        let index_id = index_binding.id;
+        let start = self.make_i64_literal(0, operand_span.clone());
+        let step = self.make_i64_literal(1, operand_span.clone());
+
+        let container = source_expr(self);
+        let index = self.make_binding_ref(
+            index_name,
+            index_id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let element = self.make_expr(
+            HirExprKind::Index {
+                container: Box::new(container),
+                index: Box::new(index),
+            },
+            elem_ty.clone(),
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let vec_ref = self.make_binding_ref(
+            vec_name.to_string(),
+            vec_id,
+            vec_ty.clone(),
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let push_expr = self.make_vec_push_expr(vec_ref, element, operand_span.clone());
+        let push_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(push_expr),
+            span: operand_span.clone(),
+        };
+        let body = self.make_unit_block(
+            vec![push_stmt],
+            None,
+            ResolvedTy::Unit,
+            operand_span.clone(),
+        );
+        let for_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: None,
+                binding: index_binding,
+                start: Box::new(start),
+                end: Box::new(length),
+                inclusive: false,
+                step: Box::new(step),
+                descending: false,
+                body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(for_expr),
+            span: operand_span,
+        }
     }
 
     #[expect(
@@ -30940,9 +31116,14 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             scan_expr_for_blocking_recv(&right.0, diagnostics);
         }
         Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_blocking_recv(&e.0, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_blocking_recv(&element.expr().0, diagnostics);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -31534,9 +31715,15 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
             }
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                let operand = element.expr();
+                scan_expr_for_binop_gates(&operand.0, &operand.1, false, ctx);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -32659,9 +32846,19 @@ fn scan_expr_for_supervisor_spawn(
         Expr::Unary { operand, .. } => {
             scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_supervisor_spawn(
+                    &element.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -33021,9 +33218,14 @@ fn scan_expr_for_vec_index_gate(
         Expr::Unary { operand, .. } => {
             scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Race(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_vec_index_gate(element.expr(), expr_types, diagnostics);
             }
         }
         Expr::ArrayRepeat { value, count } => {

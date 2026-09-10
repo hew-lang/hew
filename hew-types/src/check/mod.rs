@@ -11,10 +11,10 @@ use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::condition_exprs;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern,
-    Program, ReceiveFnDecl, RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart,
+    ActorDecl, ActorInit, ArrayElement, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param,
+    Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart,
     SupervisorDecl, SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl,
     TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
@@ -3321,9 +3321,20 @@ impl Checker {
                     self.classify_escapes_in_expr(&base.0, &base.1, in_fork, AnonContext::Other);
                 }
             }
-            Expr::Tuple(items) | Expr::Array(items) => {
+            Expr::Tuple(items) => {
                 for (e, s) in items {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let (operand, operand_span) = element.expr();
+                    self.classify_escapes_in_expr(
+                        operand,
+                        operand_span,
+                        in_fork,
+                        AnonContext::StoredInBinding,
+                    );
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -3759,9 +3770,15 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&base.0, &base.1, out);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) => {
+        Expr::Tuple(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                let (operand, operand_span) = element.expr();
+                collect_lambda_spans_in_expr(operand, operand_span, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {

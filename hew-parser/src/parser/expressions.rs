@@ -914,7 +914,7 @@ impl Parser<'_> {
                                         // Inside the struct body the `{` is consumed, so any
                                         // nested bare-ident struct literal is unambiguous again.
                         let (fields, base) =
-                            self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
+                            self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                         Expr::StructInit {
                             name,
                             fields,
@@ -1060,13 +1060,24 @@ impl Parser<'_> {
                     return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
                 }
 
-                let first = self.parse_expr()?;
-                if self.eat(&Token::Semicolon) {
+                let first = self.parse_array_element()?;
+                if self.peek() == Some(&Token::Semicolon) {
+                    let semicolon_span = self.peek_span();
+                    self.advance();
                     let count = self.parse_expr()?;
                     self.expect(&Token::RightBracket)?;
+                    let ArrayElement::Value(value) = first else {
+                        self.error_at(
+                            "a repeat literal `[value; count]` repeats one value; \
+                             spread `..` splices a collection and has no repeat count"
+                                .to_string(),
+                            semicolon_span,
+                        );
+                        return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
+                    };
                     return Some((
                         Expr::ArrayRepeat {
-                            value: Box::new(first),
+                            value: Box::new(value),
                             count: Box::new(count),
                         },
                         start..self.peek_span().start,
@@ -1078,7 +1089,7 @@ impl Parser<'_> {
                     if self.peek() == Some(&Token::RightBracket) {
                         break;
                     }
-                    elements.push(self.parse_expr()?);
+                    elements.push(self.parse_array_element()?);
                 }
 
                 self.expect(&Token::RightBracket)?;
@@ -1808,22 +1819,42 @@ impl Parser<'_> {
         }
     }
 
+    /// One item of a bracket literal: `..operand` splices, anything else is a
+    /// single element. `..` cannot start an expression, so no range spelling is
+    /// shadowed here.
+    fn parse_array_element(&mut self) -> Option<ArrayElement> {
+        if self.peek() == Some(&Token::DotDot) {
+            self.advance();
+            let operand = self.parse_expr()?;
+            return Some(ArrayElement::Spread(operand));
+        }
+        Some(ArrayElement::Value(self.parse_expr()?))
+    }
+
     pub(crate) fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
         let mut fields = Vec::new();
         let mut base: Option<Box<Spanned<Expr>>> = None;
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::DotDot) {
+                let spread_span = self.peek_span();
                 self.advance(); // consume `..`
                 let base_expr = self.parse_expr()?;
-                base = Some(Box::new(base_expr));
-                self.eat(&Token::Comma);
-                if self.peek() != Some(&Token::RightBrace) {
-                    self.error(
-                        "functional-update `..base` must be the last item in the field list"
+                if base.is_some() {
+                    self.error_at_with_kind_and_hint(
+                        "a record literal takes one `..base`; the base supplies every field \
+                         the literal does not name"
                             .to_string(),
+                        spread_span.start..base_expr.1.end,
+                        "name the fields you want from the second value",
+                        ParseDiagnosticKind::DuplicateRecordBase,
                     );
+                } else {
+                    base = Some(Box::new(base_expr));
                 }
-                break;
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+                continue;
             }
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;

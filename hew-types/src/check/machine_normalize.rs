@@ -954,9 +954,15 @@ impl Builder {
                 **object = self.rewrite(object, machine, state, event)?;
                 **index = self.rewrite(index, machine, state, event)?;
             }
-            Expr::Tuple(values) | Expr::Array(values) => {
+            Expr::Tuple(values) => {
                 for value in values {
                     *value = self.rewrite(value, machine, state, event)?;
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let operand = element.expr_mut();
+                    *operand = self.rewrite(operand, machine, state, event)?;
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -1019,6 +1025,37 @@ impl Builder {
                 base,
                 type_args,
             } => {
+                // `State { ..base, field: value }` reads the fields the
+                // literal does not name off `base`. Expanding before the
+                // rewrite keeps one authority for that read: each carried
+                // field becomes the field access the programmer would
+                // otherwise write, so `..state` resolves through the same
+                // state-field rule as `state.field`, and an unreadable base
+                // is refused by ordinary field-access checking.
+                let state_name = name
+                    .strip_prefix(&format!("{}.", machine.name))
+                    .unwrap_or(name)
+                    .to_string();
+                let declared = machine
+                    .states
+                    .iter()
+                    .find(|state| state.name == state_name)
+                    .map(|state| state.fields.clone());
+                if let (Some(declared), Some(base_expr)) = (declared.as_ref(), base.clone()) {
+                    let named: Vec<String> =
+                        fields.iter().map(|(field, _)| field.clone()).collect();
+                    for (field, _) in declared {
+                        if named.iter().any(|seen| seen == field) {
+                            continue;
+                        }
+                        let read = self.expr(Expr::FieldAccess {
+                            object: base_expr.clone(),
+                            field: field.clone(),
+                        });
+                        fields.push((field.clone(), read));
+                    }
+                    *base = None;
+                }
                 for (_, value) in fields.iter_mut() {
                     *value = self.rewrite(value, machine, state, event)?;
                 }

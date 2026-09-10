@@ -1330,25 +1330,54 @@ impl Checker {
         }
     }
 
-    pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {
-        let elem_ty = if elems.is_empty() {
-            Ty::Var(TypeVar::fresh())
-        } else {
-            let mut elem_ty = self.synthesize(&elems[0].0, &elems[0].1);
-            self.record_callable_value_transfer(&elems[0].0, &elems[0].1);
-            for elem in &elems[1..] {
-                // Distinct closures and function items only meet in their
-                // erased callable type.
-                if self.subst.resolve(&elem_ty).contains_callable() {
-                    let next = self.synthesize(&elem.0, &elem.1);
-                    elem_ty = self.join_callable_values(&elem_ty, &next, &elem.1);
-                } else {
-                    self.check_against(&elem.0, &elem.1, &elem_ty);
+    /// `Vec<elem_ty>` without the concrete-element validation `make_vec_type`
+    /// performs: used to build an expectation for a spread operand, where the
+    /// element type may still be an inference variable.
+    fn vec_of(elem_ty: Ty) -> Ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+        }
+    }
+
+    pub(super) fn synthesize_array_literal(
+        &mut self,
+        elements: &[ArrayElement],
+        span: &Span,
+    ) -> Ty {
+        let mut elem_ty: Option<Ty> = None;
+        for element in elements {
+            let (operand, operand_span) = element.expr();
+            match element {
+                ArrayElement::Value(_) => {
+                    match elem_ty.clone() {
+                        None => elem_ty = Some(self.synthesize(operand, operand_span)),
+                        // Distinct closures and function items only meet in
+                        // their erased callable type.
+                        Some(current) if self.subst.resolve(&current).contains_callable() => {
+                            let next = self.synthesize(operand, operand_span);
+                            elem_ty =
+                                Some(self.join_callable_values(&current, &next, operand_span));
+                        }
+                        Some(current) => {
+                            self.check_against(operand, operand_span, &current);
+                        }
+                    }
+                    self.record_callable_value_transfer(operand, operand_span);
                 }
-                self.record_callable_value_transfer(&elem.0, &elem.1);
+                ArrayElement::Spread(_) => {
+                    // A spread operand is a `Vec` of the literal's element
+                    // type, so unifying against `Vec<T>` both infers `T` from
+                    // the first spread and refuses a mismatched later one.
+                    let current = elem_ty.clone().unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+                    let want = Self::vec_of(current.clone());
+                    self.check_against(operand, operand_span, &want);
+                    elem_ty = Some(current);
+                }
             }
-            elem_ty
-        };
+        }
+        let elem_ty = elem_ty.unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
         self.make_vec_type(elem_ty, span)
     }
 
@@ -3016,11 +3045,12 @@ impl Checker {
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         match expr {
             Expr::ForkChild { expr: child } => {
-                let children = match &child.0 {
-                    Expr::Array(children) | Expr::Tuple(children) => children.as_slice(),
-                    _ => std::slice::from_ref(child.as_ref()),
+                let children: Vec<&Spanned<Expr>> = match &child.0 {
+                    Expr::Array(elements) => elements.iter().map(ArrayElement::expr).collect(),
+                    Expr::Tuple(children) => children.iter().collect(),
+                    _ => vec![child.as_ref()],
                 };
-                for branch in children {
+                for branch in &children {
                     if !matches!(branch.0, Expr::Call { .. } | Expr::MethodCall { .. }) {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -3033,7 +3063,7 @@ impl Checker {
                         .insert(SpanKey::in_module(&branch.1, self.current_module_idx));
                 }
                 let ret_ty = self.synthesize(&child.0, &child.1);
-                for branch in children {
+                for branch in &children {
                     self.record_fork_call_inputs(branch);
                 }
                 Ty::Task(Box::new(ret_ty))
@@ -3872,10 +3902,15 @@ impl Checker {
                 },
             ) => {
                 let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
-                for elem in elems {
-                    let (expr, sp) = (&elem.0, &elem.1);
-                    self.check_against(expr, sp, &elem_ty);
-                    self.record_callable_value_transfer(expr, sp);
+                for element in elems {
+                    let (operand, operand_span) = element.expr();
+                    if element.is_spread() {
+                        let want = Self::vec_of(elem_ty.clone());
+                        self.check_against(operand, operand_span, &want);
+                    } else {
+                        self.check_against(operand, operand_span, &elem_ty);
+                        self.record_callable_value_transfer(operand, operand_span);
+                    }
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -3883,6 +3918,22 @@ impl Checker {
 
             // Array literals checked against [T; N] require exact arity.
             (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
+                // A fixed-size array's length is part of its type, and a
+                // spread operand's length is a runtime value. Spread builds a
+                // `Vec`; a `[T; N]` literal names each element.
+                if let Some(spread) = elems.iter().find(|element| element.is_spread()) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &spread.expr().1,
+                        format!(
+                            "spread `..` is not allowed in a `{}` literal: a fixed-size array's \
+                             length is part of its type, and a spread's length is only known at \
+                             run time",
+                            expected.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 let Ok(actual_len) = u64::try_from(elems.len()) else {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
@@ -3907,9 +3958,10 @@ impl Checker {
                     return Ty::Error;
                 }
 
-                for elem in elems {
-                    self.check_against(&elem.0, &elem.1, elem_ty);
-                    self.record_callable_value_transfer(&elem.0, &elem.1);
+                for element in elems {
+                    let (operand, operand_span) = element.expr();
+                    self.check_against(operand, operand_span, elem_ty);
+                    self.record_callable_value_transfer(operand, operand_span);
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -8291,6 +8343,20 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Every field is initialized exactly once: a base supplies the fields
+        // the literal does not name, and naming one twice leaves no reading
+        // that says which value wins.
+        let mut named: HashSet<&str> = HashSet::new();
+        for (field_name, (_, field_span)) in fields {
+            if !named.insert(field_name.as_str()) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    field_span,
+                    format!("record literal names field `{field_name}` more than once"),
+                );
+            }
+        }
+
         // Expression-position struct variants use the final dotted surface
         // (`Type.Variant { ... }`). Normalize that spelling only after the
         // owner has been selected by checker authority: a lexical nominal

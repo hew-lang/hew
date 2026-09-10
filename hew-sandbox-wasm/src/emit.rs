@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ConditionItem, ElseBlock,
-    Expr, FnDecl, Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt,
-    TypeBodyItem, TypeDeclKind, VariantKind,
+    ActorDecl, ArrayElement, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ConditionItem,
+    ElseBlock, Expr, FnDecl, Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned,
+    Stmt, TypeBodyItem, TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
@@ -2003,15 +2003,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     Some(span.clone()),
                     None,
                 );
-                for item in items {
-                    let item_local = self.lower_expr(item)?;
-                    self.emit_instruction(
-                        "vector.push",
-                        None,
-                        vec![Operand::local(dst.clone()), Operand::local(item_local)],
-                        Some(item.1.clone()),
-                        None,
-                    );
+                for element in items {
+                    match element {
+                        ArrayElement::Value(item) => {
+                            let item_local = self.lower_expr(item)?;
+                            self.emit_instruction(
+                                "vector.push",
+                                None,
+                                vec![Operand::local(dst.clone()), Operand::local(item_local)],
+                                Some(item.1.clone()),
+                                None,
+                            );
+                        }
+                        ArrayElement::Spread(operand) => {
+                            self.lower_array_spread(&dst, operand, &element_ty)?;
+                        }
+                    }
                 }
                 Ok(dst)
             }
@@ -2341,6 +2348,131 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         clippy::too_many_lines,
         reason = "array-repeat lowering builds a four-block counted loop whose evaluation and clone order must remain visible"
     )]
+    /// `..operand` inside a bracket literal: walk the operand by index and push
+    /// each element onto the literal's vector, mirroring the native desugar in
+    /// `hew-hir`'s `lower_array_spread` so both paths build the same sequence.
+    fn lower_array_spread(
+        &mut self,
+        vector_local: &str,
+        operand: &Spanned<Expr>,
+        element_ty: &Ty,
+    ) -> Result<(), CompileError> {
+        let span = operand.1.clone();
+        let source_local = self.lower_expr(operand)?;
+        let length_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "vector.len",
+            Some(length_local.clone()),
+            vec![Operand::local(source_local.clone())],
+            Some(span.clone()),
+            None,
+        );
+        let index_local = self.declare_local(None, &Ty::I64, true, Some(span.clone()));
+        let zero_local = self.lower_literal(
+            &Literal::Integer {
+                value: 0,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(zero_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (header_idx, header_id) = self.new_block("array_spread_header", span_ref.clone());
+        let (body_idx, body_id) = self.new_block("array_spread_body", span_ref.clone());
+        let (continue_idx, continue_id) = self.new_block("array_spread_continue", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("array_spread_exit", span_ref.clone());
+
+        self.terminate(Terminator::br(
+            header_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+        self.switch_to(header_idx);
+        let condition_local = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.lt",
+            Some(condition_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(length_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(condition_local),
+            body_id,
+            exit_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(body_idx);
+        let element_local = self.temp_local(element_ty, Some(span.clone()));
+        self.emit_instruction(
+            "vector.index",
+            Some(element_local.clone()),
+            vec![
+                Operand::local(source_local),
+                Operand::local(index_local.clone()),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "vector.push",
+            None,
+            vec![
+                Operand::local(vector_local.to_string()),
+                Operand::local(element_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(continue_id, Vec::new(), span_ref.clone()));
+
+        self.switch_to(continue_idx);
+        let one_local = self.lower_literal(
+            &Literal::Integer {
+                value: 1,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let next_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "i64.checked_add",
+            Some(next_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(one_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(index_local), Operand::local(next_local)],
+            Some(span),
+            None,
+        );
+        self.terminate(Terminator::br(header_id, Vec::new(), span_ref));
+
+        self.switch_to(exit_idx);
+        Ok(())
+    }
+
     fn lower_array_repeat(
         &mut self,
         expr: &Spanned<Expr>,

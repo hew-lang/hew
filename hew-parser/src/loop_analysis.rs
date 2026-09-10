@@ -338,9 +338,12 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         }
 
         // ── Aggregate constructors ────────────────────────────────────────
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Race(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             exprs.iter().any(|e| ast_expr_has_break(&e.0, query, depth))
         }
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| ast_expr_has_break(&element.expr().0, query, depth)),
         Expr::ArrayRepeat { value, count } => {
             ast_expr_has_break(&value.0, query, depth) || ast_expr_has_break(&count.0, query, depth)
         }

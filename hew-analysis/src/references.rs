@@ -936,9 +936,14 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&v.0, counts);
             }
         }
-        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Race(elems) => {
+        Expr::Tuple(elems) | Expr::Race(elems) => {
             for elem in elems {
                 count_idents_in_expr(&elem.0, counts);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                count_idents_in_expr(&element.expr().0, counts);
             }
         }
         Expr::Select {

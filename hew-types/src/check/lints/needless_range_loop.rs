@@ -600,9 +600,14 @@ impl BodyScan<'_> {
             | Expr::PostfixTry(inner)
             | Expr::Cast { expr: inner, .. }
             | Expr::FieldAccess { object: inner, .. } => self.expr(&inner.0),
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
+            Expr::Tuple(items) | Expr::Race(items) => {
                 for item in items {
                     self.expr(&item.0);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.expr(&element.expr().0);
                 }
             }
             Expr::ArrayRepeat { value, count } => {

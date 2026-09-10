@@ -1857,9 +1857,14 @@ fn walk_expr(
                 walk_expr(base, owners);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(item, owners);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                walk_expr(element.expr(), owners);
             }
         }
         Expr::ArrayRepeat { value, count } => {

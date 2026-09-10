@@ -1895,9 +1895,9 @@ fn integer_type_range_isize_usize_follows_width() {
 fn array_literal_synthesizes_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let elems = vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ];
     let arr = (Expr::Array(elems), 0..9);
     let ty = checker.synthesize(&arr.0, &arr.1);
@@ -1920,9 +1920,9 @@ fn array_literal_synthesizes_vec() {
 fn literal_coercion_array_to_i32_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let elems = vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ];
     let arr = (Expr::Array(elems), 0..9);
     let expected = Ty::Named {

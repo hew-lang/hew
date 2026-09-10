@@ -709,9 +709,14 @@ impl<'a> ProfileChecker<'a> {
                 );
                 self.check_expr(operand);
             }
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Race(items) => {
+            Expr::Tuple(items) | Expr::Race(items) => {
                 for item in items {
                     self.check_expr(item);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.check_expr(element.expr());
                 }
             }
             Expr::ArrayRepeat { value, count } => {

@@ -6,8 +6,8 @@
 // defined below via `self.`. The AST types and `Token` are re-exported
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
-    ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
+    ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
+    CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
     ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName,
     ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent,
@@ -768,6 +768,8 @@ pub enum ParseDiagnosticKind {
     NoAsyncFn,
     /// Retired `async gen fn` syntax; generators infer suspension too.
     NoAsyncGen,
+    /// A record literal named more than one `..base`.
+    DuplicateRecordBase,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -788,6 +790,7 @@ impl ParseDiagnosticKind {
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::NoAsyncFn => "E_NO_ASYNC_FN",
             Self::NoAsyncGen => "E_NO_ASYNC_GEN",
+            Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::Other => "Other",
         }
     }

@@ -82,6 +82,40 @@ pub struct ContextVariantRecord {
     pub base: Option<Box<Spanned<Expr>>>,
 }
 
+/// One item in a bracket literal: an ordinary element or a `..operand`
+/// spread that splices the operand's elements at that position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ArrayElement {
+    /// A single element value.
+    Value(Spanned<Expr>),
+    /// `..operand` — the operand's elements, in order, at this position.
+    /// The span is the operand's, so a diagnostic points at what was spread.
+    Spread(Spanned<Expr>),
+}
+
+impl ArrayElement {
+    /// The element's operand expression, whichever kind it is.
+    #[must_use]
+    pub fn expr(&self) -> &Spanned<Expr> {
+        match self {
+            Self::Value(expr) | Self::Spread(expr) => expr,
+        }
+    }
+
+    /// The element's operand expression, for in-place rewrites.
+    pub fn expr_mut(&mut self) -> &mut Spanned<Expr> {
+        match self {
+            Self::Value(expr) | Self::Spread(expr) => expr,
+        }
+    }
+
+    /// Whether this item splices a collection rather than contributing one value.
+    #[must_use]
+    pub fn is_spread(&self) -> bool {
+        matches!(self, Self::Spread(_))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QualifiedAssocExpr {
     pub base: Box<Spanned<TypeExpr>>,
@@ -270,7 +304,7 @@ pub enum Expr {
     /// Fully-qualified associated item, `<T as module.Trait>.Item`.
     QualifiedAssoc(Box<QualifiedAssocExpr>),
     Tuple(Vec<Spanned<Expr>>),
-    Array(Vec<Spanned<Expr>>),
+    Array(Vec<ArrayElement>),
     ArrayRepeat {
         value: Box<Spanned<Expr>>,
         count: Box<Spanned<Expr>>,

@@ -297,6 +297,13 @@ impl Builder {
         )
     }
 
+    /// `self` is the actor receiver. A machine body names its source state
+    /// `state`, so the two spellings never both mean the source payload.
+    fn self_refusal(&self) -> TypeError {
+        self.error("E_MACHINE_SELF: `self` is not bound inside a machine body")
+            .with_suggestion("inside a machine transition the source state is `state`")
+    }
+
     fn items(
         &mut self,
         items: &[Spanned<Item>],
@@ -590,6 +597,9 @@ impl Builder {
                     "transition to `{}` must produce that state on every normal path",
                     transition.target_state
                 )));
+            }
+            if let Some(refusal) = redundant_target_refusal(transition, machine) {
+                return Err(refusal);
             }
         }
         for state in &machine.states {
@@ -893,14 +903,15 @@ impl Builder {
         event: &MachineEvent,
     ) -> Result<(), TypeError> {
         match expr {
-            Expr::Identifier(name) if name == "self" || name == "state" => {
+            Expr::Identifier(name) if name == "self" => return Err(self.self_refusal()),
+            Expr::Identifier(name) if name == "state" => {
                 *expr = self.state_value(machine, state).0;
             }
             Expr::Identifier(name) if machine.states.iter().any(|state| state.name == *name) => {
                 let name = name.clone();
                 *expr = self.qualified_variant(machine, &name, Vec::new()).0;
             }
-            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(name) if name == "self" || name == "state") =>
+            Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Identifier(name) if name == "state") =>
             {
                 if !state.fields.iter().any(|(name, _)| name == field) {
                     return Err(
@@ -1316,14 +1327,14 @@ fn rules_for<'a>(
 
 /// Does `expr` produce `target` on every normal path?
 ///
-/// `source` is the rule's source state. `self` and `state` name the refined
-/// source payload, so a rule whose source and target are the same state
-/// produces that state by naming it, and one whose source is a wildcard or a
-/// different state does not.
+/// `source` is the rule's source state. `state` names the refined source
+/// payload, so a rule whose source and target are the same state produces that
+/// state by naming it, and one whose source is a wildcard or a different state
+/// does not.
 fn returns_variant(expr: &Expr, target: &str, source: &str, machine: &str) -> bool {
     match expr {
         Expr::ContextVariant(context) => context.name == target,
-        Expr::Identifier(name) if name == "self" || name == "state" => source == target,
+        Expr::Identifier(name) if name == "state" => source == target,
         Expr::Identifier(name) => name == target,
         Expr::StructInit { name, .. } => name == target || name == &format!("{machine}.{target}"),
         Expr::FieldAccess { object, field } => {
@@ -1346,6 +1357,65 @@ fn returns_variant(expr: &Expr, target: &str, source: &str, machine: &str) -> bo
                 && arms
                     .iter()
                     .all(|arm| returns_variant(&arm.body.0, target, source, machine))
+        }
+        _ => false,
+    }
+}
+
+/// Refuse a block body that is nothing but the target state it already names.
+///
+/// `=> Filled { Filled { items: v } }`, `=> Empty { .Empty }` and
+/// `=> Empty { Log.Empty }` all say what the transition head said. The field
+/// list with the target elided, or no body at all for a unit state, is the one
+/// spelling. A body that carries statements keeps naming the target - `emit`
+/// and local bindings have nowhere else to live.
+fn redundant_target_refusal(
+    transition: &MachineTransition,
+    machine: &MachineDecl,
+) -> Option<TypeError> {
+    if transition.target_state == "_" {
+        return None;
+    }
+    let Expr::Block(block) = &transition.body.0 else {
+        return None;
+    };
+    if !block.stmts.is_empty() {
+        return None;
+    }
+    let trailing = block.trailing_expr.as_deref()?;
+    if !names_target(&trailing.0, &transition.target_state, &machine.name) {
+        return None;
+    }
+    let target = &transition.target_state;
+    let fielded = machine
+        .states
+        .iter()
+        .any(|state| state.name == *target && !state.fields.is_empty());
+    let hint = if fielded {
+        format!("write the field list with the target elided: `=> {target} {{ field: value }}`")
+    } else {
+        format!("a transition to a unit state has no body: `=> {target},`")
+    };
+    Some(
+        TypeError::new(
+            TypeErrorKind::MachineExhaustivenessError,
+            transition.body.1.clone(),
+            format!(
+                "E_MACHINE_REDUNDANT_TARGET: the body of a transition to `{target}` repeats `{target}`"
+            ),
+        )
+        .with_suggestion(hint),
+    )
+}
+
+/// Does `expr` name `target` directly, in any of its spellings?
+fn names_target(expr: &Expr, target: &str, machine: &str) -> bool {
+    match expr {
+        Expr::Identifier(name) => name == target,
+        Expr::ContextVariant(context) => context.name == target,
+        Expr::StructInit { name, .. } => name == target || name == &format!("{machine}.{target}"),
+        Expr::FieldAccess { object, field } => {
+            field == target && matches!(&object.0, Expr::Identifier(name) if name == machine)
         }
         _ => false,
     }

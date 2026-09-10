@@ -2,7 +2,7 @@ use super::*;
 
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
-        "{helper}\n machine Gate {{ events {{ Open, }} emits {{ Changed {{ label: string }}, }} state Closed {{ label: string }}, state Opened {{ label: string }}, on Open: Closed => Opened {{ {body} .Opened {{ label: self.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
+        "{helper}\n machine Gate {{ events {{ Open, }} emits {{ Changed {{ label: string }}, }} state Closed {{ label: string }}, state Opened {{ label: string }}, on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
     );
     let parsed = hew_parser::parse(&source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -12,7 +12,7 @@ fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
 #[test]
 fn machine_normalizes_owning_values_and_checked_staged_calls() {
     let output = checked_machine(
-        "emit Changed { label: upper(self.label) };",
+        "emit Changed { label: upper(state.label) };",
         "fn upper(value: string) -> string { value.to_upper() }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
@@ -36,9 +36,9 @@ fn machine_normalizes_owning_values_and_checked_staged_calls() {
 #[test]
 fn machine_rejects_direct_and_transitive_effects() {
     for (body, helper) in [
-        ("println(self.label);", ""),
-        ("announce(self.label);", "fn announce(value: string) { println(value); }"),
-        ("announce(self.label);", "fn announce(value: string) { hidden(value); } fn hidden(value: string) { println(value); }"),
+        ("println(state.label);", ""),
+        ("announce(state.label);", "fn announce(value: string) { println(value); }"),
+        ("announce(state.label);", "fn announce(value: string) { hidden(value); } fn hidden(value: string) { println(value); }"),
     ] {
         let output = checked_machine(body, helper);
         assert!(output.errors.iter().any(|error| error.message.contains("not demonstrably pure")), "effects must be rejected: {:?}", output.errors);

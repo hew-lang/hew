@@ -3075,11 +3075,14 @@ struct LoopScope {
 
 /// A checked local root and concrete aggregate projections. Resolving this
 /// path does not read or consume the current binding version.
+/// One aggregate selection: the container's type, its shape and the field.
+type AggregateSelection = (ResolvedTy, AggregateShapeRef, usize);
+
 struct BindingPlace {
     binding: BindingId,
     root_ty: ResolvedTy,
     leaf_ty: ResolvedTy,
-    projections: Vec<(ResolvedTy, AggregateShapeRef, usize)>,
+    projections: Vec<AggregateSelection>,
 }
 
 /// Non-owning aggregate fields retained during a scalar field replacement.
@@ -4424,6 +4427,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             target.kind,
             HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
         ) {
+            if self.lower_element_field_assignment(target, value)? {
+                return Ok(());
+            }
             return self.lower_field_assignment(target, value);
         }
         let HirExprKind::BindingRef {
@@ -4488,6 +4494,99 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
+    /// `rows[i].field = v`: a projection chain rooted at a vector element.
+    ///
+    /// The element is not a place - only the vector's slot is - so the write
+    /// goes through the same element set entry `rows[i] = v` uses (D460): read
+    /// the element, replace the selected field in that owner, and move the
+    /// updated element back into its slot. The set entry releases the element
+    /// it replaces, so the replaced field value is released exactly once, and
+    /// the index keeps its bounds trap.
+    ///
+    /// Returns `false` for every other projection root, which the ordinary
+    /// binding-rooted path handles.
+    fn lower_element_field_assignment(
+        &mut self,
+        target: &HirExpr,
+        value: &HirExpr,
+    ) -> Result<bool, String> {
+        let (root, projections) = self.projection_chain(target)?;
+        if !projections.is_empty() {
+            if let HirExprKind::BorrowedIndex { .. } = &root.kind {
+                // The checker read this element as a loan because it has no
+                // semantic copy, and the element set entry needs an owner to
+                // move in. Name the construct rather than the place model.
+                return Err(
+                    "assignment through a field of a collection element requires an element \
+                     with a semantic copy; move it out with `remove`, update it and put it back"
+                        .into(),
+                );
+            }
+        }
+        let HirExprKind::Index { container, index } = &root.kind else {
+            return Ok(false);
+        };
+        if projections.is_empty() {
+            return Ok(false);
+        }
+        let container_ty = self.ty(&container.ty);
+        if !matches!(
+            collection_type_arguments(&container_ty),
+            Some((hew_types::BuiltinType::Vec, _))
+        ) {
+            return Ok(false);
+        }
+        let element_ty = self.ty(&root.ty);
+        let leaf_ty = self.ty(&target.ty);
+        let provenance = Provenance::Site(target.site);
+
+        // Evaluate the replacement before the element it lands in, exactly as
+        // the binding-rooted field assignment does.
+        let replacement = lower_initial_value_transfer(
+            self,
+            value,
+            "element field assignment",
+            OwnedBindingUse::Copy,
+        )?;
+        let replacement = self.coerce_value(replacement, &leaf_ty, Provenance::Site(value.site))?;
+
+        // One evaluation of the index expression feeds both the read and the
+        // write; lowering it twice would run its effects twice.
+        let position = self.lower_expr(index)?;
+        let element = self
+            .lower_runtime_operation_with(
+                root,
+                hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Index),
+                &[container.as_ref(), index.as_ref()],
+                true,
+                &[(1, position)],
+            )?
+            .ok_or_else(|| "element read must produce a semantic copy".to_string())?;
+        if self.value_own_kind(element) != Some(OwnKind::Owned) {
+            return Err(
+                "assignment through a collection element requires an owning element read".into(),
+            );
+        }
+        self.assign_through_owned_value(
+            element,
+            &element_ty,
+            &projections,
+            replacement,
+            provenance,
+        )?;
+
+        let mut operation = target.clone();
+        operation.ty = ResolvedTy::Unit;
+        self.lower_runtime_operation_with(
+            &operation,
+            hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set),
+            &[container.as_ref(), index.as_ref(), root],
+            false,
+            &[(1, position), (2, element)],
+        )?;
+        Ok(true)
+    }
+
     /// Assignment and runtime receiver mutation resolve and rebuild the same
     /// mutable place. Evaluate the RHS before taking its current root apart.
     fn lower_field_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
@@ -4535,7 +4634,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(place)
     }
 
-    fn resolve_binding_place(&mut self, target: &HirExpr) -> Result<Option<BindingPlace>, String> {
+    /// The aggregate selections between `target` and the expression they are
+    /// rooted at, outermost first. The root is whatever the chain reaches: a
+    /// binding, a collection element, or any other expression.
+    fn projection_chain<'expr>(
+        &mut self,
+        target: &'expr HirExpr,
+    ) -> Result<(&'expr HirExpr, Vec<AggregateSelection>), String> {
         let mut root = target;
         let mut projections = Vec::new();
         loop {
@@ -4563,6 +4668,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             root = object;
         }
         projections.reverse();
+        Ok((root, projections))
+    }
+
+    fn resolve_binding_place(&mut self, target: &HirExpr) -> Result<Option<BindingPlace>, String> {
+        let (root, projections) = self.projection_chain(target)?;
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding),
             ..
@@ -8341,16 +8451,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
-    )]
     fn lower_runtime_operation(
         &mut self,
         expr: &HirExpr,
         family: hew_types::RuntimeCallFamily,
         args: &[&HirExpr],
         value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        self.lower_runtime_operation_with(expr, family, args, value_required, &[])
+    }
+
+    /// As [`Self::lower_runtime_operation`], with `prelowered` naming argument
+    /// positions whose owning value this body already produced. The named
+    /// argument is transferred as it stands instead of being lowered from its
+    /// expression, so an element rebuilt in place reaches the set entry rather
+    /// than a second read of the slot it is replacing.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
+    )]
+    fn lower_runtime_operation_with(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        args: &[&HirExpr],
+        value_required: bool,
+        prelowered: &[(usize, ValueId)],
     ) -> Result<Option<ValueId>, String> {
         use hew_types::{RuntimeArgumentEffect, RuntimeResultEffect};
 
@@ -8498,6 +8624,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
         let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
+            if let Some(&(_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
+                let decision = match effect {
+                    RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
+                    RuntimeArgumentEffect::Borrow => crate::BoundaryDecision::Borrow,
+                    RuntimeArgumentEffect::Copy | RuntimeArgumentEffect::Value => {
+                        crate::BoundaryDecision::Copy
+                    }
+                };
+                lowered_args.push(crate::BoundaryOperand {
+                    operand: Operand { value },
+                    decision,
+                });
+                continue;
+            }
             let loan_floor = loans.len();
             let (value, decision) = if source_types[index] == parameter_types[index] {
                 match effect {

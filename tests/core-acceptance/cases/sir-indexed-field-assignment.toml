@@ -1,0 +1,11 @@
+[[case]]
+id = "sir-indexed-field-assignment"
+intent = "Assignment through a field of an indexed vector element writes the element back through the set entry: a direct field, a nested field, an actor var vector field and a read-back control, all with owned strings."
+source = "cases/sir-indexed-field-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "CLOSED:FIRST:OPEN:CLOSED\nSHUT/SECOND\n"
+stderr = ""
+exit = 0

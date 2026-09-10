@@ -13,7 +13,6 @@
 # ── Documentation fences ────────────────────────────────────────────────
 guide-144626557  # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
 guide-232405810  # IMPL-GAP: `.try_to_u8()`/`.try_to_u32()`/`.try_to_f32()` type-check but are not lowered (`E_SIR_UNSUPPORTED: ... unsupported HIR expression kind TryWidthCast`), same gap as spec-3559603183
-guide-3632677243  # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `NumericMet…
 guide-672237462  # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `ResolvedIm…
 guide-797256300  # IMPL-GAP: `unicode.rune_count` type-checks but is not lowered (`E_SIR_UNSUPPORTED: ... extern hew_string_char_count` is named by `#[extern_symbol]` rather than an `extern` block), same gap as the std-text-unicode entries below
 spec-1607851950  # SNIPPET: bare `let` — fn-type/Rc illustration; Rc/Weak wording owned by feat/rc-physical-path, left untouched by this lane

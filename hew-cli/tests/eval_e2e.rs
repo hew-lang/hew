@@ -386,7 +386,7 @@ fn eval_unsupervised_actor_crash_reports_dotted_handler_label() {
 
 fn crash_boom() {
     let b = spawn Boom;
-    let _ = await b.detonate();
+    let _ = b.detonate();
 }
 crash_boom();
 "#,

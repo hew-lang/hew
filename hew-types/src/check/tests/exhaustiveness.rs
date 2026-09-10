@@ -227,7 +227,7 @@ fn classify(t: (i64, i64)) -> i64 {
         "the irrefutable second tuple row must make the match exhaustive: {warnings:?}"
     );
 
-    let (errors, warnings) = parse_and_check(
+    let (errors, _) = parse_and_check(
         r"
 fn classify(t: (i64, i64)) -> i64 {
     match t {
@@ -235,13 +235,12 @@ fn classify(t: (i64, i64)) -> i64 {
     }
 }",
     );
-    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "a literal-only tuple row must remain refutable: {warnings:?}"
-    );
+    let missing = errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("a literal-only tuple row leaves the match non-exhaustive");
+    assert_eq!(missing.severity, crate::error::Severity::Error);
+    assert_eq!(missing.message, "non-exhaustive match: missing (_, _)");
 }
 
 #[test]
@@ -264,7 +263,7 @@ fn classify(p: Point) -> i64 {
         "the irrefutable second record row must make the match exhaustive: {warnings:?}"
     );
 
-    let (errors, warnings) = parse_and_check(
+    let (errors, _) = parse_and_check(
         r"
 type Point { x: i64, y: i64 }
 fn classify(p: Point) -> i64 {
@@ -273,12 +272,14 @@ fn classify(p: Point) -> i64 {
     }
 }",
     );
-    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| matches!(warning.kind, TypeErrorKind::NonExhaustiveMatch)),
-        "a literal-only record row must remain refutable: {warnings:?}"
+    let missing = errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("a literal-only record row leaves the match non-exhaustive");
+    assert_eq!(missing.severity, crate::error::Severity::Error);
+    assert_eq!(
+        missing.message,
+        "non-exhaustive match: missing Point { x: _, y: _ }"
     );
 }
 
@@ -1123,8 +1124,14 @@ fn typecheck_int_scrutinee_struct_pattern_errors_without_binding_cascade() {
     ));
     assert_eq!(
         errors.len(),
-        1,
-        "expected only the type-pattern mismatch, got: {errors:?}"
+        2,
+        "expected the type-pattern mismatch and the uncovered scrutinee, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "a mismatched arm covers nothing, so the match stays non-exhaustive: {errors:?}"
     );
     assert!(
         errors.iter().any(|e| matches!(
@@ -1721,5 +1728,137 @@ fn enum_type_cannot_be_constructed_as_empty_record() {
     assert!(
         errors.is_empty(),
         "empty records remain inhabited: {errors:?}"
+    );
+}
+
+/// Tuple coverage is decided column by column: no single arm covers the whole
+/// scrutinee, yet the arms jointly leave no `(bool, bool)` pair uncovered.
+#[test]
+fn tuple_columns_cover_jointly_without_any_catch_all_arm() {
+    let (errors, _) = parse_and_check(
+        r"
+fn classify(t: (bool, bool)) -> i64 {
+    match t {
+        (true, false) => 0,
+        (false, _) => 1,
+        (true, true) => 2,
+    }
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| !matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "jointly exhaustive tuple columns must be accepted: {errors:?}"
+    );
+}
+
+/// The negative control for the case above: drop one pair and the diagnostic
+/// names the shape that is missing.
+#[test]
+fn tuple_columns_missing_one_pair_names_the_uncovered_shape() {
+    let (errors, _) = parse_and_check(
+        r"
+fn classify(t: (bool, bool)) -> i64 {
+    match t {
+        (true, false) => 0,
+        (false, false) => 1,
+        (true, true) => 2,
+    }
+}",
+    );
+    let missing = errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("expected the uncovered tuple shape to be an error");
+    assert_eq!(missing.severity, crate::error::Severity::Error);
+    assert_eq!(
+        missing.message,
+        "non-exhaustive match: missing (false, true)"
+    );
+    assert_eq!(missing.suggestions, vec!["(false, true)".to_string()]);
+}
+
+/// A wildcard arm covers every remaining tuple value.
+#[test]
+fn tuple_wildcard_arm_covers_the_scrutinee() {
+    let (errors, _) = parse_and_check(
+        r"
+fn classify(t: (bool, i64)) -> i64 {
+    match t {
+        (true, 0) => 0,
+        _ => 1,
+    }
+}",
+    );
+    assert!(
+        errors
+            .iter()
+            .all(|error| !matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "a wildcard arm covers the tuple scrutinee: {errors:?}"
+    );
+}
+
+/// Nested constructors are covered recursively: the `Some` column is split
+/// again over the enum it carries.
+#[test]
+fn nested_option_column_inside_a_tuple_is_covered_recursively() {
+    let source = r"
+enum Colour { Red, Blue }
+fn classify(t: (Option<Colour>, bool)) -> i64 {
+    match t {
+        (.Some(.Red), _) => 0,
+        (.Some(.Blue), _) => 1,
+        (.None, _) => 2,
+    }
+}";
+    let (errors, _) = parse_and_check(source);
+    assert!(
+        errors
+            .iter()
+            .all(|error| !matches!(error.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "every nested constructor is named, so the match is exhaustive: {errors:?}"
+    );
+
+    let (errors, _) = parse_and_check(
+        r"
+enum Colour { Red, Blue }
+fn classify(t: (Option<Colour>, bool)) -> i64 {
+    match t {
+        (.Some(.Red), _) => 0,
+        (.None, _) => 2,
+    }
+}",
+    );
+    let missing = errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("expected the uncovered nested shape to be an error");
+    assert_eq!(
+        missing.message,
+        "non-exhaustive match: missing (Some(Blue), _)"
+    );
+}
+
+/// An integer column has no enumerable constructor space, so literal arms
+/// alone never cover it.
+#[test]
+fn integer_column_inside_a_tuple_still_needs_a_wildcard() {
+    let (errors, _) = parse_and_check(
+        r"
+fn classify(t: (bool, i64)) -> i64 {
+    match t {
+        (true, 0) => 0,
+        (false, 0) => 1,
+    }
+}",
+    );
+    let missing = errors
+        .iter()
+        .find(|error| matches!(error.kind, TypeErrorKind::NonExhaustiveMatch))
+        .expect("expected the open integer column to be an error");
+    assert_eq!(
+        missing.message,
+        "non-exhaustive match: missing (true, _), (false, _)"
     );
 }

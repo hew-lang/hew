@@ -168,9 +168,11 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
         .iter()
         .find(|e| e.kind == TypeErrorKind::NonExhaustiveMatch)
         .expect("expected NonExhaustiveMatch error for Packet");
+    // A struct variant's suggestion names its fields, so the editor quick fix
+    // inserts an arm the programmer can fill in rather than a `..` sketch.
     assert_eq!(
         err.suggestions,
-        vec!["Named { .. }".to_string(), "Value(_)".to_string()]
+        vec!["Named { count: _ }".to_string(), "Value(_)".to_string()]
     );
 }
 

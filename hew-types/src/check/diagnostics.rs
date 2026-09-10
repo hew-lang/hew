@@ -618,7 +618,10 @@ impl Checker {
     /// needs an arm for it. `ActorError<Never>.Failed(Never)` is the case
     /// this exists for: an infallible handler's completion call can never
     /// report a declared failure.
-    fn variant_is_unconstructable(&self, shape: &super::patterns::VariantPayloadShape) -> bool {
+    pub(super) fn variant_is_unconstructable(
+        &self,
+        shape: &super::patterns::VariantPayloadShape,
+    ) -> bool {
         use super::patterns::VariantPayloadShape;
         match shape {
             VariantPayloadShape::Unit => false,
@@ -641,247 +644,27 @@ impl Checker {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "associated type resolution requires many cases"
-    )]
+    /// A `match` must cover every value of its scrutinee: a fallthrough reaches
+    /// no arm at all, so a missing shape is an error for every scrutinee type
+    /// (D464). `missing_match_shapes` is the one coverage authority.
     pub(super) fn check_exhaustiveness(
         &mut self,
         scrutinee_ty: &Ty,
         arms: &[MatchArm],
         span: &Span,
     ) {
-        fn visit_or_patterns<'a, F: FnMut(&'a Pattern)>(pattern: &'a Pattern, f: &mut F) {
-            match pattern {
-                Pattern::Or(left, right) => {
-                    visit_or_patterns(&left.0, f);
-                    visit_or_patterns(&right.0, f);
-                }
-                _ => f(pattern),
-            }
-        }
-
-        if matches!(scrutinee_ty, Ty::Error) {
-            return;
-        }
         if self.has_unsupported_payload_subpattern_error_for_arms(arms) {
             return;
         }
-        let scrutinee_ty = self.subst.resolve(scrutinee_ty);
-        let scrutinee_ty = &scrutinee_ty;
-
-        let mut has_wildcard = false;
-        for arm in arms {
-            if arm.guard.is_some() {
-                continue;
-            }
-            visit_or_patterns(&arm.pattern.0, &mut |pattern| {
-                if matches!(pattern, Pattern::Wildcard) {
-                    has_wildcard = true;
-                }
-            });
-            if has_wildcard {
-                return;
-            }
+        let scrutinee_ty = self.project_assoc_types(&self.subst.resolve(scrutinee_ty));
+        // An unresolved or already-erroneous scrutinee has its own diagnostic;
+        // coverage over it would only invent shapes.
+        if matches!(scrutinee_ty, Ty::Error | Ty::Var(_)) {
+            return;
         }
-
-        match scrutinee_ty {
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
-                ..
-            } => {
-                // Refutability-aware coverage: an arm whose payload subpattern
-                // is refutable (a literal predicate `Some(0)` or a nested
-                // constructor `Err(IoError::NotFound)`) does not by itself
-                // cover its variant; `variant_covered` recurses into nested
-                // payload patterns so a jointly-exhaustive set of nested arms
-                // still counts.
-                //
-                // Use the resolution-aware `is_catch_all_for_scrutinee` so
-                // that a bare unqualified identifier (even uppercase) that does
-                // not resolve as a variant of the scrutinee type is treated as
-                // a binding catch-all rather than a failed constructor.
-                let leaves = Self::unguarded_leaf_patterns(arms);
-                if leaves
-                    .iter()
-                    .any(|p| self.is_catch_all_for_scrutinee(p, scrutinee_ty))
-                {
-                    return;
-                }
-                let Some(variants) = self.enum_variant_payloads(scrutinee_ty) else {
-                    return;
-                };
-                let missing: Vec<String> = variants
-                    .iter()
-                    .filter(|(name, shape)| {
-                        !self.variant_is_unconstructable(shape)
-                            && !self.variant_covered(&leaves, scrutinee_ty, name, shape)
-                    })
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                if !missing.is_empty() {
-                    self.error_non_exhaustive(span, &missing, |name| match name {
-                        "Some" => "Some(_)".to_string(),
-                        "Ok" => "Ok(_)".to_string(),
-                        "Err" => "Err(_)".to_string(),
-                        _ => name.to_string(),
-                    });
-                }
-            }
-            Ty::Named { name, .. } => {
-                if let Some(td) = self.lookup_type_def(name) {
-                    if td.variants.is_empty() {
-                        let leaves = Self::unguarded_leaf_patterns(arms);
-                        if leaves.iter().any(|pattern| {
-                            self.is_project_irrefutable_for_ty(pattern, scrutinee_ty)
-                        }) {
-                            return;
-                        }
-                        self.warn_non_exhaustive(
-                            span,
-                            "consider adding an irrefutable record pattern or wildcard `_` arm",
-                        );
-                    } else {
-                        let leaves = Self::unguarded_leaf_patterns(arms);
-                        // A plain lowercase binding (or an identifier that is
-                        // not a variant of this enum) is a catch-all arm.
-                        let is_catch_all = |pattern: &Pattern| match pattern {
-                            Pattern::Wildcard => true,
-                            Pattern::Identifier(id) => {
-                                let short = id.rsplit("::").next().unwrap_or(id);
-                                !td.variants.contains_key(short)
-                            }
-                            _ => false,
-                        };
-                        if leaves.iter().any(|p| is_catch_all(p)) {
-                            return;
-                        }
-                        let Some(variants) = self.enum_variant_payloads(scrutinee_ty) else {
-                            return;
-                        };
-                        let mut missing_names: Vec<String> = variants
-                            .iter()
-                            .filter(|(vname, shape)| {
-                                !self.variant_is_unconstructable(shape)
-                                    && !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
-                            })
-                            .map(|(vname, _)| vname.clone())
-                            .collect();
-                        if !missing_names.is_empty() {
-                            missing_names.sort();
-                            self.error_non_exhaustive(span, &missing_names, |variant_name| {
-                                td.variants.get(variant_name).map_or_else(
-                                    || variant_name.to_string(),
-                                    |variant| missing_arm_pattern(variant_name, variant),
-                                )
-                            });
-                        }
-                    }
-                }
-            }
-            Ty::Bool => {
-                let mut has_binding_identifier = false;
-                let mut has_true = false;
-                let mut has_false = false;
-                for arm in arms {
-                    if arm.guard.is_some() {
-                        continue;
-                    }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                        Pattern::Identifier(_) => {
-                            has_binding_identifier = true;
-                        }
-                        Pattern::Literal(Literal::Bool(true)) => {
-                            has_true = true;
-                        }
-                        Pattern::Literal(Literal::Bool(false)) => {
-                            has_false = true;
-                        }
-                        _ => {}
-                    });
-                }
-                if !has_binding_identifier {
-                    let mut missing = Vec::new();
-                    if !has_true {
-                        missing.push("true".to_string());
-                    }
-                    if !has_false {
-                        missing.push("false".to_string());
-                    }
-                    if !missing.is_empty() {
-                        self.error_non_exhaustive(span, &missing, std::string::ToString::to_string);
-                    }
-                }
-            }
-            Ty::Tuple(items) => {
-                let mut has_binding_identifier = false;
-                let mut has_full_tuple_project = false;
-                for arm in arms {
-                    if arm.guard.is_some() {
-                        continue;
-                    }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                        Pattern::Identifier(_) => {
-                            has_binding_identifier = true;
-                        }
-                        Pattern::Tuple(pats) if pats.len() == items.len() => {
-                            has_full_tuple_project =
-                                self.is_project_irrefutable_for_ty(pattern, scrutinee_ty);
-                        }
-                        _ => {}
-                    });
-                    if has_binding_identifier || has_full_tuple_project {
-                        return;
-                    }
-                }
-                self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
-            }
-            _ => {
-                // For non-enum types (int, float, string, etc.), check for catch-all patterns.
-                let mut has_catch_all = false;
-                let mut has_literal_arm = false;
-                for arm in arms {
-                    if arm.guard.is_some() {
-                        continue;
-                    }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                        Pattern::Identifier(_) => {
-                            has_catch_all = true;
-                        }
-                        Pattern::Literal(_) => {
-                            has_literal_arm = true;
-                        }
-                        _ => {}
-                    });
-                    if has_catch_all {
-                        break;
-                    }
-                }
-                if !has_catch_all {
-                    if has_literal_arm
-                        && matches!(
-                            scrutinee_ty,
-                            Ty::I8
-                                | Ty::I16
-                                | Ty::I32
-                                | Ty::I64
-                                | Ty::U8
-                                | Ty::U16
-                                | Ty::U32
-                                | Ty::U64
-                                | Ty::Isize
-                                | Ty::Usize
-                                | Ty::IntLiteral
-                                | Ty::Char
-                                | Ty::String
-                        )
-                    {
-                        self.error_non_exhaustive(span, &["_".to_string()], |_| "_".to_string());
-                    } else {
-                        self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
-                    }
-                }
-            }
+        let missing = self.missing_match_shapes(arms, &scrutinee_ty);
+        if !missing.is_empty() {
+            self.error_non_exhaustive(span, &missing, std::string::ToString::to_string);
         }
     }
 
@@ -925,16 +708,6 @@ impl Checker {
         self.errors.push(error);
     }
 
-    /// Emit a soft warning for scalar / open-ended types where adding a wildcard `_`
-    /// arm is a style suggestion rather than a correctness requirement.
-    pub(super) fn warn_non_exhaustive(&mut self, span: &Span, detail: &str) {
-        self.warnings.push(TypeError::non_exhaustive_match_detail(
-            span.clone(),
-            crate::error::Severity::Warning,
-            detail,
-        ));
-    }
-
     /// Collect the leaf patterns of every unguarded arm, flattening
     /// or-patterns. Guarded arms never contribute to exhaustiveness.
     pub(super) fn unguarded_leaf_patterns(arms: &[MatchArm]) -> Vec<&Pattern> {
@@ -955,18 +728,5 @@ impl Checker {
             visit(&arm.pattern.0, &mut leaves);
         }
         leaves
-    }
-}
-
-fn missing_arm_pattern(variant_name: &str, variant: &VariantDef) -> String {
-    match variant {
-        VariantDef::Unit => variant_name.to_string(),
-        VariantDef::Tuple(fields) => {
-            let wildcards = std::iter::repeat_n("_", fields.len())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{variant_name}({wildcards})")
-        }
-        VariantDef::Struct(_) => format!("{variant_name} {{ .. }}"),
     }
 }

@@ -36,6 +36,7 @@ pub use self::dispatch::{
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
 pub mod effects;
+mod exhaustiveness;
 mod expressions;
 mod generics;
 mod items;

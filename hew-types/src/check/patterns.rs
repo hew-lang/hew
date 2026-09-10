@@ -60,7 +60,11 @@ fn literal_pattern_matches_type(literal: &Literal, ty: &Ty) -> bool {
     }
 }
 
-fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+pub(super) fn substitute_pattern_field_ty(
+    raw_field_ty: &Ty,
+    type_params: &[String],
+    type_args: &[Ty],
+) -> Ty {
     let map: HashMap<String, Ty> = type_params
         .iter()
         .zip(type_args.iter())
@@ -89,7 +93,7 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
     }
 }
 
-fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
+pub(super) fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
     path.segments.last().map(String::as_str)
 }
 
@@ -162,10 +166,9 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
 pub(super) enum VariantPayloadShape {
     Unit,
     Tuple(Vec<Ty>),
-    /// Struct-variant fields with their (substituted) resolved types, so
-    /// field-position sub-patterns can be checked for irrefutability against
-    /// their real payload type via `Checker::is_payload_irrefutable_for_ty`
-    /// instead of the type-blind free function this shape used to require.
+    /// Struct-variant fields with their (substituted) resolved types, in
+    /// declaration order, so coverage opens one column per field against its
+    /// real payload type.
     Struct(Vec<(String, Ty)>),
 }
 
@@ -262,290 +265,6 @@ impl Checker {
                 self.resolve_variant_match(name, &resolved).is_none()
             }
             _ => false,
-        }
-    }
-
-    /// True when `patterns` (the flattened, unguarded match-arm leaf patterns)
-    /// cover every value of `ty`.
-    ///
-    /// Refutability-aware: an arm only counts toward a variant's coverage when
-    /// its payload subpatterns are irrefutable, or — for single-payload
-    /// variants — when the inner subpatterns recursively cover the payload
-    /// type. Multi-slot variants whose every row carries a refutable
-    /// subpattern are conservatively treated as uncovered (over-rejection is
-    /// resolved by the user adding a catch-all arm; under-rejection would
-    /// push a reachable miss onto the runtime exhaustiveness trap).
-    pub(super) fn patterns_cover_type(&self, patterns: &[&Pattern], ty: &Ty) -> bool {
-        if patterns
-            .iter()
-            .any(|p| self.is_catch_all_for_scrutinee(p, ty))
-        {
-            return true;
-        }
-        let resolved = self.subst.resolve(ty);
-        if matches!(resolved, Ty::Bool) {
-            let mut has_true = false;
-            let mut has_false = false;
-            for pattern in patterns {
-                match pattern {
-                    Pattern::Literal(Literal::Bool(true)) => has_true = true,
-                    Pattern::Literal(Literal::Bool(false)) => has_false = true,
-                    _ => {}
-                }
-            }
-            return has_true && has_false;
-        }
-        let Some(variants) = self.enum_variant_payloads(&resolved) else {
-            return false;
-        };
-        variants
-            .iter()
-            .all(|(name, shape)| self.variant_covered(patterns, &resolved, name, shape))
-    }
-
-    /// Resolution-based irrefutability test for a payload subpattern slot,
-    /// used for every context where the concrete payload type is known:
-    /// tuple-variant payload slots and (via their substituted field types)
-    /// struct-variant fields.
-    ///
-    /// A subpattern is irrefutable (catches every value of `payload_ty`) when:
-    /// - It is a wildcard `_` or the empty-tuple unit `()`.
-    /// - It is a plain identifier that does **not** resolve as a variant of
-    ///   `payload_ty` — i.e., it is a binding, not a constructor.
-    ///
-    /// Constructor identifiers (qualified with `::`, or resolving to a known
-    /// variant) are refutable and return `false`.
-    ///
-    /// A tuple sub-pattern is irrefutable when it is the empty tuple `()`, or
-    /// when its resolved payload type is itself `Ty::Tuple` of equal arity and
-    /// every element sub-pattern is (recursively) irrefutable against its
-    /// corresponding element type. Any arity mismatch or non-tuple resolved
-    /// payload type stays refutable (fail-closed) rather than being credited.
-    fn is_payload_irrefutable_for_ty(&self, pattern: &Pattern, payload_ty: &Ty) -> bool {
-        match pattern {
-            Pattern::Wildcard => true,
-            Pattern::Identifier(name) => {
-                // Qualified name — always a constructor path, never a binder.
-                if name.contains("::") {
-                    return false;
-                }
-
-                // Unqualified: irrefutable iff it does NOT resolve as a variant.
-                let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
-                self.resolve_variant_match(name, &resolved).is_none()
-            }
-            Pattern::Tuple(pats) => {
-                if pats.is_empty() {
-                    return true;
-                }
-                let resolved = self.project_assoc_types(&self.subst.resolve(payload_ty));
-                let Ty::Tuple(elem_tys) = &resolved else {
-                    return false;
-                };
-                pats.len() == elem_tys.len()
-                    && pats
-                        .iter()
-                        .zip(elem_tys.iter())
-                        .all(|((sub, _), elem_ty)| self.is_payload_irrefutable_for_ty(sub, elem_ty))
-            }
-            // A record payload subpattern covers its slot on exactly the terms
-            // a top-level record project pattern covers its scrutinee.
-            Pattern::Struct { .. } => self.is_project_irrefutable_for_ty(pattern, payload_ty),
-            _ => false,
-        }
-    }
-
-    /// True when a plain record/tuple project pattern covers every value of
-    /// `project_ty`. Literal element predicates are refutable; bindings,
-    /// wildcards, unit, and recursively irrefutable tuple elements are not.
-    pub(super) fn is_project_irrefutable_for_ty(&self, pattern: &Pattern, project_ty: &Ty) -> bool {
-        match pattern {
-            Pattern::Wildcard => true,
-            Pattern::Identifier(name) => {
-                if name.contains("::") {
-                    return false;
-                }
-                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
-                self.resolve_variant_match(name, &resolved).is_none()
-            }
-            Pattern::Tuple(pats) => {
-                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
-                let Ty::Tuple(elem_tys) = &resolved else {
-                    return false;
-                };
-                pats.len() == elem_tys.len()
-                    && pats
-                        .iter()
-                        .zip(elem_tys)
-                        .all(|((sub, _), ty)| self.is_project_irrefutable_for_ty(sub, ty))
-            }
-            Pattern::Struct { fields, rest, .. } => {
-                let resolved = self.project_assoc_types(&self.subst.resolve(project_ty));
-                let Some(type_name) = resolved.type_name() else {
-                    return false;
-                };
-                let Some(td) = self.lookup_type_def(type_name) else {
-                    return false;
-                };
-                if !td.variants.is_empty() || (rest.is_none() && fields.len() != td.fields.len()) {
-                    return false;
-                }
-                fields.iter().all(|field| {
-                    let Some(field_ty) = td.fields.get(&field.name) else {
-                        return false;
-                    };
-                    field
-                        .pattern
-                        .as_ref()
-                        .is_none_or(|(sub, _)| self.is_project_irrefutable_for_ty(sub, field_ty))
-                })
-            }
-            Pattern::Literal(_)
-            | Pattern::Constructor { .. }
-            | Pattern::RecordShorthand { .. }
-            | Pattern::Or(_, _)
-            | Pattern::Regex { .. }
-            | Pattern::NominalPath { .. }
-            | Pattern::ContextVariant(_) => false,
-        }
-    }
-
-    /// True when at least one row of `patterns` headed by `variant_name`
-    /// covers every value of the variant's payload.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "coverage handles every origin-preserving nominal payload shape in one authority"
-    )]
-    pub(super) fn variant_covered(
-        &self,
-        patterns: &[&Pattern],
-        enum_ty: &Ty,
-        variant_name: &str,
-        shape: &VariantPayloadShape,
-    ) -> bool {
-        let struct_field_tys: HashMap<&str, &Ty> = match shape {
-            VariantPayloadShape::Struct(fields) => fields
-                .iter()
-                .map(|(name, ty)| (name.as_str(), ty))
-                .collect(),
-            _ => HashMap::new(),
-        };
-        let mut ctor_rows: Vec<&[(Pattern, Span)]> = Vec::new();
-        let mut has_unit_row = false;
-        let mut has_struct_cover = false;
-        for pattern in patterns {
-            match pattern {
-                Pattern::Constructor { name, patterns } => {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_name && self.variant_surface_owner_matches(name, enum_ty) {
-                        ctor_rows.push(patterns.as_slice());
-                    }
-                }
-                Pattern::Identifier(name) => {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_name && self.variant_surface_owner_matches(name, enum_ty) {
-                        has_unit_row = true;
-                    }
-                }
-                Pattern::Struct { name, fields, .. } => {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_name
-                        && self.variant_surface_owner_matches(name, enum_ty)
-                        && fields.iter().all(|pf| {
-                            pf.pattern.as_ref().is_none_or(|(sub, _)| {
-                                struct_field_tys
-                                    .get(pf.name.as_str())
-                                    .is_some_and(|field_ty| {
-                                        self.is_payload_irrefutable_for_ty(sub, field_ty)
-                                    })
-                            })
-                        })
-                    {
-                        has_struct_cover = true;
-                    }
-                }
-                Pattern::ContextVariant(context) if context.name == variant_name => {
-                    match context.payload.as_ref() {
-                        None => has_unit_row = true,
-                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                            ctor_rows.push(patterns.as_slice());
-                        }
-                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
-                            if fields.iter().all(|field| {
-                                field.pattern.as_ref().is_none_or(|(subpattern, _)| {
-                                    struct_field_tys.get(field.name.as_str()).is_some_and(
-                                        |field_ty| {
-                                            self.is_payload_irrefutable_for_ty(subpattern, field_ty)
-                                        },
-                                    )
-                                })
-                            }) {
-                                has_struct_cover = true;
-                            }
-                        }
-                    }
-                }
-                Pattern::NominalPath { path, payload }
-                    if nominal_path_leaf(path) == Some(variant_name)
-                        && self.variant_path_owner_matches(path, enum_ty) =>
-                {
-                    match payload.as_ref() {
-                        None => has_unit_row = true,
-                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                            ctor_rows.push(patterns.as_slice());
-                        }
-                        Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
-                            if fields.iter().all(|field| {
-                                field.pattern.as_ref().is_none_or(|(subpattern, _)| {
-                                    struct_field_tys.get(field.name.as_str()).is_some_and(
-                                        |field_ty| {
-                                            self.is_payload_irrefutable_for_ty(subpattern, field_ty)
-                                        },
-                                    )
-                                })
-                            }) {
-                                has_struct_cover = true;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        match shape {
-            VariantPayloadShape::Unit => has_unit_row || !ctor_rows.is_empty(),
-            VariantPayloadShape::Struct(_) => has_struct_cover,
-            VariantPayloadShape::Tuple(payload_tys) => {
-                // Use resolution-based irrefutability so that a plain uppercase
-                // binder (e.g. `Some(MAX)` where `MAX` is not a variant of the
-                // payload type) is treated as covering the slot rather than being
-                // mistaken for an unresolvable constructor.
-                if ctor_rows.iter().any(|row| {
-                    row.len() == payload_tys.len()
-                        && row
-                            .iter()
-                            .zip(payload_tys.iter())
-                            .all(|((sub, _), payload_ty)| {
-                                self.is_payload_irrefutable_for_ty(sub, payload_ty)
-                            })
-                }) {
-                    return true;
-                }
-                // Single-payload variants recurse: the inner subpatterns of
-                // every row jointly cover the payload type (e.g. `Ok(Ok(v))`
-                // + `Ok(Err(e))` cover `Ok` of a nested Result).
-                if payload_tys.len() == 1 {
-                    let inner: Vec<&Pattern> = ctor_rows
-                        .iter()
-                        .filter(|row| row.len() == 1)
-                        .map(|row| &row[0].0)
-                        .collect();
-                    if !inner.is_empty() && self.patterns_cover_type(&inner, &payload_tys[0]) {
-                        return true;
-                    }
-                }
-                false
-            }
         }
     }
 

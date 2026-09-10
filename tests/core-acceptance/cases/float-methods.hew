@@ -58,5 +58,20 @@ fn main() {
     assert(x.abs() == x);
     assert(math.abs(neg_x) == neg_x.abs());
 
+    // Float-to-integer `as` casts saturate rather than producing poison
+    // (issue #3367): positive overflow clamps to MAX, negative overflow
+    // clamps to MIN (or 0 for unsigned targets), and NaN converts to 0.
+    let huge: f64 = 1.0e30;
+    let neg_huge: f64 = -1.0e30;
+    assert(huge as i32 == 2147483647);
+    assert(neg_huge as i32 == -2147483648);
+    assert(nan as i32 == 0);
+    assert(huge as i64 == 9223372036854775807);
+    assert(neg_huge as i64 == -9223372036854775808);
+    assert(nan as i64 == 0);
+    assert(huge as u32 == 4294967295);
+    assert(neg_huge as u32 == 0);
+    assert(nan as u32 == 0);
+
     println("float methods classify NaN, infinity, sign and bit patterns correctly");
 }

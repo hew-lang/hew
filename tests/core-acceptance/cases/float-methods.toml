@@ -1,6 +1,6 @@
 [[case]]
 id = "float-methods"
-intent = "to_bits/from_bits round-trip (including negative zero's distinct bit pattern), is_nan/is_finite/is_infinite classify NaN and both infinities, is_sign_negative reads the raw sign bit, and the abs method matches math.abs."
+intent = "to_bits/from_bits round-trip (including negative zero's distinct bit pattern), is_nan/is_finite/is_infinite classify NaN and both infinities, is_sign_negative reads the raw sign bit, the abs method matches math.abs, and float-to-integer `as` casts saturate on overflow and NaN instead of producing poison."
 source = "cases/float-methods.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

@@ -3363,17 +3363,28 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 }
             }
             (BasicValueEnum::FloatValue(value), BasicTypeEnum::IntType(target)) => {
-                if is_signed(to) {
-                    self.builder
-                        .build_float_to_signed_int(value, target, "float.to.signed")
-                        .llvm_ctx("emit float-to-signed cast")?
-                        .into()
+                // Plain `fptosi`/`fptoui` are LLVM poison for out-of-range and
+                // non-finite inputs. The spec guarantees saturating semantics
+                // (MAX/MIN on overflow, 0 on NaN) for every `as` float-to-int
+                // cast, so the saturating intrinsics are the only correct
+                // lowering here (see HEW-SPEC-2026.md's float-to-integer
+                // cast table).
+                let name = if is_signed(to) {
+                    "llvm.fptosi.sat"
                 } else {
-                    self.builder
-                        .build_float_to_unsigned_int(value, target, "float.to.unsigned")
-                        .llvm_ctx("emit float-to-unsigned cast")?
-                        .into()
-                }
+                    "llvm.fptoui.sat"
+                };
+                let declaration = Intrinsic::find(name)
+                    .and_then(|intrinsic| {
+                        intrinsic
+                            .get_declaration(self.llvm, &[target.into(), value.get_type().into()])
+                    })
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "LLVM cast intrinsic `{name}` is unavailable"
+                        ))
+                    })?;
+                self.runtime_call_value(declaration, &[value.into()], "float.to.int.sat")?
             }
             _ => {
                 return Err(CodegenError::FailClosed(

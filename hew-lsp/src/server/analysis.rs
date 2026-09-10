@@ -5,11 +5,9 @@ use hew_analysis::util::compute_line_offsets;
 use hew_hir::{
     lower_program_host_target, verify_hir, HirDiagnostic, HirDiagnosticKind, ResolutionCtx,
 };
-use hew_parser::ast::{ImportDecl, Item};
-use hew_parser::{ParseDiagnosticKind, ParseResult};
+use hew_parser::ParseDiagnosticKind;
 use hew_types::error::{Severity, TypeErrorKind};
-use hew_types::module_registry::{build_module_search_paths, build_module_search_paths_for};
-use hew_types::{Checker, LintId, LintSources, TypeCheckOutput};
+use hew_types::{LintId, TypeCheckOutput};
 use tower_lsp_server::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Uri as Url,
@@ -39,502 +37,6 @@ pub(super) fn source_for_path(
     }
     // Fall back to on-disk content.
     std::fs::read_to_string(path).ok()
-}
-
-/// Recursively populate `ImportDecl::resolved_items` for user and file imports.
-///
-/// After parsing a document the `resolved_items` field on every `ImportDecl`
-/// is `None`. The LSP must resolve imported modules from the project tree, not
-/// just through the stdlib `ModuleRegistry`.
-///
-/// This function walks `items`, finds unresolved `Import` nodes, locates the
-/// corresponding `.hew` file relative to `source_dir`, reads it — **preferring
-/// any open editor buffer over the on-disk version** — and populates
-/// `resolved_items` so the type checker sees the current in-memory content.
-///
-/// Depth is capped at [`MAX_IMPORT_DEPTH`] to prevent cycles.
-pub(super) fn populate_user_module_imports(
-    source_uri: &Url,
-    items: &mut [hew_parser::ast::Spanned<hew_parser::ast::Item>],
-    documents: &DashMap<Url, DocumentState>,
-    extra_pkg_paths: &[std::path::PathBuf],
-) -> Vec<AmbiguousImport> {
-    let Some(source_path) = source_uri.to_file_path() else {
-        return Vec::new(); // Non-file URI — nothing to resolve.
-    };
-    let Some(source_dir) = source_path.parent() else {
-        return Vec::new();
-    };
-    let mut search_roots = build_module_search_paths_for(Some(&source_path));
-    // Append explicit package-search paths (from `--pkg-path` / `hew.pkgPath`
-    // setting) so that `hew check --pkg-path DIR` and LSP import resolution
-    // agree on which modules resolve.  Appended after stdlib roots so that
-    // a user package does not shadow the standard library.
-    for pkg_path in extra_pkg_paths {
-        if pkg_path.exists() && !search_roots.contains(pkg_path) {
-            search_roots.push(pkg_path.clone());
-        }
-    }
-    let mut ambiguities = Vec::new();
-    populate_user_module_imports_impl(
-        &source_path,
-        source_dir,
-        &search_roots,
-        items,
-        documents,
-        0,
-        &mut ambiguities,
-        extra_pkg_paths,
-    );
-    ambiguities
-}
-
-/// Maximum import nesting depth to prevent unbounded recursion on cycles.
-const MAX_IMPORT_DEPTH: usize = 16;
-
-/// An import whose dotted path resolves to more than one distinct module file.
-///
-/// Mirrors the compiler's fail-closed resolver (`hew-compile/src/lib.rs`):
-/// when a module exists both as a workspace-local file and in a stdlib/global
-/// search root (or in both the package-directory and flat candidate forms),
-/// the import is ambiguous and must be rejected rather than silently bound to
-/// whichever candidate happens to come first.
-#[derive(Debug)]
-pub(super) struct AmbiguousImport {
-    source_path: std::path::PathBuf,
-    span: hew_parser::ast::Span,
-    module: String,
-    paths: Vec<std::path::PathBuf>,
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the compiler's resolution signature; the parameters are all distinct and structural grouping would obscure the parity with hew-compile/src/lib.rs"
-)]
-pub(super) fn populate_user_module_imports_impl(
-    current_source: &std::path::Path,
-    source_dir: &std::path::Path,
-    search_roots: &[std::path::PathBuf],
-    items: &mut [hew_parser::ast::Spanned<hew_parser::ast::Item>],
-    documents: &DashMap<Url, DocumentState>,
-    depth: usize,
-    ambiguities: &mut Vec<AmbiguousImport>,
-    extra_pkg_paths: &[std::path::PathBuf],
-) {
-    if depth >= MAX_IMPORT_DEPTH {
-        return;
-    }
-
-    for (item, span) in items.iter_mut() {
-        let decl = match item {
-            // Only process imports that haven't been resolved yet.
-            Item::Import(d)
-                if d.resolved_items.is_none() && (d.file_path.is_some() || !d.path.is_empty()) =>
-            {
-                d
-            }
-            _ => continue,
-        };
-
-        // String-literal file imports (`import "foo.hew"`) are resolved
-        // LOCAL-ONLY, exactly as the compiler does: it canonicalizes only
-        // `source_dir.join(file_path)` and errors if that single local path is
-        // absent (hew-compile/src/lib.rs). Search-root (stdlib/global)
-        // expansion and ambiguity collection apply ONLY to dotted module
-        // imports (`decl.file_path.is_none()`); a missing local file import must
-        // fail the compiler's way, never resolve from a stdlib root, and a
-        // local+root pair must never be reported ambiguous.
-        let is_dotted = decl.file_path.is_none();
-
-        let mut candidates = import_candidate_paths_from_dir(source_dir, decl);
-        if is_dotted {
-            // Project-local candidates (resolved relative to the importing
-            // file's directory) come first, followed by stdlib/library
-            // candidates rooted at the module search paths, so
-            // `import std::text::regex` resolves to the checkout's `std/` tree
-            // exactly as the compiler's module graph does.
-            for root in search_roots {
-                candidates.extend(import_candidate_paths_from_dir(root, decl));
-            }
-
-            // For explicit package-search roots (--pkg-path / hew.pkgPath),
-            // mirror the compiler's extra-candidate generation: leading-segment
-            // stripping and `hew::` prefix stripping are applied so that
-            // `import hew::template` finds `<root>/template/template.hew`
-            // just as `hew check --pkg-path <root>` does
-            // (hew-compile/src/lib.rs:1085-1110).
-            for pkg_path in extra_pkg_paths {
-                candidates.extend(import_candidate_paths_from_pkg_path(pkg_path, decl));
-            }
-
-            // Fail closed on ambiguity, matching the compiler's resolver
-            // (`resolve_file_imports_internal` in hew-compile/src/lib.rs):
-            // collect every candidate that resolves on disk, deduplicate by
-            // canonical path, and if more than one distinct module would
-            // resolve, reject the import instead of silently picking the
-            // workspace-local shadow. This keeps the LSP and the compiler in
-            // agreement — the LSP must not offer tooling or diagnostics for a
-            // module the compiler refuses to bind.
-            let mut distinct: Vec<std::path::PathBuf> = candidates
-                .iter()
-                .filter_map(|candidate| candidate.canonicalize().ok())
-                .collect();
-            distinct.sort();
-            distinct.dedup();
-
-            if distinct.len() > 1 {
-                ambiguities.push(AmbiguousImport {
-                    source_path: current_source.to_path_buf(),
-                    span: span.clone(),
-                    module: decl.path.join("."),
-                    paths: distinct,
-                });
-                // Leave `resolved_items` as `None` so the import is treated as
-                // unresolved downstream — the LSP surfaces the ambiguity
-                // instead of binding to one candidate.
-                continue;
-            }
-        }
-
-        for candidate in &candidates {
-            // `source_for_path` checks the in-memory document store first so
-            // unsaved edits are preferred over the on-disk version.
-            if let Some(source) = source_for_path(candidate, documents) {
-                let parsed = hew_parser::parse(&source);
-                let has_errors = parsed
-                    .errors
-                    .iter()
-                    .any(|e| e.severity == hew_parser::Severity::Error);
-                if !has_errors {
-                    let mut module_items = parsed.program.items;
-                    // Recursively resolve any imports inside the loaded module.
-                    let module_dir = candidate.parent().unwrap_or(source_dir);
-                    populate_user_module_imports_impl(
-                        candidate,
-                        module_dir,
-                        search_roots,
-                        &mut module_items,
-                        documents,
-                        depth + 1,
-                        ambiguities,
-                        extra_pkg_paths,
-                    );
-                    let item_count = module_items.len();
-                    decl.resolved_source_paths = vec![candidate.clone()];
-                    decl.resolved_item_source_paths = vec![candidate.clone(); item_count];
-                    decl.resolved_items = Some(module_items.into());
-                }
-                // Stop after the first candidate that yielded source text,
-                // regardless of whether it parsed cleanly — otherwise we'd
-                // silently fall through to a stale on-disk version.
-                break;
-            }
-        }
-    }
-}
-
-pub(super) fn import_candidate_paths_from_dir(
-    source_dir: &std::path::Path,
-    import: &ImportDecl,
-) -> Vec<std::path::PathBuf> {
-    if let Some(file_path) = &import.file_path {
-        return vec![source_dir.join(file_path)];
-    }
-
-    let Some(last) = import.path.last() else {
-        return vec![];
-    };
-
-    // Build the two canonical candidate paths the CLI also tries:
-    //   1. package-directory form:  source_dir/<a>/<b>/<b>.hew
-    //   2. flat form:               source_dir/<a>/<b>.hew
-    let rel_path: std::path::PathBuf = import
-        .path
-        .iter()
-        .collect::<std::path::PathBuf>()
-        .with_extension("hew");
-    let dir_path: std::path::PathBuf = import
-        .path
-        .iter()
-        .collect::<std::path::PathBuf>()
-        .join(format!("{last}.hew"));
-
-    vec![source_dir.join(&dir_path), source_dir.join(&rel_path)]
-}
-
-/// Generate the full set of candidate paths for an import against an
-/// explicit package-search root (a `--pkg-path` / `hew.pkgPath` directory).
-///
-/// This mirrors the candidate generation the compiler performs at
-/// `hew-compile/src/lib.rs` for `ctx.extra_pkg_path`:
-///
-/// 1. Full-path candidates — `<root>/<a>/<b>/<b>.hew` and `<root>/<a>/<b>.hew`
-///    (same as `import_candidate_paths_from_dir`).
-/// 2. Leading-segment-stripped candidates — for any import with more than one
-///    segment, `<root>/<b>/<b>.hew` and `<root>/<b>.hew` (compiler lines
-///    1088-1098).  This lets `import acme::widgets` find `<root>/widgets.hew`.
-/// 3. `hew::`-prefix-stripped candidates — for imports whose first segment is
-///    `hew`, `<root>/<tail>/<last>.hew` and `<root>/<tail>.hew` (compiler lines
-///    1102-1110).  This is what makes `import hew::template` resolve to
-///    `<root>/template/template.hew` rather than the wrong full-path
-///    `<root>/hew/template/template.hew`.
-///
-/// The candidates are ordered to match the compiler's insertion order so that
-/// the first on-disk hit is the same file the compiler would choose.
-pub(super) fn import_candidate_paths_from_pkg_path(
-    pkg_root: &std::path::Path,
-    import: &ImportDecl,
-) -> Vec<std::path::PathBuf> {
-    let Some(last) = import.path.last() else {
-        return vec![];
-    };
-
-    let rel_path: std::path::PathBuf = import
-        .path
-        .iter()
-        .collect::<std::path::PathBuf>()
-        .with_extension("hew");
-    let dir_path: std::path::PathBuf = import
-        .path
-        .iter()
-        .collect::<std::path::PathBuf>()
-        .join(format!("{last}.hew"));
-
-    let mut candidates = vec![pkg_root.join(&dir_path), pkg_root.join(&rel_path)];
-
-    // Leading-segment-stripped candidates (compiler lines 1088-1098).
-    if import.path.len() > 1 {
-        let rest_dir = import.path[1..]
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .join(format!("{last}.hew"));
-        let rest_flat = import.path[1..]
-            .iter()
-            .collect::<std::path::PathBuf>()
-            .with_extension("hew");
-        candidates.push(pkg_root.join(&rest_dir));
-        candidates.push(pkg_root.join(&rest_flat));
-    }
-
-    // `hew::`-prefix-stripped candidates (compiler lines 1102-1110).
-    let module_str = import.path.join("::");
-    if module_str.starts_with("hew::") && import.path.len() > 1 {
-        let tail = import.path[1..].iter().collect::<std::path::PathBuf>();
-        let tail_last = import.path.last().expect("path is non-empty");
-        let tail_dir = tail.join(format!("{tail_last}.hew"));
-        let tail_rel = tail.with_extension("hew");
-        candidates.push(pkg_root.join(&tail_dir));
-        candidates.push(pkg_root.join(&tail_rel));
-    }
-
-    candidates
-}
-
-pub(super) fn import_candidate_paths(uri: &Url, import: &ImportDecl) -> Vec<std::path::PathBuf> {
-    let Some(source_path) = uri.to_file_path() else {
-        return vec![];
-    };
-    let Some(source_dir) = source_path.parent() else {
-        return vec![];
-    };
-
-    import_candidate_paths_from_dir(source_dir, import)
-}
-
-pub(super) fn module_id_from_file(
-    source_dir: &std::path::Path,
-    canonical_path: &std::path::Path,
-) -> hew_parser::module::ModuleId {
-    use hew_parser::module::ModuleId;
-
-    let without_ext = canonical_path.with_extension("");
-    let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
-    let mut segments: Vec<String> = rel
-        .iter()
-        .filter_map(|segment| segment.to_str())
-        .map(std::string::ToString::to_string)
-        .collect();
-
-    if segments.is_empty() {
-        segments.push(
-            canonical_path
-                .file_stem()
-                .and_then(|segment| segment.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        );
-    }
-
-    ModuleId::new(segments)
-}
-
-pub(super) fn resolved_import_source_path(
-    current_source: &std::path::Path,
-    source_dir: &std::path::Path,
-    decl: &ImportDecl,
-) -> Option<std::path::PathBuf> {
-    decl.resolved_source_paths.first().cloned().or_else(|| {
-        decl.file_path.as_ref().map(|file_path| {
-            current_source
-                .parent()
-                .unwrap_or(source_dir)
-                .join(file_path)
-        })
-    })
-}
-
-#[derive(Debug)]
-pub(super) struct DanglingImport {
-    source_path: std::path::PathBuf,
-    span: hew_parser::ast::Span,
-    module_id: hew_parser::module::ModuleId,
-}
-
-#[derive(Debug)]
-pub(super) struct ModuleGraphBuild {
-    graph: hew_parser::module::ModuleGraph,
-    dangling_imports: Vec<DanglingImport>,
-}
-
-#[derive(Debug)]
-pub(super) struct ModuleGraphCycle {
-    graph: hew_parser::module::ModuleGraph,
-    cycle: hew_parser::module::CycleError,
-    dangling_imports: Vec<DanglingImport>,
-}
-
-#[derive(Debug)]
-pub(super) enum ModuleGraphBuildResult {
-    Ready(ModuleGraphBuild),
-    Cycle(ModuleGraphCycle),
-}
-
-pub(super) fn build_document_module_graph(
-    source_uri: &Url,
-    program: &hew_parser::ast::Program,
-) -> Option<ModuleGraphBuildResult> {
-    use hew_parser::module::{Module, ModuleGraph};
-
-    let input_path = source_uri.to_file_path()?;
-    let input_path = std::fs::canonicalize(&input_path).unwrap_or_else(|_| input_path.into_owned());
-    let source_dir = input_path.parent().unwrap_or(std::path::Path::new("."));
-    let root_id = module_id_from_file(source_dir, &input_path);
-    let mut graph = ModuleGraph::new(root_id.clone());
-    let mut seen_ids = HashSet::from([root_id.clone()]);
-    let mut dangling_imports = Vec::new();
-
-    let root_imports = extract_module_info(
-        &program.items,
-        &input_path,
-        source_dir,
-        &input_path,
-        &root_id,
-        &mut graph,
-        &mut seen_ids,
-        &mut dangling_imports,
-    );
-
-    graph
-        .add_module(Module {
-            id: root_id,
-            items: program.items.clone(),
-            imports: root_imports,
-            source_paths: vec![input_path],
-            doc: program.module_doc.clone(),
-        })
-        .expect("root module id is unique");
-
-    match graph.compute_topo_order() {
-        Ok(()) => Some(ModuleGraphBuildResult::Ready(ModuleGraphBuild {
-            graph,
-            dangling_imports,
-        })),
-        Err(cycle) => Some(ModuleGraphBuildResult::Cycle(ModuleGraphCycle {
-            graph,
-            cycle,
-            dangling_imports,
-        })),
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "module graph construction threads shared graph state and dangling import output"
-)]
-pub(super) fn extract_module_info(
-    items: &[hew_parser::ast::Spanned<Item>],
-    current_source: &std::path::Path,
-    source_dir: &std::path::Path,
-    root_source: &std::path::Path,
-    root_id: &hew_parser::module::ModuleId,
-    graph: &mut hew_parser::module::ModuleGraph,
-    seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
-    dangling_imports: &mut Vec<DanglingImport>,
-) -> Vec<hew_parser::module::ModuleImport> {
-    use hew_parser::module::{Module, ModuleId, ModuleImport};
-
-    let mut imports = Vec::new();
-
-    for (item, span) in items {
-        let Item::Import(decl) = item else { continue };
-
-        let first_source_path = resolved_import_source_path(current_source, source_dir, decl);
-        let module_id = if !decl.path.is_empty() {
-            ModuleId::new(decl.path.clone())
-        } else if let Some(source_path) = first_source_path.as_ref() {
-            if source_path == root_source {
-                root_id.clone()
-            } else {
-                module_id_from_file(source_dir, source_path)
-            }
-        } else {
-            continue;
-        };
-
-        imports.push(ModuleImport {
-            target: module_id.clone(),
-            spec: decl.spec.clone(),
-            span: span.clone(),
-        });
-
-        if seen_ids.insert(module_id.clone()) {
-            if let Some(resolved_items) = &decl.resolved_items {
-                let child_source = first_source_path.as_deref().unwrap_or(current_source);
-                let child_imports = extract_module_info(
-                    resolved_items,
-                    child_source,
-                    source_dir,
-                    root_source,
-                    root_id,
-                    graph,
-                    seen_ids,
-                    dangling_imports,
-                );
-                let source_paths = if decl.resolved_source_paths.is_empty() {
-                    first_source_path.iter().cloned().collect()
-                } else {
-                    decl.resolved_source_paths.clone()
-                };
-                graph
-                    .add_module(Module {
-                        id: module_id,
-                        items: resolved_items.as_ref().clone(),
-                        imports: child_imports,
-                        source_paths,
-                        doc: None,
-                    })
-                    .expect("seen_ids prevents duplicate insertion");
-            } else {
-                dangling_imports.push(DanglingImport {
-                    source_path: current_source.to_path_buf(),
-                    span: span.clone(),
-                    module_id,
-                });
-            }
-        }
-    }
-
-    imports
 }
 
 pub(super) fn build_module_source_map(
@@ -573,201 +75,6 @@ pub(super) fn build_module_source_map(
     }
 
     module_sources
-}
-
-pub(super) fn build_dangling_import_diagnostics(
-    source: &str,
-    line_offsets: &[usize],
-    source_uri: &Url,
-    dangling_imports: &[DanglingImport],
-    documents: &DashMap<Url, DocumentState>,
-) -> DiagnosticMap {
-    let mut diagnostics_by_uri = DiagnosticMap::new();
-
-    for dangling_import in dangling_imports {
-        let Some(uri) = Url::from_file_path(&dangling_import.source_path) else {
-            continue;
-        };
-        let message = format!(
-            "unresolved import '{}'",
-            dangling_import.module_id.path.join(".")
-        );
-        let dangling_code = Some(NumberOrString::String("UnresolvedImport".to_string()));
-        let diagnostic = if uri == *source_uri {
-            Diagnostic {
-                range: super::span_to_range(source, line_offsets, &dangling_import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: dangling_code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        } else if let Some(doc) = documents.get(&uri) {
-            Diagnostic {
-                range: super::span_to_range(&doc.source, &doc.line_offsets, &dangling_import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: dangling_code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        } else {
-            let Some(target_source) = source_for_path(&dangling_import.source_path, documents)
-            else {
-                continue;
-            };
-            let target_line_offsets = compute_line_offsets(&target_source);
-            Diagnostic {
-                range: super::span_to_range(
-                    &target_source,
-                    &target_line_offsets,
-                    &dangling_import.span,
-                ),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: dangling_code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        };
-        insert_diagnostic(&mut diagnostics_by_uri, uri, diagnostic);
-    }
-
-    diagnostics_by_uri
-}
-
-pub(super) fn build_ambiguous_import_diagnostics(
-    source: &str,
-    line_offsets: &[usize],
-    source_uri: &Url,
-    ambiguities: &[AmbiguousImport],
-    documents: &DashMap<Url, DocumentState>,
-) -> DiagnosticMap {
-    let mut diagnostics_by_uri = DiagnosticMap::new();
-
-    for ambiguity in ambiguities {
-        let Some(uri) = Url::from_file_path(&ambiguity.source_path) else {
-            continue;
-        };
-        // Message mirrors the compiler's fail-closed resolver so the LSP and
-        // `hew check` report the same ambiguity (hew-compile/src/lib.rs).
-        let paths = ambiguity
-            .paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("` and `");
-        let message = format!(
-            "import `{}` is ambiguous: both `{paths}` exist. Rename or remove one to resolve the ambiguity.",
-            ambiguity.module
-        );
-        let code = Some(NumberOrString::String("AmbiguousImport".to_string()));
-        let diagnostic = if uri == *source_uri {
-            Diagnostic {
-                range: super::span_to_range(source, line_offsets, &ambiguity.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        } else if let Some(doc) = documents.get(&uri) {
-            Diagnostic {
-                range: super::span_to_range(&doc.source, &doc.line_offsets, &ambiguity.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        } else {
-            let Some(target_source) = source_for_path(&ambiguity.source_path, documents) else {
-                continue;
-            };
-            let target_line_offsets = compute_line_offsets(&target_source);
-            Diagnostic {
-                range: super::span_to_range(&target_source, &target_line_offsets, &ambiguity.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code,
-                source: Some("hew-lsp".to_string()),
-                message,
-                ..Default::default()
-            }
-        };
-        insert_diagnostic(&mut diagnostics_by_uri, uri, diagnostic);
-    }
-
-    diagnostics_by_uri
-}
-
-pub(super) fn build_module_cycle_diagnostics(
-    source: &str,
-    line_offsets: &[usize],
-    source_uri: &Url,
-    cycle: &ModuleGraphCycle,
-    documents: &DashMap<Url, DocumentState>,
-) -> DiagnosticMap {
-    let mut diagnostics_by_uri = DiagnosticMap::new();
-    let message = format!("{}; falling back to per-file analysis", cycle.cycle);
-
-    for window in cycle.cycle.cycle.windows(2) {
-        let [module_id, target_id] = window else {
-            continue;
-        };
-        let Some(module) = cycle.graph.modules.get(module_id) else {
-            continue;
-        };
-        let Some(import) = module
-            .imports
-            .iter()
-            .find(|import| import.target == *target_id)
-        else {
-            continue;
-        };
-        let Some(source_path) = module.source_paths.first() else {
-            continue;
-        };
-        let Some(uri) = Url::from_file_path(source_path) else {
-            continue;
-        };
-
-        let cycle_code = Some(NumberOrString::String("ModuleCycle".to_string()));
-        let diagnostic = if uri == *source_uri {
-            Diagnostic {
-                range: super::span_to_range(source, line_offsets, &import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: cycle_code,
-                source: Some("hew-lsp".to_string()),
-                message: message.clone(),
-                ..Default::default()
-            }
-        } else if let Some(doc) = documents.get(&uri) {
-            Diagnostic {
-                range: super::span_to_range(&doc.source, &doc.line_offsets, &import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: cycle_code,
-                source: Some("hew-lsp".to_string()),
-                message: message.clone(),
-                ..Default::default()
-            }
-        } else {
-            let Some(target_source) = source_for_path(source_path, documents) else {
-                continue;
-            };
-            let target_line_offsets = compute_line_offsets(&target_source);
-            Diagnostic {
-                range: super::span_to_range(&target_source, &target_line_offsets, &import.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: cycle_code,
-                source: Some("hew-lsp".to_string()),
-                message: message.clone(),
-                ..Default::default()
-            }
-        };
-        insert_diagnostic(&mut diagnostics_by_uri, uri, diagnostic);
-    }
-
-    diagnostics_by_uri
 }
 
 pub(super) fn merge_diagnostics(into: &mut DiagnosticMap, from: &DiagnosticMap) {
@@ -821,189 +128,148 @@ pub(super) fn collect_published_diagnostics(
     published
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "analyze_document sequences the full document analysis pipeline: import resolution, module-graph build, type-check, and diagnostic assembly"
-)]
+/// The shared frontend's view of one open document.
+///
+/// Every source read consults the open buffers first, so an unsaved edit to an
+/// imported module is visible to the importing file, and the root document's
+/// own text overrides whatever is on disk for it.
+fn document_set(
+    root_path: &std::path::Path,
+    root_source: &str,
+    documents: &DashMap<Url, DocumentState>,
+) -> hew_compile::DocumentSet {
+    let mut set = hew_compile::DocumentSet::new();
+    for entry in documents {
+        if let Some(path) = entry.key().to_file_path() {
+            set.insert(path.into_owned(), entry.value().source.clone());
+        }
+    }
+    set.insert(root_path.to_path_buf(), root_source.to_string());
+    set
+}
+
+fn frontend_options(
+    root_path: &std::path::Path,
+    root_source: &str,
+    documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
+) -> hew_compile::FrontendOptions {
+    hew_compile::FrontendOptions {
+        pkg_path: extra_pkg_paths.first().cloned(),
+        documents: document_set(root_path, root_source, documents),
+        ..hew_compile::FrontendOptions::default()
+    }
+}
+
+/// The files the resolved program depends on, for the open-importer index.
+/// `None` when resolution did not complete, so the set is unknown.
+fn dependency_uris(program: &hew_parser::ast::Program) -> Option<Vec<Url>> {
+    let module_graph = program.module_graph.as_ref()?;
+    let mut uris: Vec<Url> = module_graph
+        .modules
+        .values()
+        .flat_map(|module| module.source_paths.iter())
+        .filter_map(|path| Url::from_file_path(path))
+        .collect();
+    uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    uris.dedup();
+    Some(uris)
+}
+
 pub(super) fn analyze_document(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
     extra_pkg_paths: &[std::path::PathBuf],
 ) -> DocumentState {
-    let parse_result = hew_parser::parse(source);
     let line_offsets = compute_line_offsets(source);
-
-    let has_parse_errors = parse_result
-        .errors
-        .iter()
-        .any(|e| e.severity == hew_parser::Severity::Error);
-
-    let (
-        type_output,
-        hir_diagnostics,
-        hir_module,
-        module_sources,
-        dangling_import_diagnostics,
-        cycle_diagnostics,
-        ambiguous_import_diagnostics,
-    ) = if has_parse_errors {
-        (
-            None,
-            Vec::new(),
-            None,
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-        )
-    } else {
-        // Build the module registry with both the standard search paths and any
-        // explicit package-search roots so the type-checker sees handle types,
-        // drop types, and module-qualified call resolution for packages supplied
-        // via `--pkg-path` / `hew.pkgPath` (F3: previously only the import
-        // resolver received the extra paths; the type-checker's registry missed
-        // them, making `--pkg-path` packages invisible to type analysis even
-        // after their imports resolved).
-        let mut registry_search_paths = build_module_search_paths();
-        for pkg_path in extra_pkg_paths {
-            if pkg_path.exists() && !registry_search_paths.contains(pkg_path) {
-                registry_search_paths.push(pkg_path.clone());
-            }
-        }
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            registry_search_paths,
-        ));
-        // Clone the program so we can inject resolved_items for user-module
-        // imports without mutating the parse_result stored in DocumentState
-        // (other LSP features use the raw AST and do not need resolved_items).
-        let mut program = parse_result.program.clone();
-        let ambiguous_imports =
-            populate_user_module_imports(uri, &mut program.items, documents, extra_pkg_paths);
-        let ambiguous_import_diagnostics = build_ambiguous_import_diagnostics(
-            source,
-            &line_offsets,
-            uri,
-            &ambiguous_imports,
-            documents,
-        );
-        let module_graph_build = build_document_module_graph(uri, &program);
-        let (module_graph, dangling_import_diagnostics, cycle_diagnostics) =
-            match module_graph_build {
-                Some(ModuleGraphBuildResult::Ready(build)) => (
-                    Some(build.graph),
-                    build_dangling_import_diagnostics(
-                        source,
-                        &line_offsets,
-                        uri,
-                        &build.dangling_imports,
-                        documents,
-                    ),
-                    HashMap::new(),
-                ),
-                Some(ModuleGraphBuildResult::Cycle(cycle)) => (
-                    None,
-                    build_dangling_import_diagnostics(
-                        source,
-                        &line_offsets,
-                        uri,
-                        &cycle.dangling_imports,
-                        documents,
-                    ),
-                    build_module_cycle_diagnostics(source, &line_offsets, uri, &cycle, documents),
-                ),
-                None => (None, HashMap::new(), HashMap::new()),
-            };
-        program.module_graph = module_graph;
-        let module_sources = build_module_source_map(&program, documents);
-        let mut lint_sources = LintSources::new();
-        lint_sources.set_root(source.to_string());
-        for (module_name, module_source) in &module_sources {
-            lint_sources.set_module(module_name.clone(), module_source.source.clone());
-        }
-        checker.set_lint_sources(lint_sources);
-        let type_output = checker.check_program(&program);
-        let (hir_diagnostics, hir_module) = if type_output.errors.is_empty() {
-            let (diagnostics, module) = collect_hir_diagnostics(&program, &type_output);
-            (diagnostics, Some(module))
-        } else {
-            (Vec::new(), None)
+    let Some(root_path) = uri.to_file_path() else {
+        // A document with no file behind it cannot anchor module resolution.
+        let parse_result = hew_parser::parse(source);
+        return DocumentState {
+            source: source.to_string(),
+            line_offsets,
+            parse_result,
+            type_output: None,
+            dependency_uris: None,
+            diagnostics_by_uri: DiagnosticMap::new(),
         };
-        (
-            Some(type_output),
-            hir_diagnostics,
-            hir_module,
-            module_sources,
-            dangling_import_diagnostics,
-            cycle_diagnostics,
-            ambiguous_import_diagnostics,
-        )
     };
 
-    let mut diagnostics_by_uri = build_diagnostics_by_uri(
+    let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
+    let mut state = hew_compile::run_document_frontend(&root_path.display().to_string(), &options);
+    let parse_result = state
+        .parse_result
+        .take()
+        .expect("the document frontend parses the root buffer");
+
+    let mut diagnostics_by_uri = build_frontend_diagnostics_by_uri(
         uri,
         source,
         &line_offsets,
-        &parse_result,
-        type_output.as_ref(),
-        &module_sources,
+        &state.diagnostics,
+        state.stopped.as_ref(),
     );
-    let hir_lsp_diagnostics = build_hir_lsp_diagnostics(
-        uri,
-        source,
-        &line_offsets,
-        &module_sources,
-        &hir_diagnostics,
-    );
-    merge_diagnostics(&mut diagnostics_by_uri, &hir_lsp_diagnostics);
-    // Ownership-SIR verification. Only run when HIR lowering produced a module
-    // AND raised no diagnostics: a module the HIR stage already rejected is not
-    // worth lowering further, and the HIR errors are the actionable signal.
-    if hir_diagnostics.is_empty() {
-        if let Some(hir_module) = hir_module.as_ref() {
-            let semantic_diagnostics = build_semantic_lsp_diagnostics(
+
+    let type_output = state.typecheck_result.take().and_then(|result| result.tco);
+    let module_sources = build_module_source_map(&state.program, documents);
+    // HIR lowering and ownership-SIR verification run only on a program the
+    // checker accepted: a module already rejected upstream is not worth
+    // lowering, and the upstream errors are the actionable signal.
+    if let Some(tco) = type_output.as_ref().filter(|tco| tco.errors.is_empty()) {
+        let (hir_diagnostics, hir_module) = collect_hir_diagnostics(&state.program, tco);
+        merge_diagnostics(
+            &mut diagnostics_by_uri,
+            &build_hir_lsp_diagnostics(
                 uri,
                 source,
                 &line_offsets,
-                &parse_result.program,
-                hir_module,
-                type_output.as_ref().expect("HIR requires type checking"),
+                &module_sources,
+                &hir_diagnostics,
+            ),
+        );
+        if hir_diagnostics.is_empty() {
+            merge_diagnostics(
+                &mut diagnostics_by_uri,
+                &build_semantic_lsp_diagnostics(
+                    uri,
+                    source,
+                    &line_offsets,
+                    &state.program,
+                    &hir_module,
+                    tco,
+                ),
             );
-            merge_diagnostics(&mut diagnostics_by_uri, &semantic_diagnostics);
         }
     }
-    merge_diagnostics(&mut diagnostics_by_uri, &dangling_import_diagnostics);
-    merge_diagnostics(&mut diagnostics_by_uri, &cycle_diagnostics);
-    merge_diagnostics(&mut diagnostics_by_uri, &ambiguous_import_diagnostics);
 
     DocumentState {
         source: source.to_string(),
         line_offsets,
         parse_result,
         type_output,
+        dependency_uris: dependency_uris(&state.program),
         diagnostics_by_uri,
     }
 }
 
+/// Map each file to the open documents whose resolved module graph reaches it.
 fn build_reverse_importer_index(documents: &DashMap<Url, DocumentState>) -> HashMap<Url, Vec<Url>> {
     let mut index: HashMap<Url, Vec<Url>> = HashMap::with_capacity(documents.len());
 
     for entry in documents {
         let importer_uri = entry.key().clone();
-        let parse_result = &entry.value().parse_result;
-        for (item, _) in &parse_result.program.items {
-            let Item::Import(import) = item else {
+        let Some(dependencies) = entry.value().dependency_uris.as_ref() else {
+            continue;
+        };
+        for dependency_uri in dependencies {
+            if *dependency_uri == importer_uri {
                 continue;
-            };
-            for candidate_uri in import_candidate_paths(&importer_uri, import)
-                .into_iter()
-                .filter_map(Url::from_file_path)
-            {
-                index
-                    .entry(candidate_uri)
-                    .or_default()
-                    .push(importer_uri.clone());
             }
+            index
+                .entry(dependency_uri.clone())
+                .or_default()
+                .push(importer_uri.clone());
         }
     }
 
@@ -1024,16 +290,26 @@ pub(super) fn refresh_open_importers(
     let mut visited: HashSet<Url> = HashSet::from([target_uri.clone()]);
     let mut queue: VecDeque<Url> = VecDeque::from([target_uri.clone()]);
 
+    // A document whose frontend stopped has no resolved module graph to index,
+    // so this edit may be the one that resolves it.
+    let mut unresolved: Vec<Url> = documents
+        .iter()
+        .filter(|entry| entry.value().dependency_uris.is_none())
+        .map(|entry| entry.key().clone())
+        .collect();
+
     while let Some(current) = queue.pop_front() {
         let dependents: Vec<_> = reverse_importer_index
             .get(&current)
             .into_iter()
             .flat_map(|uris| uris.iter())
+            .cloned()
+            .chain(std::mem::take(&mut unresolved))
             .filter_map(|importer_uri| {
-                if visited.contains(importer_uri) {
+                if visited.contains(&importer_uri) {
                     return None;
                 }
-                let importer = documents.get(importer_uri)?;
+                let importer = documents.get(&importer_uri)?;
                 Some((
                     importer_uri.clone(),
                     importer.source.clone(),
@@ -1105,35 +381,71 @@ pub(super) fn insert_diagnostic(
     diagnostics_by_uri.entry(uri).or_default().push(diagnostic);
 }
 
+/// Where a shared-frontend diagnostic points: its own module's file when it
+/// carries one, otherwise the document being analyzed.
+struct DiagnosticTarget {
+    uri: Url,
+    source: String,
+    line_offsets: Vec<usize>,
+}
+
+impl DiagnosticTarget {
+    fn range(&self, span: &hew_parser::ast::Span) -> tower_lsp_server::lsp_types::Range {
+        super::span_to_range(&self.source, &self.line_offsets, span)
+    }
+}
+
+fn diagnostic_target(
+    filename: Option<&str>,
+    text: Option<&str>,
+    root_uri: &Url,
+    root_source: &str,
+    root_line_offsets: &[usize],
+) -> DiagnosticTarget {
+    let uri = filename
+        .map(std::path::Path::new)
+        .and_then(Url::from_file_path)
+        .unwrap_or_else(|| root_uri.clone());
+    match text {
+        Some(text) if uri != *root_uri => DiagnosticTarget {
+            uri,
+            line_offsets: compute_line_offsets(text),
+            source: text.to_string(),
+        },
+        _ => DiagnosticTarget {
+            uri,
+            source: root_source.to_string(),
+            line_offsets: root_line_offsets.to_vec(),
+        },
+    }
+}
+
 fn type_related_information(
     diagnostic: &hew_types::TypeError,
-    target_uri: &Url,
-    target_source: &str,
-    target_line_offsets: &[usize],
-    module_sources: &HashMap<String, DiagnosticSource>,
+    note_sources: &[Option<(String, String)>],
+    target: &DiagnosticTarget,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     (!diagnostic.notes.is_empty()).then(|| {
         diagnostic
             .notes
             .iter()
-            .map(|(note_span, note_msg, source_module)| {
-                let note_target = source_module
-                    .as_ref()
-                    .and_then(|module_name| module_sources.get(module_name));
-                let (note_uri, note_source, note_line_offsets) = note_target.map_or(
-                    (target_uri.clone(), target_source, target_line_offsets),
-                    |target| {
-                        (
-                            target.uri.clone(),
-                            target.source.as_str(),
-                            target.line_offsets.as_slice(),
-                        )
+            .enumerate()
+            .map(|(index, (note_span, note_msg, _))| {
+                let note_target = note_sources.get(index).and_then(Option::as_ref).and_then(
+                    |(text, filename)| {
+                        let uri = Url::from_file_path(std::path::Path::new(filename))?;
+                        Some(DiagnosticTarget {
+                            uri,
+                            line_offsets: compute_line_offsets(text),
+                            source: text.clone(),
+                        })
                     },
                 );
+                let note_target = note_target.as_ref().unwrap_or(target);
                 DiagnosticRelatedInformation {
                     location: Location {
-                        uri: note_uri,
-                        range: super::span_to_range(note_source, note_line_offsets, note_span),
+                        uri: note_target.uri.clone(),
+                        range: note_target.range(note_span),
                     },
                     message: note_msg.clone(),
                 }
@@ -1142,105 +454,131 @@ fn type_related_information(
     })
 }
 
-#[cfg(test)]
-pub(super) fn build_diagnostics(
-    uri: &Url,
-    source: &str,
-    lo: &[usize],
-    parse_result: &ParseResult,
-    type_output: Option<&TypeCheckOutput>,
-) -> Vec<Diagnostic> {
-    build_diagnostics_by_uri(uri, source, lo, parse_result, type_output, &HashMap::new())
-        .remove(uri)
-        .unwrap_or_default()
-}
-
-pub(super) fn build_diagnostics_by_uri(
-    uri: &Url,
-    source: &str,
-    lo: &[usize],
-    parse_result: &ParseResult,
-    type_output: Option<&TypeCheckOutput>,
-    module_sources: &HashMap<String, DiagnosticSource>,
+/// Route the shared frontend's diagnostics to the files they belong to.
+///
+/// The LSP publishes exactly what `hew check` reports for the same source,
+/// including the message-level import and manifest failures that stop the
+/// pipeline before the checker runs.
+fn build_frontend_diagnostics_by_uri(
+    root_uri: &Url,
+    root_source: &str,
+    root_line_offsets: &[usize],
+    diagnostics: &[hew_compile::FrontendDiagnostic],
+    stopped: Option<&hew_compile::FrontendFailure>,
 ) -> DiagnosticMap {
+    use hew_compile::FrontendDiagnosticKind;
+
     let mut diagnostics_by_uri = DiagnosticMap::new();
 
-    for err in &parse_result.errors {
-        let message = if let Some(hint) = &err.hint {
-            format!("{}\n\nhint: {hint}", err.message)
-        } else {
-            err.message.clone()
+    for diagnostic in diagnostics {
+        let inline_source = match &diagnostic.kind {
+            FrontendDiagnosticKind::Message(message) => message.source.as_deref(),
+            _ => diagnostic.source.as_deref(),
         };
-        let severity = match err.severity {
-            hew_parser::Severity::Error => DiagnosticSeverity::ERROR,
-            hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
+        let target = diagnostic_target(
+            diagnostic.filename.as_deref(),
+            inline_source,
+            root_uri,
+            root_source,
+            root_line_offsets,
+        );
+
+        let lsp_diagnostic = match &diagnostic.kind {
+            FrontendDiagnosticKind::Parse(error) => Diagnostic {
+                range: target.range(&error.span),
+                severity: Some(match error.severity {
+                    hew_parser::Severity::Error => DiagnosticSeverity::ERROR,
+                    hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
+                }),
+                code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
+                source: Some("hew-parser".to_string()),
+                message: error.hint.as_ref().map_or_else(
+                    || error.message.clone(),
+                    |hint| format!("{}\n\nhint: {hint}", error.message),
+                ),
+                data: Some(parse_diagnostic_data(&error.kind)),
+                ..Default::default()
+            },
+            FrontendDiagnosticKind::Type(error) => Diagnostic {
+                range: target.range(&error.span),
+                severity: Some(severity_to_lsp(error.severity)),
+                code: Some(NumberOrString::String(error.kind.as_kind_str().to_string())),
+                tags: unnecessary_diagnostic_tags(&error.kind),
+                source: Some("hew-types".to_string()),
+                message: if error.suggestions.is_empty() {
+                    error.message.clone()
+                } else {
+                    format!(
+                        "{}\n\nDid you mean: {}",
+                        error.message,
+                        error.suggestions.join(", ")
+                    )
+                },
+                related_information: type_related_information(
+                    error,
+                    &diagnostic.note_sources,
+                    &target,
+                ),
+                data: Some(diagnostic_data(&error.kind, &error.suggestions)),
+                ..Default::default()
+            },
+            FrontendDiagnosticKind::Message(message) => Diagnostic {
+                range: message
+                    .span
+                    .as_ref()
+                    .map_or_else(zero_range, |span| target.range(span)),
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String(message.code.clone())),
+                source: Some("hew-compile".to_string()),
+                message: if message.help.is_empty() {
+                    message.message.clone()
+                } else {
+                    format!("{}\n\n{}", message.message, message.help.join("\n"))
+                },
+                related_information: (!message.notes.is_empty()).then(|| {
+                    message
+                        .notes
+                        .iter()
+                        .map(|note| {
+                            let note_target = diagnostic_target(
+                                Some(&note.filename),
+                                Some(&note.source),
+                                root_uri,
+                                root_source,
+                                root_line_offsets,
+                            );
+                            DiagnosticRelatedInformation {
+                                location: Location {
+                                    uri: note_target.uri.clone(),
+                                    range: note_target.range(&note.span),
+                                },
+                                message: note.message.clone(),
+                            }
+                        })
+                        .collect()
+                }),
+                ..Default::default()
+            },
+            FrontendDiagnosticKind::Hir(_) => continue,
         };
+
+        insert_diagnostic(&mut diagnostics_by_uri, target.uri, lsp_diagnostic);
+    }
+
+    // A stage failure with nothing to point at still has to reach the editor.
+    if let Some(failure) = stopped.filter(|failure| failure.diagnostics.is_empty()) {
         insert_diagnostic(
             &mut diagnostics_by_uri,
-            uri.clone(),
+            root_uri.clone(),
             Diagnostic {
-                range: super::span_to_range(source, lo, &err.span),
-                severity: Some(severity),
-                code: Some(NumberOrString::String(err.kind.as_kind_str().to_string())),
-                source: Some("hew-parser".to_string()),
-                message,
-                data: Some(parse_diagnostic_data(&err.kind)),
+                range: zero_range(),
+                severity: Some(DiagnosticSeverity::ERROR),
+                code: Some(NumberOrString::String("E_FRONTEND".to_string())),
+                source: Some("hew-compile".to_string()),
+                message: failure.message.clone(),
                 ..Default::default()
             },
         );
-    }
-
-    if let Some(tc) = type_output {
-        for diag in tc.errors.iter().chain(tc.warnings.iter()) {
-            let target = diag
-                .source_module
-                .as_ref()
-                .and_then(|module_name| module_sources.get(module_name));
-            let (target_uri, target_source, target_line_offsets) = if let Some(target) = target {
-                (
-                    target.uri.clone(),
-                    target.source.as_str(),
-                    target.line_offsets.as_slice(),
-                )
-            } else {
-                (uri.clone(), source, lo)
-            };
-
-            // Build the message, appending any suggestions.
-            let message = if diag.suggestions.is_empty() {
-                diag.message.clone()
-            } else {
-                format!(
-                    "{}\n\nDid you mean: {}",
-                    diag.message,
-                    diag.suggestions.join(", ")
-                )
-            };
-
-            let related_information = type_related_information(
-                diag,
-                &target_uri,
-                target_source,
-                target_line_offsets,
-                module_sources,
-            );
-
-            insert_diagnostic(
-                &mut diagnostics_by_uri,
-                target_uri,
-                Diagnostic {
-                    range: super::span_to_range(target_source, target_line_offsets, &diag.span),
-                    severity: Some(severity_to_lsp(diag.severity)),
-                    code: Some(NumberOrString::String(diag.kind.as_kind_str().to_string())),
-                    tags: unnecessary_diagnostic_tags(&diag.kind),
-                    source: Some("hew-types".to_string()),
-                    message,
-                    related_information,
-                    data: Some(diagnostic_data(&diag.kind, &diag.suggestions)),
-                    ..Default::default()
-                },
-            );
-        }
     }
 
     diagnostics_by_uri
@@ -1463,7 +801,7 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use hew_hir::{HirItem, HirModule, HirNodeId};
     use hew_parser::ast::Span;
     use tower_lsp_server::lsp_types::Position;
@@ -1751,7 +1089,8 @@ mod tests {
     fn duplicate_node_module(span: Span) -> (HirModule, HirNodeId) {
         let source = "fn main() -> i64 { 1 }\n";
         let parse_result = hew_parser::parse(source);
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let mut module =
             lower_program_host_target(&parse_result.program, &type_output, &ResolutionCtx).module;
@@ -1770,18 +1109,27 @@ mod tests {
 
     // ── Diagnostic.code tests ────────────────────────────────────────────
 
+    /// Analyze an in-memory buffer through the shared frontend and return the
+    /// diagnostics published for the document itself.
+    fn analyzed_diagnostics(source: &str) -> Vec<Diagnostic> {
+        let uri = test_document_uri();
+        let mut document = analyze_document(&uri, source, &DashMap::new(), &[]);
+        document.diagnostics_by_uri.remove(&uri).unwrap_or_default()
+    }
+
+    fn test_document_uri() -> Url {
+        #[cfg(windows)]
+        let path = std::path::PathBuf::from("C:/hew-lsp-test/main.hew");
+        #[cfg(not(windows))]
+        let path = std::path::PathBuf::from("/hew-lsp-test/main.hew");
+        Url::from_file_path(path).expect("test path is absolute")
+    }
+
     #[test]
     fn type_diagnostic_code_is_set_to_kind_string() {
         // A type error (UndefinedVariable) should produce a diagnostic whose
         // `code` field is `Some(NumberOrString::String("UndefinedVariable"))`.
-        let uri = Url::parse("file:///test.hew").unwrap();
-        let source = "fn main() { missing_name }\n";
-        let lo = compute_line_offsets(source);
-        let parse_result = hew_parser::parse(source);
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let tc = checker.check_program(&parse_result.program);
-
-        let diagnostics = build_diagnostics(&uri, source, &lo, &parse_result, Some(&tc));
+        let diagnostics = analyzed_diagnostics("fn main() { missing_name }\n");
         let type_diag = diagnostics
             .iter()
             .find(|d| d.source.as_deref() == Some("hew-types"))
@@ -1802,18 +1150,8 @@ mod tests {
     fn parse_diagnostic_code_is_set_to_kind_string() {
         // A parse error should produce a diagnostic whose `code` field is
         // `Some(NumberOrString::String(<kind-string>))`.
-        let uri = Url::parse("file:///test.hew").unwrap();
-        let source = "fn main() { let x = ; }\n"; // missing expression after `=`
-        let lo = compute_line_offsets(source);
-        let parse_result = hew_parser::parse(source);
-
-        // Source must contain at least one parse error for the test to be useful.
-        assert!(
-            !parse_result.errors.is_empty(),
-            "test source must produce a parse error"
-        );
-
-        let diagnostics = build_diagnostics(&uri, source, &lo, &parse_result, None);
+        // missing expression after `=`
+        let diagnostics = analyzed_diagnostics("fn main() { let x = ; }\n");
         let parse_diag = diagnostics
             .iter()
             .find(|d| d.source.as_deref() == Some("hew-parser"))
@@ -2277,7 +1615,7 @@ mod tests {
     /// Build a uniquely-named temporary workspace from (relative-path,
     /// content) pairs and return its root. Mirrors the env-mutation-free,
     /// parallel-safe pattern used by the navigation tests.
-    fn make_temp_workspace_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+    pub(in crate::server) fn make_temp_workspace_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let (secs, nanos) = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2299,18 +1637,23 @@ mod tests {
         root
     }
 
-    /// A dotted import `a.b` that resolves BOTH to the package-directory form
-    /// (`a/b/b.hew`) and the flat form (`a/b.hew`) is ambiguous. The compiler's
-    /// resolver (`resolve_file_imports_internal`, hew-compile/src/lib.rs:1045-
-    /// 1064) fails closed on exactly this shape: it collects every candidate
-    /// that canonicalizes, deduplicates by canonical path, and rejects the
-    /// import when more than one distinct path resolves. Before this fix the LSP
-    /// stopped at the first readable candidate and silently bound one — so it
-    /// would offer tooling/diagnostics for code the compiler rejects.
-    ///
-    /// This test pins the agreement: the LSP must NOT silently bind a candidate
-    /// (the import stays unresolved) and must surface an ambiguity diagnostic
-    /// whose message matches the compiler's wording.
+    /// Diagnostics the LSP publishes for `uri` after analyzing `source`.
+    fn published_for(
+        uri: &Url,
+        source: &str,
+        extra_pkg_paths: &[std::path::PathBuf],
+    ) -> Vec<Diagnostic> {
+        let mut document = analyze_document(uri, source, &DashMap::new(), extra_pkg_paths);
+        document.diagnostics_by_uri.remove(uri).unwrap_or_default()
+    }
+
+    fn messages(diagnostics: &[Diagnostic]) -> Vec<&str> {
+        diagnostics.iter().map(|d| d.message.as_str()).collect()
+    }
+
+    /// A dotted import that resolves to more than one module fails closed in
+    /// the compiler, so the editor must show that refusal rather than offer
+    /// tooling for a module `hew check` will not bind.
     #[test]
     fn ambiguous_import_fails_closed_like_compiler() {
         let lib = "pub fn val() -> i64 { 1 }\n";
@@ -2323,285 +1666,139 @@ mod tests {
         let main_uri =
             Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let doc = analyze_document(&main_uri, main_src, &docs, &[]);
-
-        let diags = doc
-            .diagnostics_by_uri
-            .get(&main_uri)
-            .expect("diagnostics for the main document");
+        let diagnostics = published_for(&main_uri, main_src, &[]);
         assert!(
-            diags
+            diagnostics
                 .iter()
-                .any(|d| d.message.contains("is ambiguous") && d.message.contains("a.b")),
-            "expected a fail-closed ambiguity diagnostic for `a.b` matching the compiler, got: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-
-        // The import must be left UNRESOLVED — no silent local-first pick.
-        let mut program = hew_parser::parse(main_src).program;
-        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
-        assert_eq!(
-            ambiguities.len(),
-            1,
-            "exactly one ambiguous import expected, got {ambiguities:?}"
-        );
-        let left_unresolved = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join(".") == "a.b" && d.resolved_items.is_none())
-        });
-        assert!(
-            left_unresolved,
-            "ambiguous import must remain unresolved (fail closed), not silently bound"
+                .any(|d| d.message.contains("ambiguous") && d.message.contains("a.b")),
+            "expected a fail-closed ambiguity diagnostic for `a.b`, got: {:?}",
+            messages(&diagnostics)
         );
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Negative control: when only ONE candidate form exists, the import is
-    /// unambiguous and the LSP resolves it (no ambiguity, no fail-closed). This
-    /// is the precise complement of `ambiguous_import_fails_closed_like_compiler`
-    /// and guards against the fail-closed check over-rejecting valid imports —
-    /// matching the compiler, which binds the single resolving candidate.
+    /// Negative control for the rule above: one candidate form is unambiguous
+    /// and must analyze clean.
     #[test]
     fn unambiguous_import_resolves_without_failing_closed() {
         let lib = "pub fn val() -> i64 { 1 }\n";
         let main_src = "import a.b;\n\nfn main() -> i64 { 0 }\n";
-        // Only the flat form exists this time.
         let root = make_temp_workspace_dir(&[("a/b.hew", lib), ("main.hew", main_src)]);
         let main_uri =
             Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let mut program = hew_parser::parse(main_src).program;
-        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
+        let diagnostics = published_for(&main_uri, main_src, &[]);
         assert!(
-            ambiguities.is_empty(),
-            "single-candidate import must not be flagged ambiguous, got {ambiguities:?}"
-        );
-        let resolved = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "a::b" && d.resolved_items.is_some())
-        });
-        assert!(
-            resolved,
-            "unambiguous import must resolve (fail-closed check must not over-reject)"
+            !diagnostics.iter().any(|d| d.message.contains("ambiguous")),
+            "a single-candidate import must not be flagged ambiguous, got: {:?}",
+            messages(&diagnostics)
         );
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// String-literal file imports (`import "lib.hew"`) are resolved
-    /// LOCAL-ONLY, exactly as the compiler does: it canonicalizes only
-    /// `source_dir.join(file_path)` and errors if that single local path is
-    /// absent (hew-compile/src/lib.rs:939-949). Search-root (stdlib/global)
-    /// expansion must NOT apply to file imports — a file import that is missing
-    /// locally must fail the compiler's way (stay unresolved), never resolve
-    /// from a stdlib/global root.
+    /// String-literal file imports resolve local-only. A file that exists only
+    /// under a search root must stay unfound, exactly as `hew check` reports
+    /// it, instead of the editor pretending it resolved.
     #[test]
     fn file_import_resolves_local_only_not_from_search_root() {
         let lib = "pub fn val() -> i64 { 1 }\n";
         let main_src = "import \"lib.hew\";\n\nfn main() -> i64 { 0 }\n";
-        // `lib.hew` exists ONLY under the search root, never next to `main.hew`.
         let local = make_temp_workspace_dir(&[("main.hew", main_src)]);
         let root = make_temp_workspace_dir(&[("lib.hew", lib)]);
-        let main_path = local.join("main.hew");
+        let main_uri =
+            Url::from_file_path(local.join("main.hew")).expect("workspace path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let mut program = hew_parser::parse(main_src).program;
-        let mut ambiguities = Vec::new();
-        populate_user_module_imports_impl(
-            &main_path,
-            &local,
-            std::slice::from_ref(&root),
-            &mut program.items,
-            &docs,
-            0,
-            &mut ambiguities,
-            &[],
-        );
-
+        let diagnostics = published_for(&main_uri, main_src, std::slice::from_ref(&root));
         assert!(
-            ambiguities.is_empty(),
-            "file import must never be reported ambiguous from a search root, got {ambiguities:?}"
-        );
-        let unresolved = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.file_path.as_deref() == Some("lib.hew") && d.resolved_items.is_none())
-        });
-        assert!(
-            unresolved,
-            "missing local file import must stay unresolved (compiler fails on the single local path), not resolve from a stdlib/global root"
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("imported file not found")),
+            "a file import missing locally must be reported unfound, got: {:?}",
+            messages(&diagnostics)
         );
 
         let _ = std::fs::remove_dir_all(&local);
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A file import present BOTH locally and under a search root must bind the
-    /// LOCAL file and must NOT be reported ambiguous — file imports are
-    /// local-only, so the search-root copy is invisible to the resolver. This
-    /// is the complement of `file_import_resolves_local_only_not_from_search_root`
-    /// and guards against the dotted-import ambiguity logic leaking into file
-    /// imports.
+    /// Complement of the rule above: a file import present both locally and
+    /// under a search root binds the local file with no ambiguity.
     #[test]
     fn file_import_local_shadow_is_not_ambiguous() {
         let local_lib = "pub fn val() -> i64 { 1 }\n";
         let root_lib = "pub fn val() -> i64 { 2 }\n";
-        let main_src = "import \"lib.hew\";\n\nfn main() -> i64 { 0 }\n";
+        let main_src = "import \"lib.hew\";\n\nfn main() -> i64 { val() }\n";
         let local = make_temp_workspace_dir(&[("main.hew", main_src), ("lib.hew", local_lib)]);
         let root = make_temp_workspace_dir(&[("lib.hew", root_lib)]);
-        let main_path = local.join("main.hew");
+        let main_uri =
+            Url::from_file_path(local.join("main.hew")).expect("workspace path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let mut program = hew_parser::parse(main_src).program;
-        let mut ambiguities = Vec::new();
-        populate_user_module_imports_impl(
-            &main_path,
-            &local,
-            std::slice::from_ref(&root),
-            &mut program.items,
-            &docs,
-            0,
-            &mut ambiguities,
-            &[],
-        );
-
+        let diagnostics = published_for(&main_uri, main_src, std::slice::from_ref(&root));
         assert!(
-            ambiguities.is_empty(),
-            "a local+root file-import pair must not be reported ambiguous, got {ambiguities:?}"
-        );
-        let bound_local = program.items.iter().any(|(item, _)| {
-            matches!(
-                item,
-                Item::Import(d)
-                    if d.file_path.as_deref() == Some("lib.hew")
-                        && d.resolved_source_paths == vec![local.join("lib.hew")]
-            )
-        });
-        assert!(
-            bound_local,
-            "file import must bind the LOCAL file, never the search-root copy"
+            diagnostics.is_empty(),
+            "a local file import shadowing a search-root copy must analyze clean, got: {:?}",
+            messages(&diagnostics)
         );
 
         let _ = std::fs::remove_dir_all(&local);
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `extra_pkg_paths` allows an import that does not resolve in the default
-    /// search roots to be found in an explicitly-added directory, mirroring
-    /// `hew check --pkg-path DIR`.
-    ///
-    /// The LSP appends `extra_pkg_paths` to its search roots and generates
-    /// candidate paths as `<root>/<import_path>.hew` and
-    /// `<root>/<import_path>/<last>.hew` — the same flat-path logic as for any
-    /// other search root.  The test uses `acme::widgets` (a plain two-segment
-    /// path) so the candidate is `<pkg_dir>/acme/widgets.hew`.
+    /// `hew.pkgPath` resolves an import the default search roots do not carry,
+    /// mirroring `hew check --pkg-path DIR`.
     #[test]
     fn extra_pkg_path_resolves_import_from_added_search_root() {
         let pkg_source = "pub fn widget_fn() -> i64 { 42 }\n";
-        let main_src = "import acme.widgets;\nfn main() -> i64 { 0 }\n";
-
-        // Package dir has acme/widgets.hew (flat-form candidate).
+        let main_src = "import acme.widgets;\nfn main() -> i64 { widgets.widget_fn() }\n";
         let pkg_dir = make_temp_workspace_dir(&[("acme/widgets.hew", pkg_source)]);
         let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
         let main_uri =
             Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-
-        // Without the extra pkg path, the import is unresolved.
-        let mut program = hew_parser::parse(main_src).program;
-        let _ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
-        let without_extra = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "acme::widgets" && d.resolved_items.is_none())
-        });
+        // Negative control: without the package path there is nowhere to find it.
+        let without = published_for(&main_uri, main_src, &[]);
         assert!(
-            without_extra,
-            "without --pkg-path the import must not resolve from an unknown directory"
+            without.iter().any(|d| d.message.contains("not found")),
+            "without a package path the import must not resolve, got: {:?}",
+            messages(&without)
         );
 
-        // With the extra pkg path, the import resolves.
-        let mut program2 = hew_parser::parse(main_src).program;
-        let ambiguities2 = populate_user_module_imports(
-            &main_uri,
-            &mut program2.items,
-            &docs,
-            std::slice::from_ref(&pkg_dir),
-        );
+        let with = published_for(&main_uri, main_src, std::slice::from_ref(&pkg_dir));
         assert!(
-            ambiguities2.is_empty(),
-            "extra_pkg_path import must not be reported ambiguous: {ambiguities2:?}"
-        );
-        let with_extra = program2.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "acme::widgets" && d.resolved_items.is_some())
-        });
-        assert!(
-            with_extra,
-            "with --pkg-path, acme::widgets must resolve from the added package directory"
+            with.is_empty(),
+            "with the package path `acme.widgets` must resolve, got: {:?}",
+            messages(&with)
         );
 
         let _ = std::fs::remove_dir_all(&pkg_dir);
         let _ = std::fs::remove_dir_all(&project_dir);
     }
 
-    /// Parity test: `import hew::template` must resolve against `--pkg-path`
-    /// identically to `hew check --pkg-path DIR`.
-    ///
-    /// The compiler strips the `hew::` prefix when building candidates against
-    /// `extra_pkg_path` (`hew-compile/src/lib.rs:1102-1110`), so it resolves
-    /// `<pkg_root>/template/template.hew` for `import hew::template`.  The LSP
-    /// must do the same; if it only generates the full-path candidate
-    /// `<pkg_root>/hew/template/template.hew` the import silently stays
-    /// unresolved while `hew check` accepts it — the lying-LSP class this change
-    /// exists to eliminate.
-    ///
-    /// Layout mirrors how `hew add hew::template` would install into a
-    /// local package directory: `<pkg_root>/template/template.hew` with a bare
-    /// Hew source file (no manifest needed for this resolution layer).
+    /// `import hew.template` resolves against a package path by stripping the
+    /// `hew` segment, the same candidate `hew check --pkg-path DIR` tries.
     #[test]
     fn extra_pkg_path_resolves_hew_prefixed_import_with_prefix_stripping() {
         let template_src = "pub fn apply() -> i64 { 1 }\n";
-        let main_src = "import hew.template;\nfn main() -> i64 { 0 }\n";
-
-        // Package dir layout: template/template.hew (directory form after
-        // hew:: prefix is stripped, matching `hew-compile/src/lib.rs:1104-1105`).
+        let main_src = "import hew.template;\nfn main() -> i64 { template.apply() }\n";
         let pkg_dir = make_temp_workspace_dir(&[("template/template.hew", template_src)]);
         let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
         let main_uri =
             Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
 
-        let docs: DashMap<Url, DocumentState> = DashMap::new();
-
-        // Without --pkg-path: import must remain unresolved (no local template/ tree).
-        let mut program = hew_parser::parse(main_src).program;
-        let _ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
-        let without_extra = program.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "hew::template" && d.resolved_items.is_none())
-        });
+        let without = published_for(&main_uri, main_src, &[]);
         assert!(
-            without_extra,
-            "without --pkg-path, hew::template must not resolve — no local template/ tree"
+            without.iter().any(|d| d.message.contains("not found")),
+            "without a package path there is no local template tree, got: {:?}",
+            messages(&without)
         );
 
-        // With --pkg-path pointing at pkg_dir: the hew:: prefix is stripped and
-        // the import resolves to <pkg_dir>/template/template.hew, exactly as
-        // `hew check --pkg-path <pkg_dir>` does.
-        let mut program2 = hew_parser::parse(main_src).program;
-        let ambiguities2 = populate_user_module_imports(
-            &main_uri,
-            &mut program2.items,
-            &docs,
-            std::slice::from_ref(&pkg_dir),
-        );
+        let with = published_for(&main_uri, main_src, std::slice::from_ref(&pkg_dir));
         assert!(
-            ambiguities2.is_empty(),
-            "hew::template with --pkg-path must not be reported ambiguous: {ambiguities2:?}"
-        );
-        let with_extra = program2.items.iter().any(|(item, _)| {
-            matches!(item, Item::Import(d) if d.path.join("::") == "hew::template" && d.resolved_items.is_some())
-        });
-        assert!(
-            with_extra,
-            "with --pkg-path, import hew.template must resolve via hew:: prefix stripping \
-             (candidate: <pkg_dir>/template/template.hew), matching hew check --pkg-path behaviour"
+            with.is_empty(),
+            "with the package path `hew.template` must resolve, got: {:?}",
+            messages(&with)
         );
 
         let _ = std::fs::remove_dir_all(&pkg_dir);
@@ -2615,7 +1812,8 @@ mod tests {
     fn lsp_and_build_session_report_the_same_semantic_diagnostics() {
         let uri = Url::parse("file:///session_agreement.hew").unwrap();
         let parse_result = hew_parser::parse(SEMANTIC_AGREEMENT_SOURCE);
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parse_result.program);
         let (hir_diagnostics, module) = collect_hir_diagnostics(&parse_result.program, &tco);
         assert!(hir_diagnostics.is_empty(), "fixture must lower cleanly");

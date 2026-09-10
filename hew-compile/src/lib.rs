@@ -106,6 +106,10 @@ impl DocumentSet {
         self.sources.is_empty()
     }
 
+    fn contains(&self, path: &Path) -> bool {
+        self.get(path).is_some()
+    }
+
     fn get(&self, path: &Path) -> Option<&str> {
         if let Some(source) = self.sources.get(path) {
             return Some(source);
@@ -119,6 +123,18 @@ impl DocumentSet {
 static EMPTY_DOCUMENTS: DocumentSet = DocumentSet {
     sources: BTreeMap::new(),
 };
+
+/// The canonical path of an import candidate, or `None` when nothing supplies
+/// it. An open buffer stands in for a file the filesystem does not have, so an
+/// editor can check a document set that is not on disk.
+fn resolve_candidate(documents: &DocumentSet, candidate: &Path) -> Option<PathBuf> {
+    match candidate.canonicalize() {
+        Ok(canonical) => Some(canonical),
+        Err(_) => documents
+            .contains(candidate)
+            .then(|| candidate.to_path_buf()),
+    }
+}
 
 /// Read a source file, preferring an open buffer over the file on disk.
 fn read_source(documents: &DocumentSet, path: &Path) -> std::io::Result<String> {
@@ -1991,6 +2007,7 @@ fn build_module_graph_with_diagnostics(
         source_dir,
         &input_canonical,
         &root_id,
+        ctx.documents,
         &mut graph,
         &mut seen_ids,
     );
@@ -2213,6 +2230,7 @@ fn extract_module_info(
     source_dir: &Path,
     root_source: &Path,
     root_id: &hew_parser::module::ModuleId,
+    documents: &DocumentSet,
     graph: &mut hew_parser::module::ModuleGraph,
     seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
 ) -> Vec<hew_parser::module::ModuleImport> {
@@ -2238,7 +2256,7 @@ fn extract_module_info(
                 .parent()
                 .unwrap_or(source_dir)
                 .join(file_path);
-            let canonical = resolved.canonicalize().unwrap_or(resolved);
+            let canonical = resolve_candidate(documents, &resolved).unwrap_or(resolved);
             let module_id = if canonical == root_source {
                 root_id.clone()
             } else {
@@ -2264,6 +2282,7 @@ fn extract_module_info(
                     source_dir,
                     root_source,
                     root_id,
+                    documents,
                     graph,
                     seen_ids,
                 );
@@ -2359,7 +2378,7 @@ fn resolve_file_imports_internal(
             Item::Import(decl) if decl.file_path.is_some() => {
                 let file_path = decl.file_path.as_ref().expect("checked above");
                 let resolved = source_dir.join(file_path);
-                if let Ok(canonical) = resolved.canonicalize() {
+                if let Some(canonical) = resolve_candidate(ctx.documents, &resolved) {
                     canonical
                 } else {
                     return Err(FrontendFailure::message_only(format!(
@@ -2517,7 +2536,7 @@ fn resolve_file_imports_internal(
                 // fail-closed rather than silently picking the first match.
                 let mut resolved = Vec::new();
                 for candidate in &candidates {
-                    if let Ok(canonical) = candidate.canonicalize() {
+                    if let Some(canonical) = resolve_candidate(ctx.documents, candidate) {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)

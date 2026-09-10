@@ -1001,6 +1001,11 @@ pub fn collection_value_dependencies(
         }
         if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&ty) {
             pending.extend_from_slice(arguments);
+        } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
+            // A shared handle carries its retain and release from the runtime,
+            // the way an encoding value does. The allocation's payload is the
+            // nested value that still needs describing.
+            pending.push(payload.clone());
         } else if let ResolvedTy::Named { .. } = &ty {
             if let Some(shape) = aggregates.iter().find(|shape| shape.aggregate_ty == ty) {
                 pending.extend(shape.fields.iter().map(|field| field.ty.clone()));

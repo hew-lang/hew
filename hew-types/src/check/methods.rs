@@ -135,10 +135,6 @@ pub(super) enum RecordCloneAdmissibility {
     OpaqueField { opaque_name: String, member: String },
     /// A stored member has no semantic clone capability.
     MissingClone { member: String, member_ty: Ty },
-    /// A stored member is a refcounted shared handle (`Rc`/`Weak`) whose
-    /// aggregate-ingress retain is missing, so the composite drop plan
-    /// over-releases. See `CloneCapabilityBlocker::UnbalancedSharedHandle`.
-    UnbalancedSharedHandle { type_name: String, member: String },
     /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
     /// The receiver is a bare type parameter (`x: T`) carrying a `Clone` bound
@@ -171,28 +167,6 @@ enum CloneCapabilityBlocker {
     Missing {
         member: String,
         member_ty: Ty,
-    },
-    /// A refcounted shared handle (`Rc`/`Weak`) sitting INSIDE an aggregate.
-    ///
-    /// Cloning the handle itself is a retain and is fine; the aggregate is not,
-    /// because aggregate ingress of an `Rc` emits no retain while both the
-    /// source binder and the aggregate's composite drop release it (see
-    /// `alias_moved_owned_operand` in `hew-mir/src/lower/ownership.rs`, which
-    /// exempts only `string`/`bytes` from the `AggregateAlias` marker because
-    /// only those have an ingress-retain derivation). Admitting the clone would
-    /// hand codegen a plan whose inverse drop over-releases.
-    ///
-    /// WHY a refusal rather than a fix here: the missing ingress retain is not
-    /// a clone bug — `let pair = (shared, "tag");` aborts with
-    /// `Rc double-free` on `origin/main` with no `clone` in the program at all.
-    /// WHEN obsolete: when `Rc`/`Weak` gain an aggregate-ingress retain
-    /// derivation alongside `StringRetain`, at which point this arm is deleted
-    /// and the member walks through as a plain retain-on-clone leaf.
-    /// WHAT the real solution looks like: an `RcRetain` ingress instruction
-    /// with the same prover/codegen treatment `StringRetain` already has.
-    UnbalancedSharedHandle {
-        type_name: String,
-        member: String,
     },
 }
 
@@ -645,13 +619,6 @@ impl Checker {
                      `{}` has no Clone capability",
                     member_ty.user_facing()
                 ),
-                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                    Self::unbalanced_shared_handle_clone_error_message(
-                        &receiver_name,
-                        &type_name,
-                        &member,
-                    )
-                }
             };
             let mut err =
                 crate::error::TypeError::new(TypeErrorKind::InvalidOperation, check.span, message);
@@ -3106,16 +3073,6 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member } => {
-                        let receiver_name = receiver_ty.user_facing().to_string();
-                        self.report_unbalanced_shared_handle_clone_error(
-                            &receiver_name,
-                            &type_name,
-                            &member,
-                            span,
-                        );
-                        return Ty::Error;
-                    }
                     RecordCloneAdmissibility::GenericRecord => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
@@ -3382,9 +3339,6 @@ impl Checker {
                 CloneCapabilityBlocker::Missing { member, member_ty } => {
                     RecordCloneAdmissibility::MissingClone { member, member_ty }
                 }
-                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member }
-                }
             };
         }
         // An enum is clone-eligible via the enum twin of the record thunk. It is
@@ -3445,48 +3399,6 @@ impl Checker {
         )
     }
 
-    /// Diagnostic for a refcounted shared handle sitting inside an aggregate.
-    ///
-    /// Names the exact member path so the programmer can see which leaf blocks
-    /// the clone, and states the mechanism rather than a bare "not supported".
-    fn unbalanced_shared_handle_clone_error_message(
-        receiver_name: &str,
-        type_name: &str,
-        member: &str,
-    ) -> String {
-        format!(
-            "type `{receiver_name}` cannot be cloned because member `{member}` of type \
-             `{type_name}` is a shared refcounted handle with no aggregate-ingress retain: \
-             the composite drop would release it once per owner"
-        )
-    }
-
-    fn report_unbalanced_shared_handle_clone_error(
-        &mut self,
-        receiver_name: &str,
-        type_name: &str,
-        member: &str,
-        span: &Span,
-    ) {
-        let message =
-            Self::unbalanced_shared_handle_clone_error_message(receiver_name, type_name, member);
-        // Deliberately NO workaround: cloning the handle on its own and
-        // rebuilding the aggregate re-enters the same ingress path and aborts
-        // at `hew-runtime/src/rc.rs` `Rc double-free`. Suggesting it would hand
-        // the programmer a crash. State the limitation instead.
-        self.report_error_with_suggestions(
-            TypeErrorKind::UndefinedMethod,
-            span,
-            message,
-            vec![format!(
-                "this is a known gap in shared-handle ownership, not a property of \
-                 `{receiver_name}`; a fix is pending. Until then keep the `{type_name}` handle \
-                 out of a cloned aggregate — pass the aggregate by move, or hold the handle in a \
-                 collection (`Vec<{type_name}>`), whose element clone retains correctly"
-            )],
-        );
-    }
-
     fn clone_member_path(parent: &str, member: &str) -> String {
         if parent.is_empty() {
             member.to_string()
@@ -3496,7 +3408,7 @@ impl Checker {
     }
 
     fn structural_clone_blocker(&self, ty: &Ty) -> Option<CloneCapabilityBlocker> {
-        self.structural_clone_blocker_inner(ty, "", false, &mut std::collections::HashSet::new())
+        self.structural_clone_blocker_inner(ty, "", &mut std::collections::HashSet::new())
     }
 
     /// Validate the exceptional element types that cannot use `Vec`'s
@@ -3536,19 +3448,10 @@ impl Checker {
         clippy::too_many_lines,
         reason = "the closed member walk keeps clone refusal paths aligned with every stored shape"
     )]
-    /// `in_value_aggregate` is true only when this position is a member of a
-    /// VALUE aggregate — a tuple element, an `Option`/`Result` payload, a record
-    /// field, or an enum variant payload. It is deliberately NOT inherited: a
-    /// builtin heap container resets it for its own elements, because a
-    /// container clones its elements through the owned-element thunk (which
-    /// retains) rather than by bit-copying a shared handle into a second
-    /// composite drop plan. `clone Vec<Rc<T>>` is balanced today and must stay
-    /// admitted; `clone (Rc<T>, string)` is not.
     fn structural_clone_blocker_inner(
         &self,
         ty: &Ty,
         path: &str,
-        in_value_aggregate: bool,
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<CloneCapabilityBlocker> {
         use hew_parser::ast::ResourceMarker;
@@ -3559,7 +3462,7 @@ impl Checker {
                 for (index, item) in items.iter().enumerate() {
                     let member = Self::clone_member_path(path, &index.to_string());
                     if let Some(blocker) =
-                        self.structural_clone_blocker_inner(item, &member, true, visiting)
+                        self.structural_clone_blocker_inner(item, &member, visiting)
                     {
                         return Some(blocker);
                     }
@@ -3570,14 +3473,6 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                if in_value_aggregate
-                    && matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak))
-                {
-                    return Some(CloneCapabilityBlocker::UnbalancedSharedHandle {
-                        type_name: resolved.user_facing().to_string(),
-                        member: path.to_string(),
-                    });
-                }
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
@@ -3639,7 +3534,7 @@ impl Checker {
                         };
                         let member = Self::clone_member_path(path, label);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, true, visiting)
+                            self.structural_clone_blocker_inner(arg, &member, visiting)
                         {
                             return Some(blocker);
                         }
@@ -3655,7 +3550,7 @@ impl Checker {
                         };
                         let member = Self::clone_member_path(path, &label);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, false, visiting)
+                            self.structural_clone_blocker_inner(arg, &member, visiting)
                         {
                             return Some(blocker);
                         }
@@ -3680,7 +3575,7 @@ impl Checker {
                         );
                         let member = Self::clone_member_path(path, field_name);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
                         {
                             visiting.remove(&visit_key);
                             return Some(blocker);
@@ -3698,7 +3593,7 @@ impl Checker {
                         );
                         let member = Self::clone_member_path(path, &index.to_string());
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
                         {
                             visiting.remove(&visit_key);
                             return Some(blocker);
@@ -3725,7 +3620,7 @@ impl Checker {
                                         &format!("{variant_name}.{index}"),
                                     );
                                     self.structural_clone_blocker_inner(
-                                        &field_ty, &member, true, visiting,
+                                        &field_ty, &member, visiting,
                                     )
                                 })
                             }
@@ -3741,7 +3636,7 @@ impl Checker {
                                         &format!("{variant_name}.{field_name}"),
                                     );
                                     self.structural_clone_blocker_inner(
-                                        &field_ty, &member, true, visiting,
+                                        &field_ty, &member, visiting,
                                     )
                                 })
                             }
@@ -3757,8 +3652,7 @@ impl Checker {
             }
             Ty::Array(elem, _) => {
                 let member = Self::clone_member_path(path, "element");
-                if let Some(blocker) =
-                    self.structural_clone_blocker_inner(elem, &member, false, visiting)
+                if let Some(blocker) = self.structural_clone_blocker_inner(elem, &member, visiting)
                 {
                     return Some(blocker);
                 }
@@ -7648,15 +7542,6 @@ impl Checker {
                         );
                         true
                     }
-                    CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                        self.report_unbalanced_shared_handle_clone_error(
-                            &receiver_name,
-                            &type_name,
-                            &member,
-                            span,
-                        );
-                        true
-                    }
                     CloneCapabilityBlocker::Opaque { .. }
                     | CloneCapabilityBlocker::Missing { .. } => false,
                 };
@@ -9742,19 +9627,6 @@ impl Checker {
                                         resolved.user_facing(),
                                         member_ty.user_facing()
                                     ),
-                                );
-                                return Ty::Error;
-                            }
-                            RecordCloneAdmissibility::UnbalancedSharedHandle {
-                                type_name,
-                                member,
-                            } => {
-                                let receiver_name = resolved.user_facing().to_string();
-                                self.report_unbalanced_shared_handle_clone_error(
-                                    &receiver_name,
-                                    &type_name,
-                                    &member,
-                                    span,
                                 );
                                 return Ty::Error;
                             }

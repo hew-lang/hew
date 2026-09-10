@@ -3523,15 +3523,6 @@ impl Checker {
                 let resolved_builtin = self
                     .resolved_builtin_type(resolved_name.as_str())
                     .or(generated_prelude_builtin);
-                if resolved_builtin == Some(crate::BuiltinType::Rc) {
-                    if let Some(type_args) = type_args.as_ref() {
-                        if let (Some(payload_ty), Some((_, payload_span))) =
-                            (args.first(), type_args.first())
-                        {
-                            self.validate_rc_payload_type(payload_ty, payload_span);
-                        }
-                    }
-                }
                 let builtin = resolved_builtin.filter(|builtin| {
                     // A raw bare spelling of a source-owned lifecycle type has
                     // no authority. Real named/glob imports and the isolated

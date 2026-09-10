@@ -55,7 +55,6 @@ impl FunctionEmitter<'_, '_> {
                         false,
                     ),
                 )?;
-                self.clear_moved(transfers)?;
                 let value = self.runtime_call_value(
                     function,
                     &[
@@ -68,6 +67,9 @@ impl FunctionEmitter<'_, '_> {
                     ],
                     "rc.new",
                 )?;
+                // Clearing the operand zeroes its slot, so the handover has to
+                // finish before the caller's copy of the payload is released.
+                self.clear_moved(transfers)?;
                 self.store(
                     result.ok_or_else(|| {
                         CodegenError::FailClosed("`Rc.new` lacks its handle storage".into())

@@ -2645,6 +2645,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
             .iter()
             .any(|supervisor| supervisor.handle_ty == *ty || supervisor.child_ref_ty() == *ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
+        || hew_types::runtime_call::shared_handle_payload(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         || matches!(

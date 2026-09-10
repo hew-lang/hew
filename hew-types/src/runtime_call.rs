@@ -601,8 +601,10 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
 }
 
-/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
-fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+/// The payload of a canonical `Rc<T>`/`Weak<T>` handle, and the one place a
+/// shared handle is recognised from its type.
+#[must_use]
+pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
             builtin: Some(BuiltinType::Rc | BuiltinType::Weak),

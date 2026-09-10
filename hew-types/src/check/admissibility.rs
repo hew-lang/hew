@@ -1596,10 +1596,17 @@ impl Checker {
             } => {
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.is_user_opaque_type_name(name)
-                    || self.registry.is_resource(name)
                     || self.registry.is_linear(name)
                 {
                     return false;
+                }
+                // A `#[resource]` releases through its own `close`, which the
+                // shared allocation installs as the payload destructor. Its
+                // fields belong to that close, not to this walk. `#[linear]`
+                // stays refused: a shared handle can outlive every path that
+                // would consume it.
+                if self.registry.is_resource(name) {
+                    return true;
                 }
                 let Some(type_def) = self.lookup_type_def(name) else {
                     return self

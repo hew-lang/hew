@@ -85,7 +85,9 @@ pub use hew_sir::{
     BlockId, CallableId, ClosureId, DeferId, DeferScopeId, FaultParkId, OwnKind, ResourceCarrier,
     ResourceRelease, SemParamPassing, TaskScopeId, TrapKind,
 };
-use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp};
+use hew_types::runtime_call::{
+    collection_type_arguments, shared_handle_payload, MapValueOp, SetValueOp,
+};
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
 use hew_types::{
     BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect, RuntimeCallFamily,
@@ -1796,19 +1798,6 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         shared_glue,
         ids,
     })
-}
-
-/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
-#[must_use]
-pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
-            args,
-            ..
-        } if args.len() == 1 => args.first(),
-        _ => None,
-    }
 }
 
 fn aggregate_shape_ref(

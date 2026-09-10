@@ -969,13 +969,9 @@ fn require_type_shapes(
         }
         if let ResolvedTy::Array(element, _) = &ty {
             pending.push((**element).clone());
-        } else if let Some(payload) = shared_handle_payload(&ty) {
-            if !is_supported_call_value(module, facts, payload) {
-                return Err(format!(
-                    "shared payload `{}` has no semantic value contract",
-                    payload.user_facing()
-                ));
-            }
+        } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
+            // The allocation's payload is an ordinary nested value; the walk's
+            // own admission decides it.
             pending.push(payload.clone());
         } else if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
             for argument in arguments {
@@ -2708,7 +2704,7 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         // A shared handle is one pointer into a runtime-counted allocation.
         // Its payload is a nested type of its own, published alongside it.
-        || shared_handle_payload(ty).is_some()
+        || hew_types::runtime_call::shared_handle_payload(ty).is_some()
 }
 
 /// The runtime operation one checked `Rc`/`Weak` method is.
@@ -2726,18 +2722,6 @@ fn shared_handle_family(op: hew_types::RcIntrinsicOp) -> hew_types::RuntimeCallF
         Op::IsUnique => F::RcIsUnique,
         Op::WeakClone => F::WeakCloneRc,
         Op::WeakUpgrade => F::WeakUpgradeRc,
-    }
-}
-
-/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
-fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
-            args,
-            ..
-        } if args.len() == 1 => args.first(),
-        _ => None,
     }
 }
 

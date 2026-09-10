@@ -693,7 +693,7 @@ fn primitive_repr(
         }
         // A strong handle is the payload pointer and a weak handle the
         // allocation header pointer; both are one machine pointer.
-        shared if hew_mir::physical::shared_handle_payload(shared).is_some() => {
+        shared if hew_types::runtime_call::shared_handle_payload(shared).is_some() => {
             PhysicalRepr::Pointer
         }
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,

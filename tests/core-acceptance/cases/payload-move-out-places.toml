@@ -1,0 +1,10 @@
+[[case]]
+id = "payload-move-out-places"
+intent = "A heap-owning payload bound by a `match` arm is moved into a new owner from every scrutinee shape: a bare binding, an ephemeral call, a record field, a projection chain, a tuple index and a place behind a block or `if` wrapper. The move reaches the scrutinee's real storage, so each payload closes exactly once at the arm's scope exit and the scrutinee's own drop closes nothing."
+source = "cases/payload-move-out-places.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "binding 1\nclose 1\nafter binding\nephemeral 2\nclose 2\nafter ephemeral\nfield 3\nclose 3\nafter field\nnested-field 4\nclose 4\nafter nested-field\ntuple 5\nclose 5\nafter tuple\nblock 6\nclose 6\nafter block\nif 7\nclose 7\nafter if\n"
+exit = 0

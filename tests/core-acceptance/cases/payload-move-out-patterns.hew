@@ -1,0 +1,83 @@
+// The payload a `match` arm moves out can sit behind a nested pattern or be
+// one of several independent fields destructured by the same arm. Each moved
+// payload becomes an independent owner: it closes exactly once at the arm's
+// scope exit, in reverse declaration order, and the scrutinee that supplied
+// it closes nothing afterwards.
+#[resource]
+type Tag {
+    id: i64,
+}
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+enum Inner {
+    Full(Tag),
+    Hollow,
+}
+
+enum Outer {
+    Wrap(Inner),
+    Bare,
+}
+
+enum Pair {
+    Both(Tag, Tag),
+    Neither,
+}
+
+fn mk() -> Outer {
+    Outer.Wrap(Inner.Full(Tag { id: 1 }))
+}
+
+// A nested binder over an ephemeral scrutinee.
+fn nested_from_ephemeral() {
+    match mk() {
+        Outer.Wrap(Inner.Full(v)) => {
+            let w = v;
+            println(f"nested-ephemeral {w.id}");
+        },
+        Outer.Wrap(Inner.Hollow) => {},
+        Outer.Bare => {},
+    }
+    println("after nested-ephemeral");
+}
+
+// The same nested binder over an owned binding, whose storage the move has to
+// reach through the outer value's own slot.
+fn nested_from_binding() {
+    let b = Outer.Wrap(Inner.Full(Tag { id: 2 }));
+    match b {
+        Outer.Wrap(Inner.Full(v)) => {
+            let w = v;
+            println(f"nested-binding {w.id}");
+        },
+        Outer.Wrap(Inner.Hollow) => {},
+        Outer.Bare => {},
+    }
+    println("after nested-binding");
+}
+
+// Two independent payloads moved out of one arm: the first move does not
+// forbid the second, and each new owner closes on its own.
+fn two_independent_fields() {
+    let b = Pair.Both(Tag { id: 3 }, Tag { id: 4 });
+    match b {
+        Pair.Both(x, y) => {
+            let wx = x;
+            let wy = y;
+            println(f"two-field {wx.id} {wy.id}");
+        },
+        Pair.Neither => {},
+    }
+    println("after two-field");
+}
+
+fn main() {
+    nested_from_ephemeral();
+    nested_from_binding();
+    two_independent_fields();
+}

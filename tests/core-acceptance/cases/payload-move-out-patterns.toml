@@ -1,0 +1,10 @@
+[[case]]
+id = "payload-move-out-patterns"
+intent = "A payload moved out through a nested pattern, from an ephemeral scrutinee and from an owned binding, and two independent payloads moved out of one arm. Each move mints an independent owner: every payload closes exactly once at the arm's scope exit, the two-field arm closes in reverse declaration order, and the scrutinee closes nothing afterwards."
+source = "cases/payload-move-out-patterns.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "nested-ephemeral 1\nclose 1\nafter nested-ephemeral\nnested-binding 2\nclose 2\nafter nested-binding\ntwo-field 3 4\nclose 4\nclose 3\nafter two-field\n"
+exit = 0

@@ -108,12 +108,12 @@ fn worker() {\n\
 }\n\
 actor Driver {\n\
     receive fn drive() {\n\
-        scope { fork { worker(); }; };\n\
+        scope { let t = fork worker(); };\n\
     }\n\
 }\n\
 fn main() -> i64 {\n\
     let d = spawn Driver;\n\
-    d.drive();\n\
+    let _ = d.drive();\n\
     sleep(100ms);\n\
     println(\"main-done\");\n\
     0\n\

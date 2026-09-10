@@ -180,13 +180,23 @@ pub(crate) fn render_frontend_diagnostics(
                     diagnostic.filename.as_deref(),
                 ) {
                     (Some(span), Some(source), Some(filename)) => {
+                        let notes: Vec<crate::diagnostic::DiagnosticNote<'_>> = inner
+                            .notes
+                            .iter()
+                            .map(|note| crate::diagnostic::DiagnosticNote {
+                                source: note.source.as_ref(),
+                                filename: &note.filename,
+                                span: &note.span,
+                                message: &note.message,
+                            })
+                            .collect();
                         crate::diagnostic::render_diagnostic(
                             source,
                             filename,
                             span,
                             &inner.message,
-                            &[],
-                            &[],
+                            &notes,
+                            &inner.help,
                         );
                     }
                     _ => crate::diagnostic::emit_plain_diagnostic_line(&inner.message),

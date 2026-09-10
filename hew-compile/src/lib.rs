@@ -583,6 +583,25 @@ pub struct FrontendMessageDiagnostic {
     pub message: String,
     pub span: Option<Range<usize>>,
     pub source: Option<Arc<str>>,
+    /// Secondary locations, each with its own file and span — an import
+    /// cycle's remaining edges, one per module on the path. Empty for every
+    /// other message-only site.
+    pub notes: Vec<FrontendMessageNote>,
+    /// `= help:` lines rendered after the primary location and its notes.
+    pub help: Vec<String>,
+}
+
+/// One secondary location on a [`FrontendMessageDiagnostic`] that points into
+/// a *different* file than the primary span — the shape `hew-cli`'s
+/// diagnostic renderer already expects for a primary/note split, but that
+/// [`FrontendMessageDiagnostic`] had no way to carry until the import-cycle
+/// diagnostic needed one note per remaining cycle edge.
+#[derive(Debug, Clone)]
+pub struct FrontendMessageNote {
+    pub message: String,
+    pub span: Range<usize>,
+    pub source: Arc<str>,
+    pub filename: String,
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +625,8 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: None,
                 source: None,
+                notes: Vec::new(),
+                help: Vec::new(),
             }),
         }
     }
@@ -620,6 +641,8 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: None,
                 source: None,
+                notes: Vec::new(),
+                help: Vec::new(),
             }),
         }
     }
@@ -647,6 +670,36 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: Some(span),
                 source: Some(Arc::from(source)),
+                notes: Vec::new(),
+                help: Vec::new(),
+            }),
+        }
+    }
+
+    /// [`Self::coded_message_at`], with secondary same-diagnostic locations
+    /// (each carrying its own file) and trailing `= help:` lines. Used only by
+    /// the import-cycle diagnostic, whose remaining edges each live in a
+    /// different module's source file.
+    fn coded_message_with_notes(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+        notes: Vec<FrontendMessageNote>,
+        help: Vec<String>,
+    ) -> Self {
+        Self {
+            source: None,
+            filename: Some(filename.to_string()),
+            note_sources: Vec::new(),
+            kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
+                code: code.to_string(),
+                message: message.into(),
+                span: Some(span),
+                source: Some(Arc::from(source)),
+                notes,
+                help,
             }),
         }
     }
@@ -740,6 +793,26 @@ impl FrontendFailure {
             message.clone(),
             vec![FrontendDiagnostic::coded_message_at(
                 code, message, span, source, filename,
+            )],
+        )
+    }
+
+    /// [`Self::coded_message_at`], with secondary cross-file locations and
+    /// help lines. See [`FrontendDiagnostic::coded_message_with_notes`].
+    fn coded_message_with_notes(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+        notes: Vec<FrontendMessageNote>,
+        help: Vec<String>,
+    ) -> Self {
+        let message = message.into();
+        Self::new(
+            message.clone(),
+            vec![FrontendDiagnostic::coded_message_with_notes(
+                code, message, span, source, filename, notes, help,
             )],
         )
     }
@@ -1653,10 +1726,124 @@ fn canonical_direct_stdlib_module_for_source(
     ))
 }
 
+/// Render a module-graph [`CycleError`](hew_parser::module::CycleError) into a
+/// positioned diagnostic: the first edge on the cycle path becomes the
+/// diagnostic's primary location, every remaining edge becomes a note in path
+/// order (each pointing into the module that declares that import), and a
+/// help line steers the fix.
+///
+/// A cycle where every module's entry file lives in the same directory is the
+/// directory-module shape described in spec 3.5.1 — the fix is to promote
+/// that directory to a directory module rather than importing between its
+/// files. Otherwise the fix is a shared module both sides import.
+///
+/// `manifest_project_dir` (a discovered `hew.toml` package root — `None` for
+/// a manifest-less standalone compile) and its `src` are excluded from that
+/// "shared directory" check even when every module happens to sit there:
+/// both are flat buckets the dotted-path resolver searches for otherwise-
+/// unrelated top-level modules (see the `candidates.push(ctx.project_dir...)`
+/// sites in `resolve_file_imports_internal`), not a private submodule
+/// directory a program ever imports as one unit — "make `src/src.hew` the
+/// entry" is not a real fix. A manifest-less compile has no such bucket: its
+/// `project_dir` fallback is just the entry file's own directory, which is a
+/// perfectly good directory-module candidate.
+///
+/// Falls back to the bare chain message (former behaviour) if a cycle member
+/// is missing from `graph` or its source file cannot be re-read; both should
+/// be unreachable since every cycle member was inserted into `graph` before
+/// `compute_topo_order` ran and its source was just parsed.
+fn cycle_error_to_frontend_failure(
+    graph: &hew_parser::module::ModuleGraph,
+    cycle_err: &hew_parser::module::CycleError,
+    manifest_project_dir: Option<&Path>,
+) -> FrontendFailure {
+    let chain = cycle_err.to_string();
+    let edge_count = cycle_err.import_spans.len();
+
+    let mut locations: Vec<(PathBuf, String, Range<usize>, String)> =
+        Vec::with_capacity(edge_count);
+    for i in 0..edge_count {
+        let from_module = &cycle_err.cycle[i];
+        let to_module = &cycle_err.cycle[i + 1];
+        let Some(source_path) = graph
+            .modules
+            .get(from_module)
+            .and_then(|module| module.source_paths.first())
+        else {
+            return FrontendFailure::message_only(chain);
+        };
+        let Ok(source) = std::fs::read_to_string(source_path) else {
+            return FrontendFailure::message_only(chain);
+        };
+        let label = match (i == 0, i + 1 == edge_count) {
+            (true, true) => format!(
+                "import cycle: `{from_module}` imports `{to_module}`, closing the cycle on itself"
+            ),
+            (true, false) => format!("import cycle: `{from_module}` imports `{to_module}` here"),
+            (false, true) => {
+                format!("`{from_module}` imports `{to_module}` here, closing the cycle")
+            }
+            (false, false) => format!("`{from_module}` imports `{to_module}` here"),
+        };
+        locations.push((
+            source_path.clone(),
+            source,
+            cycle_err.import_spans[i].clone(),
+            label,
+        ));
+    }
+
+    let shared_dir = locations[0].0.parent();
+    let same_directory = shared_dir.is_some()
+        && locations
+            .windows(2)
+            .all(|pair| pair[0].0.parent() == pair[1].0.parent());
+    let shared_dir_is_a_flat_root = manifest_project_dir.is_some_and(|project_dir| {
+        let project_src_dir = project_dir.join("src");
+        shared_dir == Some(project_dir) || shared_dir == Some(project_src_dir.as_path())
+    });
+    let help = if same_directory && !shared_dir_is_a_flat_root {
+        let dir_name = locations[0]
+            .0
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("<dir>");
+        format!(
+            "these modules share one directory; make `{dir_name}/{dir_name}.hew` the entry and \
+             let the others be peers (spec 3.5.1), then drop the imports between them"
+        )
+    } else {
+        "move the shared declarations into a module both sides import".to_string()
+    };
+
+    let (first_path, first_source, first_span, first_label) = locations[0].clone();
+    let notes = locations[1..]
+        .iter()
+        .map(|(path, source, span, label)| FrontendMessageNote {
+            message: label.clone(),
+            span: span.clone(),
+            source: Arc::from(source.as_str()),
+            filename: path.display().to_string(),
+        })
+        .collect();
+
+    FrontendFailure::coded_message_with_notes(
+        "E_IMPORT_CYCLE",
+        first_label,
+        first_span,
+        &first_source,
+        &first_path.display().to_string(),
+        notes,
+        vec![help],
+    )
+}
+
 fn rewrite_direct_stdlib_module_root(
     module_graph: &mut hew_parser::module::ModuleGraph,
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
+    manifest_project_dir: Option<&Path>,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::{Module, ModuleId};
 
@@ -1681,9 +1868,9 @@ fn rewrite_direct_stdlib_module_root(
             doc: None,
         })
         .expect("synthetic floor-check root is unique");
-    module_graph
-        .compute_topo_order()
-        .map_err(|cycle_err| FrontendFailure::message_only(cycle_err.to_string()))?;
+    module_graph.compute_topo_order().map_err(|cycle_err| {
+        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir)
+    })?;
     items.clear();
 
     Ok(())
@@ -1735,7 +1922,12 @@ fn build_module_graph_with_diagnostics(
         .expect("root module id is unique");
 
     if let Err(cycle_err) = graph.compute_topo_order() {
-        return Err(FrontendFailure::message_only(cycle_err.to_string()));
+        let manifest_project_dir = ctx.package_name.is_some().then_some(ctx.project_dir);
+        return Err(cycle_error_to_frontend_failure(
+            &graph,
+            &cycle_err,
+            manifest_project_dir,
+        ));
     }
 
     // The prelude is loaded out of band, so expose only its Display impls to
@@ -1773,7 +1965,12 @@ fn build_module_graph_with_diagnostics(
         graph.topo_order.push(builtins_id);
     }
 
-    rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
+    rewrite_direct_stdlib_module_root(
+        &mut graph,
+        items,
+        &input_canonical,
+        ctx.package_name.is_some().then_some(ctx.project_dir),
+    )?;
 
     // Canonical module IDs may share a final component. Reject only when two
     // whole-module imports in the SAME source scope publish the same surface
@@ -6617,5 +6814,112 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "missing imported actor declaration `{actor}`"
             );
         }
+    }
+
+    /// A cycle between two files in the SAME directory renders one positioned
+    /// location per import on the path (the header pointing at the first
+    /// edge, a note per remaining edge, in path order) and steers the fix
+    /// toward the directory-module form.
+    #[test]
+    fn import_cycle_in_same_directory_renders_positions_and_directory_help() {
+        let dir = tempfile::tempdir().expect("create cycle fixture");
+        let input = write_source(
+            dir.path(),
+            "a.hew",
+            "import \"b.hew\";\npub fn noop_a() {}\n",
+        );
+        write_source(
+            dir.path(),
+            "b.hew",
+            "import \"a.hew\";\npub fn noop_b() {}\n",
+        );
+
+        let failure =
+            check_file(&input, &FrontendOptions::default()).expect_err("cycle must be rejected");
+        assert_eq!(failure.diagnostics.len(), 1);
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+
+        assert_eq!(inner.code, "E_IMPORT_CYCLE");
+        // Primary location: the first edge, at `a.hew`'s `import "b.hew";`.
+        assert_eq!(
+            failure.diagnostics[0].filename.as_deref(),
+            Some(input.as_str())
+        );
+        let primary_span = inner
+            .span
+            .clone()
+            .expect("cycle diagnostic must carry a span");
+        let primary_source = inner
+            .source
+            .as_deref()
+            .expect("cycle diagnostic must carry source");
+        assert_eq!(primary_source[primary_span].trim_end(), "import \"b.hew\";");
+        assert!(
+            inner.message.contains('`') && inner.message.contains("imports"),
+            "primary message should label the edge it introduces: {}",
+            inner.message
+        );
+
+        // One note for the closing edge, in `b.hew`, labelled as closing the cycle.
+        assert_eq!(inner.notes.len(), 1);
+        assert!(inner.notes[0].filename.ends_with("b.hew"));
+        assert_eq!(
+            inner.notes[0].source[inner.notes[0].span.clone()].trim_end(),
+            "import \"a.hew\";"
+        );
+        assert!(
+            inner.notes[0].message.contains("closing the cycle"),
+            "closing edge should say so: {}",
+            inner.notes[0].message
+        );
+
+        assert_eq!(inner.help.len(), 1);
+        assert!(
+            inner.help[0].contains("share one directory") && inner.help[0].contains("spec 3.5.1"),
+            "same-directory cycle should recommend the directory-module form: {}",
+            inner.help[0]
+        );
+    }
+
+    /// A cycle spanning two DIFFERENT directories recommends moving the
+    /// shared declarations into a module both sides import instead.
+    #[test]
+    fn import_cycle_across_directories_recommends_a_shared_module() {
+        let dir = tempfile::tempdir().expect("create cross-directory cycle fixture");
+        let near = dir.path().join("near");
+        let far = dir.path().join("far");
+        fs::create_dir(&near).expect("create near directory");
+        fs::create_dir(&far).expect("create far directory");
+        let input = write_source(
+            &near,
+            "a.hew",
+            "import \"../far/b.hew\";\npub fn noop_a() {}\n",
+        );
+        write_source(
+            &far,
+            "b.hew",
+            "import \"../near/a.hew\";\npub fn noop_b() {}\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("cross-directory cycle must be rejected");
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+
+        assert_eq!(inner.code, "E_IMPORT_CYCLE");
+        assert_eq!(inner.help.len(), 1);
+        assert_eq!(
+            inner.help[0],
+            "move the shared declarations into a module both sides import"
+        );
     }
 }

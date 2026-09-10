@@ -278,13 +278,35 @@ pub(crate) fn from_coded_message_diagnostic(
     diagnostic: &hew_compile::FrontendMessageDiagnostic,
     filename: Option<&str>,
 ) -> JsonDiagnostic {
+    // Cross-file notes (the import-cycle diagnostic's remaining edges) carry
+    // their own span, but `JsonNote` locates within the *diagnostic's* file —
+    // there is no per-note file field — so they surface as message-only notes
+    // here, same as a parser hint. Help lines join the same list; a JSON
+    // consumer distinguishes them by content, matching how `= help:` already
+    // reads inline with `= note:` in the plain-text renderer's output stream.
+    let notes: Vec<JsonNote> = diagnostic
+        .notes
+        .iter()
+        .map(|note| JsonNote {
+            message: note.message.clone(),
+            span: None,
+        })
+        .chain(diagnostic.help.iter().map(|help| JsonNote {
+            message: format!("help: {help}"),
+            span: None,
+        }))
+        .collect();
     match (&diagnostic.span, diagnostic.source.as_deref()) {
         (Some(span), Some(source)) => JsonDiagnostic {
             span: JsonSpan::from_range(source, span),
             file: filename.unwrap_or_default().to_string(),
+            notes,
             ..coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User)
         },
-        _ => coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User),
+        _ => JsonDiagnostic {
+            notes,
+            ..coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User)
+        },
     }
 }
 

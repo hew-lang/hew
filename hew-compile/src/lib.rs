@@ -6692,7 +6692,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "    state Ready,\n",
             "    state Faulted { code: i64, },\n",
             "    on Crash: Ready => .Faulted {\n",
-            "        Workflow.Faulted { wrong: 1 }\n",
+            "        wrong: 1\n",
             "    }\n",
             "    default { state }\n",
             "}\n",
@@ -6732,7 +6732,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .filter(|byte| *byte == b'\n')
             .count()
             + 1;
-        assert_eq!(line, 6, "diagnostic must point at the deliberate error");
+        assert_eq!(line, 5, "diagnostic must point at the deliberate error");
 
         let inference = failure
             .diagnostics

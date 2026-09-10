@@ -2050,14 +2050,14 @@ fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
 #[test]
 fn fmt_machine_transition_with_guard_and_body_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
+        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active when state.n < 10 { n: state.n + 1 }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_reenter_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active reenter {\n        Active { n: active.n + 1 }\n    }\n}\n",
+        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",
     );
 }
 

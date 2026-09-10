@@ -86,7 +86,7 @@
 # intentional actor-boundary error demos, corrected spec-0122..spec-0133 labels,
 # and bound entries to cksum metadata.
 #
-# ─── Guide failures (4) ─────────────────────────────────────────────────────────
+# ─── Guide failures (1) ─────────────────────────────────────────────────────────
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
@@ -94,15 +94,12 @@
 guide-144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
 
 
-# ─── Spec failures (86) ──────────────────────────────────────────────────────────
+# ─── Spec failures (38) ──────────────────────────────────────────────────────────
 
 spec-558578277   # SNIPPET: bare `let counter = spawn Counter(...)` with field args — spawn illustration
 spec-4253604243   # SNIPPET: bare lambda actor example — inline actor syntax illustration
-spec-3633579472   # NYI: bare `scope { ... }` — scope/structured-concurrency not yet lowered
 spec-3107872017   # FRAGMENT: calls `open(path)` with no import — context-dependent snippet
 spec-3221762372   # SNIPPET: bare `let x = 5` / `var y = 0` — binding modes illustration
-spec-3005964102   # SNIPPET: bare `let config = load_config()` — actor capture illustration
-spec-667087144   # SNIPPET: bare `let local_ref = ...` — non-Send capture illustration
 spec-3406269624   # FRAGMENT: imports `network.tcp` — hypothetical module, not in stdlib
 spec-2603276079   # FRAGMENT: imports `greeting` — multi-file example, module not found
 spec-53697221   # SNIPPET: bare code outside declarations — trait method dispatch illustration
@@ -111,7 +108,6 @@ spec-2589017280   # SNIPPET: bare `let` — type inference illustration
 spec-60603610   # SNIPPET: bare `let f = |...| ...` — lambda illustration
 spec-1914272309   # SPEC-BUG: references variant `Lit` not defined in the fence
 spec-1607851950   # SNIPPET: bare `let` — fn-type variable illustration
-spec-3977789670   # SURFACE-PENDING: `commit`/`rollback(consume self)` on `#[linear] Transaction` — the parser still spells the consuming receiver `consuming self` (#3257); the fence is also a signature-only `impl` body, so it stays SPEC-BUG behind that
 spec-4266594633   # SNIPPET: bare identifier `max` after trait definition — illustration
 spec-1757877651   # SPEC-BUG: type mismatch in aspirational HashMap construction
 spec-3755535258   # FRAGMENT: associated-type illustration — `trait Iterator` collides with the prelude binding and `RangeIter` is undefined in the fence; `.Some(value)` additionally hits the prelude-variant path gap
@@ -123,172 +119,60 @@ spec-820125999   # SPEC-BUG: enum variants separated by `,` not `;` — illustra
 spec-1673587477   # SPEC-BUG: malformed struct `impl` syntax — aspirational (re-verified after Vec<T> method-table correction, still fails identically: signature-only `;`-terminated impl bodies, no `{ }`)
 spec-3414934173   # SNIPPET: bare `var`/`let` — HashMap bracket-indexing illustration (re-verified after the dotted-path migration and the corrected index-read result type: `m[k]` yields bare `V`, not `Option<V>`)
 spec-3711765580   # SNIPPET: bare `let`/`var` — machine state illustration
-spec-1632573552   # SNIPPET: bare `let`/`import` — stdlib module tour (re-verified after `testing.assert_true` became the generic `testing.assert`, D22)
 spec-3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
-spec-70193944   # SNIPPET: bare identifier list — prelude illustration (re-verified after the `Error` trait joined the prelude, D21)
 spec-813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
 spec-2693414511   # SNIPPET: bare `on event ...` — machine state illustration
 spec-696588660   # SNIPPET: bare `on event ...` — machine event illustration
 spec-3427923877   # SNIPPET: bare `match state { ... }` — machine pattern illustration
-spec-3210405407   # SNIPPET: bare `let` — scope result illustration
-spec-10384720   # SNIPPET: bare `receive fn` — actor + scope illustration
-spec-873326002   # SNIPPET: bare `let` — async I/O illustration
-spec-823456055   # FRAGMENT: calls `process()` — undefined function from prior context
 spec-2109671045   # SNIPPET: bare `match` — wire format pattern illustration
 spec-3178540149   # SNIPPET: bare `let` — wire encode illustration
 spec-3387341978   # SNIPPET: bare `let` — wire decode illustration
-spec-543939813   # SNIPPET: bare `mailbox` declaration — overflow-policy illustration
 spec-2829887061   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
 spec-570017546   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration
 spec-2833987996   # SNIPPET: bare `let` — saturating `as` f64/integer conversion illustration
 spec-3559603183   # SNIPPET: bare `let` — exact numeric try_to conversion illustration
-spec-3357476678   # SNIPPET: bare `let` — duration literal illustration
 spec-1635702216   # SNIPPET: bare labeled loop — labeled break/continue illustration
 spec-796057876   # SNIPPET: bare `var` — loop statement result-accumulator illustration
-spec-1030644995   # SNIPPET: bare `if let` — Option pattern-match illustration (re-verified after the §3.1 variant-spelling rule dotted the patterns: still `expected item (fn, actor, machine, type, import, ...), found let` at line 1)
 spec-2132440862   # SNIPPET: bare `while let` — HashMap pattern-match illustration (re-verified after the §3.1 variant-spelling rule dotted the pattern: still `expected item (fn, actor, machine, type, import, ...), found var` at line 1)
 
 # ─── Auto-classified new failures (doc-fence rekeying pass) ─────────────────
 # Root causes are a first-pass heuristic from the diagnostic text; refine the
 # category label as each one is actually triaged.
 
-guide-1011189430   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-1447389260   # SPEC-BUG: error: `?` error type mismatch: expected `dyn Error`, found `std.fs.IoError`
 guide-1477095503   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 guide-1657801784   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<Node>` has no semantic valu…
-guide-2063870166   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-guide-2145520944   # SPEC-BUG: error: no method `with_string` on `std.encoding.json.Value`
-guide-2221891794   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-guide-2243364315   # SPEC-BUG: error: no function `string_value` in module `json`
-guide-2269321818   # SPEC-BUG: error: no method `to_string` on `bytes`
-guide-2297252199   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-2314171784   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
 guide-232405810   # SNIPPET: warning: unused variable `rounded_float`
 guide-2331035367   # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
 guide-247214399   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
-guide-2580765030   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-2658862391   # SPEC-BUG: error: no method `get_field` on `Result<std.encoding.json.Value, std.encoding.json.ParseError>`
-guide-275443138   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `ResolvedIm…
-guide-2783853257   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `WireCodec`…
 guide-2798920363   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<i64>` has no semantic value…
-guide-2886822667   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `StringCharAt` has no owners…
-guide-3026737490   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-3043466264   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_show$$i64` is not implemented: no implementation of `std.builtins.Dis…
-guide-3148620247   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$process$run` is not implemented: nested type `std.process.Process…
-guide-3500389758   # SPEC-BUG: error: no method `type_of` on `Result<Option<std.encoding.json.Value>, std.encoding.json.AccessError>`
-guide-3525785386   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `MathIntrinsic(MaxI64)` has…
-guide-3600950511   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `std.net.tls.TlsStream` has no…
+guide-3067688600   # IMPL-GAP: machine purity check refuses `Runtime(VecNew)`; a `Vec`-typed state field has no pure construction/growth path in a transition body (`pure_runtime` in hew-types/src/check/machine_effects.rs admits Bytes push/pop but not Vec) — "State field holding a Vec" guide example
 guide-3632677243   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `NumericMet…
-guide-3654370657   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-3663001713   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: periodic receives need their scheduling con…
-guide-3691955766   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-guide-3733860191   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-4043356382   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-guide-4188553549   # SPEC-BUG: error: collection method `insert` requires a mutable binding receiver declared with `var`
-guide-477660668   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: periodic receives need their scheduling con…
-guide-495688384   # SPEC-BUG: error: type `Result<string, string>` does not implement trait `Display` required by `T`
-guide-499177896   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: actor state field `last` requires an initia…
-guide-518345590   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$net$http$http_async_client$is_http_version` is not implemented: r…
-guide-596391434   # SPEC-BUG: error: transition to `Live` must produce that state on every normal path
-guide-65081784   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `MathIntrinsic(Sqrt)` has no…
-guide-661569505   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: `#[on(crash)]` needs the supervision and li…
 guide-672237462   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `ResolvedIm…
-guide-686053420   # SPEC-BUG: error: no method `free` on `std.encoding.json.Value`
 guide-797256300   # SPEC-BUG: error: type `Result<i64, string>` does not implement `Display` (f-string interpolation requires `impl Display for Result<i64, string>`)
-lang-actors-2389322868   # SNIPPET: error: expected `,` between structural members
-lang-actors-4043402549   # SNIPPET: error: expected `,` between structural members
-lang-actors-728657003   # SNIPPET: error: expected `,` between structural members
-lang-concurrency-2416957386   # SPEC-BUG: error: type mismatch: expected `Result<i64, ActorError>`, found `i64`
-lang-machines-1513254942   # SNIPPET: error: expected `,` between structural members
-lang-resources-4156835580   # SURFACE-PENDING: error: `close` on a resource type must consume its receiver; write `fn close(consume self)`
-lang-supervision-1711663616   # SNIPPET: error: expected `,` between structural members
-spec-1113028358   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `var`
-spec-14279308   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found identifier `worker`
-spec-1440196350   # SPEC-BUG: error: undefined variable `prices`
 spec-1608552429   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `select`
-spec-176194218   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
-spec-1806324319   # SPEC-BUG: error: expected `{`, found `<`
 spec-1821018001   # SPEC-BUG: error: unknown type `TcpStateEvent`
+spec-1927422927   # IMPL-GAP: generic actor bounds lost on deferred replay; `finalize_hashmap_admission` (hew-types/src/check/methods.rs) rebuilds the TypeParamScope from bare names only, discarding K/V's declared marker bounds, so `HashMap<K, V>` in a `K: Hash + Eq` actor falsely reports K failing Hash+Eq
 spec-1957460217   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `var`
 spec-2102466625   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
-spec-2117313474   # IMPL-GAP: error: `pool` is a reserved word and cannot be used as a name
 spec-2338216717   # FRAGMENT: error: E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `MyPool` child `worker1` references unknown actor `Worker`; import a public actor into t…
-spec-2549960639   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
 spec-3139797707   # SPEC-BUG: error: ordinary machine evaluation does not yet admit const parameters or composite states
 spec-3697505193   # SPEC-BUG: error: type mismatch: expected `Result<Connection, Error>`, found `()`
 spec-3920426618   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `var`
 spec-3936244856   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
-spec-580327978   # SPEC-BUG: error: `HashMap<_, V>` is not supported: `HashMap.get()` returns an owned `Option<V>`, but value type `V` contains unregistered value layout…
 spec-59372567   # SPEC-BUG: error: interleaved `event` declarations are no longer supported; declare events in an `events { … }` header at the top of the machine body
 spec-606174901   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<Node>` has no semantic valu…
 spec-656256712   # SPEC-BUG: error: type mismatch: expected `T`, found `i64`
-spec-797918988   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `match`
 spec-810979879   # SPEC-BUG: error: undefined function `process`
 std-arena-3714386937   # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
-std-bench-bench-1148614261   # E_SIR_VERIFY: ownership verification of the bench fence after the var migration; a SIR gap, not the fence
-std-builtins-172357765   # SNIPPET: warning: unused variable `r`
-std-builtins-2914383223   # SNIPPET: warning: unused variable `x`
-std-crypto-crypto-crypto-3563835951   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$crypto$crypto$sha256` is not implemented: extern `hew_sha256_hew`…
-std-crypto-encrypt-encrypt-36639839   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$crypto$crypto$random_bytes` is not implemented: extern `hew_rando…
-std-crypto-jwt-jwt-1702581364   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$crypto$jwt$encode` is not implemented: whole-scrutinee binding ma…
-std-crypto-jwt-jwt-2319513525   # SPEC-BUG: error: type mismatch: expected `string`, found `Result<string, std.crypto.jwt.JwtError>`
-std-crypto-jwt-jwt-907166255   # SPEC-BUG: error: type mismatch: expected `string`, found `Result<string, std.crypto.jwt.JwtError>`
-std-crypto-password-password-518717358   # SPEC-BUG: error: type mismatch: expected `bool`, found `Result<bool, string>`
-std-crypto-sign-sign-239785484   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$crypto$sign$keypair` is not implemented: extern `hew_ed25519_gene…
-std-encoding-base64-base64-50585750   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: mutable place root `b0` is not mutable
-std-encoding-compress-compress-528305709   # SPEC-BUG: error: type mismatch: expected `bytes`, found `Result<bytes, string>`
-std-encoding-csv-csv-1614193974   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-std-encoding-hex-hex-969621118   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: mutable place root `b0` is not mutable
-std-encoding-msgpack-msgpack-454788823   # SPEC-BUG: error: no method `len` on `Result<bytes, string>`
-std-encoding-toml-toml-2275226164   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `std.encoding.toml.Value` has n…
-std-encoding-wire-wire-509907109   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `WireCodec`…
 std-fmt-fmt-3604441172   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 std-fmt-fmt-3999788508   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_right` is not implemented: extern `hew_string_char_cou…
 std-fmt-fmt-4201864327   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
-std-io-closable-2730069804   # SNIPPET: error: expected `,` between structural members
-std-math-math-1570636689   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `MathIntrinsic(AbsI64)` has…
-std-net-dns-dns-2469722539   # SPEC-BUG: error: no method `len` on `Result<Vec<string>, std.net.NetError>`
 std-net-http-http-223475752   # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-net-http-http-2997891250   # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-net-http-http-3183813263   # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-net-http-http-833090441   # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-net-http-http_async_client-1376268559   # SNIPPET: error: expected `,` between structural members
-std-net-http-http_async_server-1420579248   # SNIPPET: error: expected `,` between structural members
-std-net-http-http_client-1253428873   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-std-net-http-http_client-1266620088   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
 std-net-net-1174313785   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `TcpAttachLocal` has no owne…
-std-net-quic-quic-2471557376   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `std.net.quic.QUICEndpoint` has…
-std-net-quic-quic-3708272752   # SNIPPET: warning: unused import: `net`
-std-net-quic-quic-911054652   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `std.net.quic.QUICEndpoint` has…
-std-net-quic-quic-988451063   # SNIPPET: warning: unused variable `reply`
-std-net-smtp-smtp-2268302232   # IMPL-GAP: internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "<module>", callable: None, kind: InvalidResource…
-std-net-smtp-smtp-3537159581   # IMPL-GAP: internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "<module>", callable: None, kind: InvalidResource…
-std-net-tls-tls-1070709075   # SNIPPET: error: expected `,` between structural members
-std-net-tls-tls-3739224804   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `std.net.tls.TlsStream` has no…
-std-net-tls-tls-3860521748   # SNIPPET: warning: unused import: `net`
-std-net-websocket-websocket-1006791397   # SNIPPET: error: expected `,` between structural members
-std-net-websocket-websocket-1182556089   # IMPL-GAP: internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "<module>", callable: None, kind: InvalidResource…
-std-net-websocket-websocket-3042290581   # SNIPPET: warning: unused import: `net`
-std-net-websocket-websocket-3133964398   # SNIPPET: warning: unused import: `net`
-std-net-websocket-websocket-544908043   # IMPL-GAP: internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "<module>", callable: None, kind: InvalidResource…
-std-path-2517442590   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$path$strip_trailing_slash` is not implemented: extern `hew_string…
-std-path-2823696642   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$path$combine` is not implemented: extern `hew_string_ends_with` i…
-std-path-3924914107   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$path$strip_trailing_slash` is not implemented: extern `hew_string…
-std-path-4167217831   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$path$strip_trailing_slash` is not implemented: extern `hew_string…
-std-path-756438956   # SNIPPET: warning: unused variable `ext`
-std-process-840359737   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-std-stream-3990412743   # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-stream-684991789   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$stream$pipe` is not implemented: nested type `std.stream.StreamPa…
 std-string-2691568155   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 std-string-2921449409   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_right` is not implemented: extern `hew_string_char_cou…
-std-string-3410300676   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$is_ascii` is not implemented: runtime family `StringCharAt…
-std-string-4247942386   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$ends_with` is not implemented: extern `hew_string_ends_wit…
 std-string-4291496880   # SNIPPET: warning: unused variable `s`
-std-text-semver-semver-658291203   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$text$semver$component_as_i64` is not implemented: a divergent blo…
 std-text-unicode-unicode-2512634711   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$text$unicode$codepoint_at_option` is not implemented: runtime fam…
 std-text-unicode-unicode-2621802334   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$text$unicode$rune_count` is not implemented: extern `hew_string_c…
 std-text-unicode-unicode-2849357877   # SNIPPET: warning: unused variable `cps2`
 std-text-unicode-unicode-4280100000   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$text$unicode$codepoint_at_option` is not implemented: runtime fam…
-std-time-cron-cron-2856713846   # IMPL-GAP: internal compiler error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "__hew_fn_main", callable: Some(CallableId(52)),…
-std-vec-1139432474   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`
-std-vec-1483634110   # SPEC-BUG: error: collection method `push` requires a mutable binding receiver declared with `var`

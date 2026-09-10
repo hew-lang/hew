@@ -5873,10 +5873,12 @@ the `else` arm. `||` cannot join a `let` pattern with anything. The condition
 is evaluated left to right and stops at the first operand that fails.
 
 ```hew
-if let .Some(n) = first && n > 10 && let .Ok(text) = second {
-    println(f"{n}: {text}");
-} else if let .None = first {
-    println("empty");
+fn describe_chain(first: Option<i64>, second: Result<string, string>) {
+    if let .Some(n) = first && n > 10 && let .Ok(text) = second {
+        println(f"{n}: {text}");
+    } else if let .None = first {
+        println("empty");
+    }
 }
 ```
 
@@ -5899,11 +5901,13 @@ returns `Never`; a block that can fall through is `E_LET_ELSE_FALLTHROUGH`.
 The bindings of the pattern are in scope after the statement.
 
 ```hew
+import std.string;
+
 fn port(config: HashMap<string, string>) -> Result<i64, string> {
     let .Some(raw) = config.get("port") else {
         return Err("port missing");
     };
-    let .Ok(port) = raw.try_to_int() else {
+    let .Ok(port) = string.to_int(raw) else {
         return Err(f"port is not a number: {raw}");
     };
     Ok(port)

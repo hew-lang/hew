@@ -5705,6 +5705,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             HirLiteral::Unit if self.ty(&expr.ty) == ResolvedTy::Unit => {
                 self.emit(expr, SemOpKind::ConstUnit)
             }
+            // An integer-spelled literal the checker resolved as a float is
+            // the same constant at a float width (D421 admitted the value
+            // against that type), so it materializes as the float constant
+            // rather than an integer plus a cast.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "the checker admitted this literal against its resolved float type"
+            )]
+            HirLiteral::Integer(value) if self.ty(&expr.ty).is_float() => {
+                self.emit(expr, SemOpKind::ConstFloat(*value as f64))
+            }
             HirLiteral::Integer(value) => {
                 if !self.ty(&expr.ty).is_integer() {
                     return Err(format!(

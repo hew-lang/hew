@@ -1,0 +1,27 @@
+// An integer-spelled literal whose checker-resolved type is a float is the
+// same constant at float width: it reaches a binding, a record field, a call
+// argument and an accumulator without a written decimal point.
+type Reading {
+    level: f64,
+}
+
+fn scale(factor: f64, value: f64) -> f64 {
+    factor * value
+}
+
+fn main() {
+    let x: f64 = 42;
+    let half: f64 = x / 2;
+    let spelled = 21.0;
+    println(f"x={x} half={half} same={half == spelled}");
+    println(scale(3, 1.5));
+    let reading = Reading { level: 7 };
+    println(reading.level + 0.5);
+    var total: f64 = 0;
+    for i in 0..4 {
+        total = total + 1;
+    }
+    println(total);
+    let narrow: f32 = 5;
+    println(narrow / 2);
+}

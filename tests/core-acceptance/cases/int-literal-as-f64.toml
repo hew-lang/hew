@@ -1,0 +1,10 @@
+[[case]]
+id = "int-literal-as-f64"
+intent = "An integer-spelled literal resolved as `f64` or `f32` materializes as that float constant in a binding, a record field, a call argument and an accumulator, and equals the same value written with a decimal point."
+source = "cases/int-literal-as-f64.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "x=42 half=21 same=true\n4.5\n7.5\n4\n2.5\n"
+exit = 0

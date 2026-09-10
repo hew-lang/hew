@@ -1309,9 +1309,10 @@ statements.
 
 - The entry file is identified by `dir_name == file_stem` (e.g.
   `greeting/greeting.hew`). If no such file exists, import resolution fails.
-- The directory is the module's only import spelling. Neither the entry file
-  (`import greeting.greeting;`) nor a peer file is importable on its own; both
-  are refused, naming `greeting`.
+- The directory is the module's only import spelling. The entry file
+  (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
+  package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
+  name `greeting` as the fix.
 - All other `.hew` files at the **top level** of the directory are peer files.
   Sub-directories are not automatically included; they must be imported
   explicitly.
@@ -1461,6 +1462,12 @@ to for that type.
 
 - Records and enums are `Eq` and `Hash` structurally: field by field, variant by
   variant, with no declaration.
+- `bytes` is ordinary data and carries `Eq` and `Hash` like `string` (D451):
+  both are valid `HashMap` keys on their own, and a record or enum with a
+  `bytes` field derives `Eq`/`Hash` over it structurally like any other field.
+  A user alias over a primitive (`type Name = string;`) accepts trait `impl`s
+  written on the alias, and those impls may still call the primitive's own
+  methods.
 - `Ord` and `PartialOrd` are derived lexicographically by field order when every
   field is itself ordered. Primitive numeric types (`i8`–`i64`, `u8`–`u64`,
   `f32`, `f64`, `isize`, `usize`, `char`) are ordered.
@@ -3406,6 +3413,29 @@ replacement, indexed and named captures, and multi-match capture tables.
 `close()` releases early, and the implicit scope-exit drop covers the rest.
 Pattern construction is currently fail-fast: `regex.new()` panics for invalid
 syntax rather than returning a structured compile error.
+
+**A `re"..."` literal is also a match-arm pattern (normative, D469).** Each
+literal in a module compiles once, in that module's entry prologue, into a
+private compiled-pattern table; a match arm tests the scrutinee — a borrowed
+`string` — against its compiled handle. A module using a regex-literal arm
+must have an entry callable (`main` or an exported entry point) to host that
+prologue. Capture bindings in a regex arm are not yet admitted.
+
+```hew
+fn classify(s: string) -> i64 {
+    match s {
+        re"^[0-9]+$" => 0,
+        re"^[a-zA-Z]+$" => 1,
+        _ => 2,
+    }
+}
+
+fn main() {
+    println(classify("123"));
+    println(classify("abc"));
+    println(classify("a1b2"));
+}
+```
 
 ---
 

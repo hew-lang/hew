@@ -347,7 +347,7 @@ enum Colour { Red, Green, Blue, }
 fn code(c: Colour) -> i64 { match c { .Red => 1, .Green => 2, .Blue => 3 } }
 ```
 
-Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it.
+Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it. The same rule covers tuple and record scrutinees (D464): a match that does not cover every combination of a slot's constructors, literals, wildcards and bindings is a compile error naming the missing case, never a runtime fallthrough.
 
 ### Full-field record pattern
 
@@ -585,7 +585,10 @@ fn main() {
 ```
 
 Prefer for-in for read-only traversal of any element type, including
-`Vec<enum>`.
+`Vec<enum>`. for-in iterates a snapshot taken when the loop starts (D474), so
+mutating `v` in the loop body — push, remove, reassign an index — is defined,
+not undefined behaviour: the loop keeps reading its own copy and never
+observes the mutation.
 
 ### Index-loop with v[i] or .get(i)
 
@@ -3234,11 +3237,13 @@ itself in a `HashMap`/`HashSet` lookup, and dedup over records works correctly.
 The hash of a float field is computed from the same bit pattern, so `==`
 implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 
-> **Sharp edge:** `Vec<f64>` and bare scalar `==` on `f64` remain IEEE.
-> `[nan].contains(nan)` is `false` (scalar IEEE `==`, NaN ≠ NaN), while
-> `HashSet<f64>` (which stores `f64` as a structural position) treats two
-> identical NaN bit-patterns as equal. The reflexive/bitwise guarantee does
-> not extend to `Vec<f64>.contains` or direct `f64 == f64` expressions.
+> **Every container agrees (D476):** `Vec<f64>.contains`, `HashSet<f64>`
+> membership and `HashMap<f64, V>` keys all compare by bit pattern, the same
+> rule as a float-bearing record field. `[nan].contains(nan)` is `true`
+> (reflexive bitwise equality), even though the bare scalar expression
+> `nan == nan` is `false` (IEEE). A per-container exception would create a
+> second equality authority, so only a bare `f64 == f64`/`f32 == f32`
+> expression keeps IEEE semantics.
 
 ```hew
 type Coord { x: f64, y: f64 }

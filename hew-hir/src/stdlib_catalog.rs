@@ -544,14 +544,10 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_assert",
         },
     ),
-    // Class A: core math builtins lowered directly by codegen.
-    direct(
-        "sqrt",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
+    // Class A: the closed i64/f64 overloads `math.abs`, `math.min` and
+    // `math.max` dispatch to from the checker's `GenericMathIntrinsic`
+    // rewrite. These are HIR callee symbols, not source spellings: the math
+    // functions are only reachable as `math.*` (A409).
     direct(
         "abs",
         BuiltinClass::ClassA,
@@ -591,62 +587,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         "max_f",
         BuiltinClass::ClassA,
         F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "pow",
-        BuiltinClass::ClassA,
-        F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "floor",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "ceil",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "round",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "exp",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "log",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "sin",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "cos",
-        BuiltinClass::ClassA,
-        F64,
         BuiltinTy::F64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),

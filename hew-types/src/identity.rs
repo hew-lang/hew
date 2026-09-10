@@ -284,17 +284,41 @@ impl IdentityTable {
     /// Mint (or resolve) the identity of a graph module with canonical dotted
     /// path `canonical_path`. Dedupe axis is the canonical source: a second
     /// spelling reaching the same source resolves to the existing identity.
+    ///
+    /// A render collision with a DIFFERENT source is disambiguated fail-closed
+    /// (`#mod` suffix, appended until the render is genuinely unique), exactly
+    /// as `mint_source_file_module` and `mint_root_module` do: returning the
+    /// established identity would equate two distinct sources, and every
+    /// declaration table keyed by the render would merge with it. Sourceless
+    /// mints (compiler-owned surfaces such as `std.builtins`) keep the path as
+    /// their only dedupe axis.
     pub(crate) fn mint_module(&mut self, canonical_path: &str, sources: &[PathBuf]) -> ModuleId {
         let source_key = sources.first().map(|s| Self::intern_source_key(s));
-        if let Some(key) = &source_key {
-            if let Some(existing) = self.by_source.get(key) {
+        let Some(key) = source_key else {
+            if let Some(existing) = self.by_path.get(canonical_path) {
                 return *existing;
             }
-        }
-        if let Some(existing) = self.by_path.get(canonical_path) {
+            return self.insert(canonical_path.to_string(), None);
+        };
+        if let Some(existing) = self.by_source.get(&key) {
             return *existing;
         }
-        self.insert(canonical_path.to_string(), source_key)
+        let mut render = canonical_path.to_string();
+        while let Some(established) = self.by_path.get(&render) {
+            // A path minted without a source is a placeholder for this very
+            // module; adopt it rather than splitting the render.
+            if self.entries[established.0 as usize]
+                .canonical_source
+                .is_none()
+            {
+                let id = *established;
+                self.entries[id.0 as usize].canonical_source = Some(key.clone());
+                self.by_source.insert(key, id);
+                return id;
+            }
+            render.push_str("#mod");
+        }
+        self.insert(render, Some(key))
     }
 
     /// Mint the ROOT compilation unit's identity from its canonical source.
@@ -762,6 +786,43 @@ mod tests {
                 "render lookup must stay stable after later mints"
             );
         }
+    }
+
+    /// Two distinct sources reaching `mint_module` under one canonical path
+    /// must mint two identities. Returning the established one would equate
+    /// the declarations of two files, which is the merge this table exists to
+    /// prevent.
+    #[test]
+    fn module_render_colliding_with_distinct_source_is_disambiguated() {
+        let mut table = IdentityTable::new();
+        let first = table.mint_module("lib", &[PathBuf::from("/one/lib.hew")]);
+        let second = table.mint_module("lib", &[PathBuf::from("/two/lib.hew")]);
+        assert_ne!(first, second, "distinct sources must never merge");
+        assert_eq!(table.module_path(first), "lib");
+        assert_eq!(table.module_path(second), "lib#mod");
+        assert_eq!(
+            table.module_path_for_source(Path::new("/one/lib.hew")),
+            Some("lib")
+        );
+        assert_eq!(
+            table.module_path_for_source(Path::new("/two/lib.hew")),
+            Some("lib#mod")
+        );
+    }
+
+    /// A sourceless mint (`std.builtins`) is a placeholder for the module, not
+    /// a competing identity: the first source to claim that path adopts it.
+    #[test]
+    fn sourceless_module_render_is_adopted_by_its_first_source() {
+        let mut table = IdentityTable::new();
+        let placeholder = table.mint_module("std.builtins", &[]);
+        let sourced = table.mint_module("std.builtins", &[PathBuf::from("/std/builtins.hew")]);
+        assert_eq!(placeholder, sourced, "one module, one identity");
+        assert_eq!(table.module_path(sourced), "std.builtins");
+        assert_eq!(
+            table.module_path_for_source(Path::new("/std/builtins.hew")),
+            Some("std.builtins")
+        );
     }
 
     #[test]

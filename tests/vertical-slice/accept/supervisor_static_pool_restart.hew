@@ -1,22 +1,18 @@
-// v0.6 static supervisor pool — per-member restart + live re-resolution (A209).
+// Static supervisor pool — per-member restart and live re-resolution.
 //
-// A `simple_one_for_one` pool member crashes; the supervisor restarts it via
-// the now-filled SIMPLE_ONE_FOR_ONE arm (per-member `restart_child_from_spec`),
-// and the Vec-like accessor `sup.workers[i]` re-resolves to the FRESH member
-// through its live static slot — no stale PID cached.
+// A `simple_one_for_one` pool member crashes. Each member occupies its own
+// supervised slot, so only that member restarts, and `sup.workers[i]`
+// re-resolves through the live slot to the fresh member — no stale PID cached.
 //
-// The barrier is `hew_supervisor_wait_restart` (the same deterministic C-ABI
-// barrier `supervisor_child_after_restart.hew` uses): it returns only after
-// `notify_restart` fires, which runs AFTER the restarted member is stored Live.
-// So `sup.workers[0]` is guaranteed Live when the barrier returns; a Transient
-// slot would trap (exit 133).
+// `await_restart sup.workers[0]` is the barrier: it returns only once that
+// member's own slot is Live again (or permanently gone), so the following
+// access is guaranteed to reach the restarted member.
 //
 // Exit code 7 proves:
-//   - the SIMPLE_ONE_FOR_ONE arm restarted the crashed pool member (was a no-op
-//     before S5 — the member would never come back and the re-access would trap);
-//   - `sup.workers[0]` re-resolved through the LIVE static slot to the restarted
-//     member (a stale PID would reach the dead actor and trap / Err);
-//   - the restarted member answers with value 7 (its init template, re-applied).
+//   - the crashed member was restarted per member, not as a whole pool;
+//   - `sup.workers[0]` re-resolved through the live slot (a stale PID would
+//     reach the dead actor and trap);
+//   - the restarted member answers with value 7, its init template re-applied.
 actor Worker {
     var value: i64,
     receive fn get_value() -> i64 {
@@ -34,16 +30,6 @@ supervisor Pool {
     pool workers: Worker(value: 7) count: 2,
 }
 
-// This fixture is blocked twice over and does not run today: SIR refuses pool
-// supervision (`pool supervision needs its fungible-slot contract`), and
-// `await_restart` — the barrier every other supervisor fixture uses — accepts
-// only a static child accessor, not a pool member. The extern below passes a
-// `LocalPid` where the runtime reads a `*mut HewSupervisor`, so it must not be
-// copied into a new fixture; a pool restart needs a pool-aware barrier.
-extern "C" {
-    fn hew_supervisor_wait_restart(sup: LocalPid<Pool>, target: i64, timeout_ms: i64) -> i64;
-}
-
 fn main() -> i64 {
     let sup = spawn Pool;
 
@@ -58,22 +44,11 @@ fn main() -> i64 {
         },
     }
 
-    // Crash member 0 (fire-and-forget). The supervisor restarts it per-member.
+    // Crash member 0 (fire-and-forget). Only its own slot restarts.
     let _ = m0.crash_me();
 
-    // Wait for exactly one completed restart cycle (barrier returns after the
-    // restarted member is stored Live).
-    let restarted = unsafe {
-        hew_supervisor_wait_restart(sup, 1, 5000)
-    };
-    if restarted == 0 {
-        // Timed out — the SIMPLE_ONE_FOR_ONE arm did not restart the member.
-        return 0;
-    }
-
-    // Re-resolve member 0 through the accessor: the live static slot now holds
-    // the restarted actor. A Transient slot would trap (exit 133).
-    let m0b = sup.workers[0];
+    // Wait for that member's slot to be Live again, then read through it.
+    let m0b = await_restart sup.workers[0];
     match m0b.get_value() {
         .Ok(v) => v,
         .Err(_) => 0,

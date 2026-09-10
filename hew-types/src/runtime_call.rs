@@ -12,6 +12,9 @@
 mod array;
 pub use array::ArrayValueOp;
 
+mod supervisor_pool;
+pub use supervisor_pool::SupervisorPoolOp;
+
 mod async_io;
 pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
 mod tcp;
@@ -137,6 +140,10 @@ pub enum RuntimeValueKind {
     FixedArray,
     /// The element of that exact fixed-size array receiver.
     ArrayElement,
+    /// The exact `SupervisorPool<S, T>` receiver.
+    PoolView,
+    /// One member's role, `ChildRef<T>`, from that pool receiver.
+    PoolMember,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
     /// The exact checked result type for a compiler-owned operation whose
@@ -240,6 +247,16 @@ impl RuntimeValueKind {
             Self::TypeArgument(index) => {
                 collection_type_arguments(receiver?)?.1.get(index)?.clone()
             }
+            Self::PoolView => {
+                let view = receiver?;
+                supervisor_pool_member_type(view)?;
+                view.clone()
+            }
+            Self::PoolMember => ResolvedTy::named_builtin(
+                BuiltinType::ChildRef.canonical_name(),
+                BuiltinType::ChildRef,
+                vec![supervisor_pool_member_type(receiver?)?.clone()],
+            ),
             Self::Applied(builtin, arguments) => ResolvedTy::named_builtin(
                 builtin.canonical_name(),
                 builtin,
@@ -545,6 +562,9 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     if let Some((builtin, _)) = collection_type_arguments(ty) {
         return Some(builtin);
     }
+    if supervisor_pool_member_type(ty).is_some() {
+        return Some(BuiltinType::SupervisorPool);
+    }
     match ty {
         ResolvedTy::Named {
             builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink | BuiltinType::LocalPid)),
@@ -633,6 +653,19 @@ pub fn collection_type_arguments(ty: &ResolvedTy) -> Option<(BuiltinType, &[Reso
         {
             Some((*builtin, args))
         }
+        _ => None,
+    }
+}
+
+/// The member type of a `SupervisorPool<S, T>` receiver.
+#[must_use]
+pub fn supervisor_pool_member_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::SupervisorPool),
+            args,
+            ..
+        } if args.len() == 2 => args.get(1),
         _ => None,
     }
 }
@@ -1927,6 +1960,8 @@ pub enum RuntimeCallFamily {
     /// Final semantic values; target lowering chooses layout-backed runtime entry points.
     Vector(VecValueOp),
     Array(ArrayValueOp),
+    /// `sup.pool[i]`, `sup.pool.get(i)` and `await_restart sup.pool[i]`.
+    SupervisorPool(SupervisorPoolOp),
     Map(MapValueOp),
     Set(SetValueOp),
     VecAppend,
@@ -3290,6 +3325,7 @@ impl RuntimeCallFamily {
                 SetValueOp::Elements => "set.value.elements",
             },
             Self::Array(op) => op.symbol(),
+            Self::SupervisorPool(op) => op.symbol(),
             Self::Vector(op) => match op {
                 VecValueOp::New => "vec.value.new",
                 VecValueOp::Len => "vec.value.len",
@@ -3728,6 +3764,11 @@ impl RuntimeCallFamily {
             "hew_vec_is_empty" => Self::VecIsEmpty,
             "hew_vec_join_str" => Self::VecJoinStr,
             "hew_vec_len" => Self::VecLen,
+            "supervisor.pool.member" => Self::SupervisorPool(SupervisorPoolOp::Member),
+            "supervisor.pool.get" => Self::SupervisorPool(SupervisorPoolOp::Get),
+            "supervisor.pool.await_restart_member" => {
+                Self::SupervisorPool(SupervisorPoolOp::AwaitRestartMember)
+            }
             "array.value.len" => Self::Array(ArrayValueOp::Len),
             "array.value.index" => Self::Array(ArrayValueOp::Index),
             "array.value.index_borrow" => Self::Array(ArrayValueOp::IndexBorrow),
@@ -4083,6 +4124,7 @@ impl RuntimeCallFamily {
     const fn collection_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         match self {
             Self::Array(op) => Some(op.contract()),
+            Self::SupervisorPool(op) => Some(op.contract()),
             Self::Vector(op) => Some(op.contract()),
             Self::Map(op) => Some(op.contract()),
             Self::Set(op) => Some(op.contract()),
@@ -4584,6 +4626,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::Receiver(_)
                     | RuntimeValueKind::FixedArray
                     | RuntimeValueKind::ArrayElement
+                    | RuntimeValueKind::PoolView
+                    | RuntimeValueKind::PoolMember
                     | RuntimeValueKind::ChannelHalf(_)
                     | RuntimeValueKind::ChannelHalfResult(_)
                     | RuntimeValueKind::ChannelPair
@@ -4761,6 +4805,9 @@ impl RuntimeCallFamily {
             F::FileRead(_)
             | F::Tcp(_)
             | F::Array(_)
+            // The pool member barrier blocks its calling thread; SIR refuses
+            // it inside an actor, so no accessor suspends.
+            | F::SupervisorPool(_)
             | F::Vector(_)
             | F::Map(_)
             | F::Set(_)
@@ -5560,6 +5607,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
             F::FileRead(_) => out.extend(FileReadOp::iter().map(F::FileRead)),
             F::Tcp(_) => out.extend(TcpOp::iter().map(F::Tcp)),
             F::Array(_) => out.extend(ArrayValueOp::iter().map(F::Array)),
+            F::SupervisorPool(_) => {
+                out.extend(SupervisorPoolOp::iter().map(F::SupervisorPool));
+            }
             F::Vector(_) => out.extend(VecValueOp::iter().map(F::Vector)),
             F::Map(_) => out.extend(MapValueOp::iter().map(F::Map)),
             F::Set(_) => out.extend(SetValueOp::iter().map(F::Set)),

@@ -1,0 +1,67 @@
+actor Worker {
+    var id: i64,
+    var tag: string,
+
+    receive fn id_of() -> i64 { id }
+    receive fn tag_len() -> i64 { tag.len() }
+    receive fn bump() -> i64 { id = id + 1; id }
+    receive fn shrink() -> i64 { tag = "x"; tag.len() }
+    receive fn crash_me() { panic("pool member failed"); }
+}
+
+supervisor Farm {
+    strategy: simple_one_for_one,
+    intensity: 5 within 60s,
+
+    pool workers: Worker(id: 3, tag: "pool-member") count: 4,
+}
+
+fn main() {
+    let farm = spawn Farm;
+    let workers = farm.workers;
+    println(workers.len());
+
+    match workers.get(4) {
+        .Some(_) => println("member 4 resolved"),
+        .None => println("no member 4"),
+    }
+
+    // Give every member its own mutation, so a whole-pool restart would show.
+    for i in 0..4 {
+        match workers[i].bump() {
+            .Ok(value) => println(value),
+            .Err(_) => println("bump failed"),
+        }
+    }
+
+    // Member 0 mutates its owned state, then crashes.
+    let m0 = workers[0];
+    match m0.shrink() {
+        .Ok(value) => println(value),
+        .Err(_) => println("shrink failed"),
+    }
+    let _ = m0.crash_me();
+
+    // Only member 0's slot restarts; its init template is re-applied, owned
+    // state and all.
+    let fresh = await_restart farm.workers[0];
+    match fresh.id_of() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    match fresh.tag_len() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+
+    // The other members kept their own mutation: the restart was per member.
+    for i in 1..4 {
+        match workers[i].id_of() {
+            .Ok(value) => println(value),
+            .Err(_) => println("read failed"),
+        }
+    }
+
+    supervisor_stop(farm);
+    println("stopped");
+}

@@ -1021,7 +1021,11 @@ fn require_type_shapes(
         // The actor parameter of `RemotePid<T>` is phantom at the ABI
         // boundary. It selects checked dispatch and codec contracts elsewhere,
         // but is not an independently carried value that needs a SIR shape.
-        if ty.is_builtin(hew_types::BuiltinType::RemotePid) {
+        // A pool view's supervisor and member parameters are the same: they
+        // name the role its accessors mint, not a value the view carries.
+        if ty.is_builtin(hew_types::BuiltinType::RemotePid)
+            || ty.is_builtin(hew_types::BuiltinType::SupervisorPool)
+        {
             continue;
         }
         if actor::declaration(module, &ty).is_none()
@@ -2688,6 +2692,9 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::LocalPid)
         || ty.is_builtin(hew_types::BuiltinType::LambdaPid)
         || ty.is_builtin(hew_types::BuiltinType::ChildRef)
+        // A pool view is the same fixed-width pair a role is: the owning
+        // supervisor and a slot.
+        || ty.is_builtin(hew_types::BuiltinType::SupervisorPool)
         // Distributed identity carriers are fixed-width BitCopy values. Their
         // source fields are intentionally not constructible, so they enter SIR
         // as exact compiler-owned ABI carriers rather than user records.
@@ -5091,6 +5098,18 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, String> {
+        // A supervisor pool accessor is decided by the checker, not by the
+        // expression shape: `sup.pool[i]` and `sup.pool.get(i)` are an ordinary
+        // index and call until this site table says otherwise.
+        if let Some(kind) = self
+            .service
+            .module
+            .pool_accessor_sites
+            .get(&expr.site)
+            .map(|accessor| accessor.kind)
+        {
+            return self.lower_pool_accessor(expr, kind, false);
+        }
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
             HirExprKind::Select(select) => match self.lower_task_select(expr, select)? {

@@ -626,47 +626,63 @@ impl Checker {
             }
 
             // AwaitRestart: `await_restart <supervised-child>` — suspend until the
-            // named static supervised child's slot is Live again, then resume with
-            // the same stable `ChildRef<ChildType>`. The operand MUST be a
-            // static supervised-child accessor (recorded in
-            // `supervisor_child_slots` by the inner `FieldAccess` synthesis, kind
-            // `Static`). The result type is the same `ChildRef<ChildType>` — by
-            // construction the slot is Live after a completed restart; a
-            // permanently-Dead child fails closed at runtime (resumes immediately)
-            // rather than hanging, so the bare form never yields an `Option`.
+            // named slot is Live again, then resume with the same stable
+            // `ChildRef<ChildType>`. The operand names one slot: a static child
+            // accessor (recorded in `supervisor_child_slots`, kind `Static`) or
+            // one pool member (`sup.pool[i]`, recorded in `pool_accessor_sites`
+            // as `Index`). A whole pool names many slots and has no single
+            // restart signal, so it is refused. The result type is the same
+            // `ChildRef<ChildType>` — by construction the slot is Live after a
+            // completed restart; a permanently-Dead child fails closed at
+            // runtime (resumes immediately) rather than hanging, so the bare
+            // form never yields an `Option`.
             Expr::AwaitRestart(inner) => {
                 // Synthesize the operand first; this records the supervisor child
-                // slot side-table entry keyed by the inner expression's span.
+                // slot and pool accessor side-table entries keyed by the inner
+                // expression's span.
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
                 let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
-                match self.supervisor_child_slots.get(&inner_key).cloned() {
-                    Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
-                        // Stable role handle: same `ChildRef<ChildType>` the
-                        // accessor produced. Carry the discriminator forward — the
-                        // side-table entry already keys MIR lowering on this span.
-                        inner_ty
-                    }
-                    Some(_pool_slot) => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            "`await_restart` applies to a static supervised child \
-                             (`child name: Type`), not a pool member; pool members \
-                             do not have a per-slot restart signal"
-                                .to_string(),
-                        );
-                        Ty::Error
-                    }
-                    None => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            "`await_restart` expects a supervised-child accessor \
-                             (`await_restart sup.child`); its operand is not a \
-                             supervisor child slot"
-                                .to_string(),
-                        );
-                        Ty::Error
+                let member = matches!(
+                    self.pool_accessor_sites
+                        .get(&inner_key)
+                        .map(|accessor| accessor.kind),
+                    Some(crate::check::types::PoolAccessorKind::Index)
+                );
+                if member {
+                    // One pool member's own slot: the same `ChildRef<ChildType>`
+                    // the indexed accessor produced.
+                    inner_ty
+                } else {
+                    match self.supervisor_child_slots.get(&inner_key).cloned() {
+                        Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
+                            // Stable role handle: same `ChildRef<ChildType>` the
+                            // accessor produced. Carry the discriminator forward — the
+                            // side-table entry already keys MIR lowering on this span.
+                            inner_ty
+                        }
+                        Some(_pool_slot) => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`await_restart` waits on one supervised slot; a pool \
+                                 names many, so wait on a member with \
+                                 `await_restart sup.pool[i]`"
+                                    .to_string(),
+                            );
+                            Ty::Error
+                        }
+                        None => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`await_restart` expects a supervised-child accessor \
+                                 (`await_restart sup.child` or `await_restart \
+                                 sup.pool[i]`); its operand is not a supervisor \
+                                 child slot"
+                                    .to_string(),
+                            );
+                            Ty::Error
+                        }
                     }
                 }
             }

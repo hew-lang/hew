@@ -677,6 +677,15 @@ fn primitive_repr(
             integer_layout(ctx, target, pointer_bits)?,
             integer_layout(ctx, target, 32)?,
         ]),
+        // A pool view addresses its members the same way a role addresses one
+        // child: the owning supervisor and the first of the pool's consecutive
+        // slots. The member count is a declaration fact, so it is not carried.
+        pool if pool.is_builtin(hew_types::BuiltinType::SupervisorPool) => {
+            PhysicalRepr::Struct(vec![
+                integer_layout(ctx, target, pointer_bits)?,
+                integer_layout(ctx, target, 32)?,
+            ])
+        }
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         encoding if hew_mir::physical::encoding_format(encoding).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
@@ -4246,6 +4255,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 return self.emit_vector_call(
                     (operation, glue),
                     transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
+            PhysicalRuntimeAction::SupervisorPool { operation, option } => {
+                return self.emit_supervisor_pool_member(
+                    operation,
+                    option,
+                    &transfers.iter().map(argument_source).collect::<Vec<_>>(),
                     required_result()?,
                     normal,
                     failure,

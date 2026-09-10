@@ -2221,12 +2221,11 @@ run_accept_expect_status "supervisor_owned_child_init_restart" 10
 # `leaks --atExit` on macOS.
 run_accept_expect_status "supervisor_literal_only_config_param" 0
 
-# v0.6 static supervisor pool (A209/A212): `pool workers: Worker count: 3`
-# spawns 3 fungible members into pool_slots[] at bootstrap and the Vec-like
-# accessor reaches them — `sup.workers.len()` is 3 and `sup.workers[i]` round-
-# trips to each Live member. Exit 24 = len(3) + three members × id(7); a wrong
-# count or an unreachable member (trap → exit 133) would change it. This closes
-# the empty-pool_slots gap (#2229): codegen now spawns + registers pool members.
+# Static supervisor pool: `pool workers: Worker count: 3` registers 3 fungible
+# members in consecutive supervised slots and the Vec-like accessor reaches
+# them — `sup.workers.len()` is 3 and `sup.workers[i]` round-trips to each Live
+# member. Exit 24 = len(3) + three members × id(7); a wrong count or an
+# unreachable member (trap → exit 133) would change it.
 run_accept_expect_status "supervisor_static_pool" 24
 
 # Safe pool lookup: in-range members produce Some live handles with exact
@@ -2270,20 +2269,18 @@ expect_check_fail_contains \
 # trapping index, and safe get through the first-class pool view.
 run_accept_expect_stdout "supervisor_pool_field_access"
 
-# v0.6 static pool per-member restart + live re-resolution (A209): a pool member
-# crashes, the SIMPLE_ONE_FOR_ONE restart arm restarts it per-member, and
-# `sup.workers[i]` re-resolves through the LIVE static slot to the restarted
-# member. Deterministic via the hew_supervisor_wait_restart barrier (returns
-# after the member is stored Live). Exit 7 = the restarted member's value; a
-# no-op arm (pre-S5) or a stale-PID re-access would trap (exit 133).
+# Static pool per-member restart and live re-resolution: a pool member crashes,
+# only its own slot restarts, and `sup.workers[i]` re-resolves through that live
+# slot to the restarted member. Deterministic via `await_restart sup.workers[0]`,
+# which returns after the member is stored Live. Exit 7 = the restarted member's
+# value; a whole-pool restart or a stale-PID re-access would change it.
 run_accept_expect_status "supervisor_static_pool_restart" 7
 
-# v0.6 static pool OOB-index hardening (#2244): a huge i64 index (2^32 + 1)
-# used to be truncated to i32 before the runtime bounds-check and silently
-# wrap back into range, aliasing an unrelated live member (here, member 1)
-# instead of trapping OOB. The runtime now bounds-checks the real,
-# untruncated index, so this must trap (Vec[i] OOB parity) instead of
-# resolving to any member; exit 0/42 would mean the wraparound regressed.
+# Static pool OOB-index hardening (#2244): a huge i64 index (2^32 + 1) must not
+# be narrowed before the bounds test, or it wraps back into range and aliases an
+# unrelated live member (here, member 1). The accessor compares the caller's
+# untruncated index against the declared member count, so this traps (Vec[i] OOB
+# parity); exit 0/42 would mean the wraparound regressed.
 run_accept_expect_trap "supervisor_static_pool_huge_index_traps" "IndexOutOfBounds"
 
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT

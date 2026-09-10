@@ -713,6 +713,14 @@ pub enum ActorOperation {
         child: u32,
         owner_is_role: bool,
     },
+    /// Produce a `pool` child's view: the owning supervisor and the first of
+    /// the pool's consecutive member slots. The member count is a declaration
+    /// fact, so the view carries only what varies at runtime.
+    SupervisorPoolView {
+        supervisor: crate::SupervisorId,
+        child: u32,
+        owner_is_role: bool,
+    },
 }
 
 impl ActorOperation {
@@ -726,6 +734,7 @@ impl ActorOperation {
         let (Self::SupervisorSpawn(id)
         | Self::SupervisorChild { supervisor: id, .. }
         | Self::SupervisorAwaitRestart { supervisor: id, .. }
+        | Self::SupervisorPoolView { supervisor: id, .. }
         | Self::SupervisorStop(id)
         | Self::SupervisorAwaitClosed(id)
         | Self::SupervisorRoleAwaitClosed { supervisor: id, .. }) = self
@@ -767,6 +776,18 @@ impl ActorOperation {
                     supervisor.handle_ty.clone()
                 }],
                 supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
+            ),
+            Self::SupervisorPoolView {
+                child,
+                owner_is_role,
+                ..
+            } => consume(
+                vec![if *owner_is_role {
+                    supervisor.child_ref_ty()
+                } else {
+                    supervisor.handle_ty.clone()
+                }],
+                supervisor.pool_view_ty(*child as usize, actors, supervisors)?,
             ),
             Self::SupervisorRoleAwaitClosed { .. } => {
                 consume(vec![supervisor.child_ref_ty()], ResolvedTy::Unit)
@@ -863,6 +884,7 @@ impl ActorOperation {
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorPoolView { .. }
             | Self::SupervisorAwaitClosed(_)
             | Self::SupervisorRoleAwaitClosed { .. }
             | Self::SupervisorStop(_) => return self.supervisor_signature(actors, supervisors),
@@ -895,6 +917,7 @@ impl ActorOperation {
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorAwaitRestart { .. }
+            | Self::SupervisorPoolView { .. }
             | Self::SupervisorAwaitClosed(_)
             | Self::SupervisorRoleAwaitClosed { .. }
             | Self::SupervisorStop(_) => unreachable!("supervisor boundaries return above"),

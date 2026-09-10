@@ -27,6 +27,7 @@ fn strategy_code(strategy: SemRestartStrategy) -> u64 {
         SemRestartStrategy::OneForOne => 0,
         SemRestartStrategy::OneForAll => 1,
         SemRestartStrategy::RestForOne => 2,
+        SemRestartStrategy::SimpleOneForOne => 3,
     }
 }
 
@@ -97,22 +98,23 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .ok_or_else(|| {
                     CodegenError::FailClosed("declared child lacks its spawn adapter".into())
                 })?;
-            entries.push(
-                entry_ty.const_named_struct(&[
-                    self.ctx
-                        .i32_type()
-                        .const_int(restart_code(child.restart), false)
-                        .into(),
-                    self.ctx
-                        .i32_type()
-                        .const_int(
-                            u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
-                            false,
-                        )
-                        .into(),
-                    spawn.as_global_value().as_pointer_value().into(),
-                ]),
-            );
+            let entry = entry_ty.const_named_struct(&[
+                self.ctx
+                    .i32_type()
+                    .const_int(restart_code(child.restart), false)
+                    .into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(
+                        u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
+                        false,
+                    )
+                    .into(),
+                spawn.as_global_value().as_pointer_value().into(),
+            ]);
+            // A pool's members are fungible: one adapter fills every slot, and
+            // each slot is registered separately so it restarts on its own.
+            entries.extend(std::iter::repeat_n(entry, child.slots() as usize));
         }
         let table = self.llvm.add_global(
             entry_ty.array_type(u32::try_from(entries.len()).map_err(|_| {
@@ -300,6 +302,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             } => self
                 .emit_supervisor_child(*supervisor, *child, sources, result, true)
                 .map(Some),
+            // A pool view is the same pair a role is — the owning supervisor
+            // and a slot — except the slot is the first of the pool's members.
+            ActorOperation::SupervisorPoolView {
+                supervisor, child, ..
+            } => self
+                .emit_supervisor_child(*supervisor, *child, sources, result, false)
+                .map(Some),
             ActorOperation::SupervisorStop(_) => self.emit_supervisor_stop(sources).map(Some),
             _ => Ok(None),
         }
@@ -404,7 +413,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     config.into(),
                     drop.into(),
                     children.into(),
-                    word.const_int(supervisor.children.len() as u64, false)
+                    word.const_int(u64::from(supervisor.registered_slots()), false)
                         .into(),
                     self.active_fault.into(),
                 ],
@@ -514,6 +523,119 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_store(key, self.ctx.i32_type().const_int(u64::from(slot), false))
             .llvm_ctx("record the role's slot")?;
         Ok(self.ctx.i32_type().const_zero())
+    }
+
+    /// `pool[i]`, `pool.get(i)` and `await_restart pool[i]`: one member's role
+    /// from the view, the caller's index and the declared member count. The
+    /// members occupy consecutive slots from the view's base, so the member is
+    /// arithmetic once the index is proved to be one of them.
+    pub(super) fn emit_supervisor_pool_member(
+        &self,
+        operation: hew_types::runtime_call::SupervisorPoolOp,
+        option: Option<hew_mir::physical::PhysicalVariantId>,
+        sources: &[StorageId],
+        result: StorageId,
+        normal: &hew_mir::physical::PhysicalEdge,
+        failure: Option<&hew_mir::physical::PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        use hew_types::runtime_call::SupervisorPoolOp;
+        let [view, index, count] = sources else {
+            return Err(CodegenError::FailClosed(
+                "supervisor pool member takes its view, index and member count".into(),
+            ));
+        };
+        let view = self.load(*view, "pool.view")?.into_struct_value();
+        let token = self
+            .builder
+            .build_extract_value(view, 0, "pool.supervisor")
+            .llvm_ctx("read the pool's supervisor")?
+            .into_int_value();
+        let base = self
+            .builder
+            .build_extract_value(view, 1, "pool.base")
+            .llvm_ctx("read the pool's first slot")?
+            .into_int_value();
+        let index = self.load(*index, "pool.index")?.into_int_value();
+        let count = self.load(*count, "pool.count")?.into_int_value();
+        // Unsigned comparison also rejects every negative signed index, and the
+        // caller's index is never narrowed before the test.
+        let in_range = self
+            .builder
+            .build_int_compare(IntPredicate::ULT, index, count, "pool.index.in.range")
+            .llvm_ctx("check pool member bounds")?;
+        let present = self
+            .ctx
+            .append_basic_block(self.value, "pool.member.present");
+        let absent = self
+            .ctx
+            .append_basic_block(self.value, "pool.member.absent");
+        self.builder
+            .build_conditional_branch(in_range, present, absent)
+            .llvm_ctx("select pool member outcome")?;
+        self.builder.position_at_end(absent);
+        if let Some(option) = option {
+            self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+            self.emit_result_edge(Some(result), normal)?;
+        } else {
+            self.emit_edge(failure.ok_or_else(|| {
+                CodegenError::FailClosed("trapping pool member lacks its bounds edge".into())
+            })?)?;
+        }
+        self.builder.position_at_end(present);
+        let offset = self
+            .builder
+            .build_int_truncate(index, self.ctx.i32_type(), "pool.offset")
+            .llvm_ctx("narrow the proved pool index")?;
+        let slot = self
+            .builder
+            .build_int_add(base, offset, "pool.slot")
+            .llvm_ctx("address the pool member's slot")?;
+        if operation == SupervisorPoolOp::AwaitRestartMember {
+            let wait = get_or_declare_external(
+                self.llvm,
+                "hew_supervisor_native_await_restart",
+                self.ctx.void_type().fn_type(
+                    &[
+                        token.get_type().into(),
+                        self.ctx.i32_type().into(),
+                        self.ctx.i32_type().into(),
+                    ],
+                    false,
+                ),
+            )?;
+            self.builder
+                .build_call(
+                    wait,
+                    &[
+                        token.into(),
+                        slot.into(),
+                        // A pool's members are actors: SIR refuses a pool of
+                        // supervisors, which the runtime keeps in its own space.
+                        self.ctx.i32_type().const_zero().into(),
+                    ],
+                    "",
+                )
+                .llvm_ctx("wait for the pool member to be live again")?;
+        }
+        let role_ty = self.ctx.struct_type(
+            &[token.get_type().into(), self.ctx.i32_type().into()],
+            false,
+        );
+        let role = self
+            .builder
+            .build_insert_value(role_ty.get_undef(), token, 0, "pool.role.supervisor")
+            .llvm_ctx("record the member's supervisor")?;
+        let role = self
+            .builder
+            .build_insert_value(role, slot, 1, "pool.role.slot")
+            .llvm_ctx("record the member's slot")?;
+        let role: BasicValueEnum<'ctx> = role.into_struct_value().into();
+        if let Some(option) = option {
+            self.write_variant_value(self.slots[result.0 as usize], 0, &[role], option)?;
+        } else {
+            self.store(result, role)?;
+        }
+        self.emit_result_edge(Some(result), normal)
     }
 
     /// A nested projection retains its complete owner path instead of resolving

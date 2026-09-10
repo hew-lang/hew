@@ -20,6 +20,9 @@ pub enum SemRestartStrategy {
     OneForOne,
     OneForAll,
     RestForOne,
+    /// Pool supervision: only the crashed member's own slot is restarted.
+    /// Required of every supervisor that declares a `pool` child.
+    SimpleOneForOne,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,13 +39,18 @@ pub enum SemSupervisedRole {
     Supervisor(SupervisorId),
 }
 
-/// One declared static child. Its runtime slot is its position among the
-/// children of the same role kind, in declaration order.
+/// One declared child. Its runtime slots are its position among the children
+/// of the same role kind, in declaration order; a pool occupies `pool_count`
+/// consecutive slots from that base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemSupervisorChild {
     pub name: String,
     pub role: SemSupervisedRole,
     pub restart: SemRestartPolicy,
+    /// `None` for `child name: Type`; `Some(n)` for `pool name: Type count: n`.
+    /// A pool's members are fungible: the same spawn callable fills every one
+    /// of its `n` slots, and each slot restarts on its own.
+    pub pool_count: Option<u32>,
     /// `fn(config...) -> handle`: evaluates the declared init arguments against
     /// the supervisor's config and spawns one incarnation. The supervisor calls
     /// it for the initial spawn and for every restart.
@@ -72,8 +80,21 @@ impl SemModule {
     }
 }
 
+impl SemSupervisorChild {
+    /// How many runtime slots this declaration occupies: one per static child,
+    /// `count` per pool.
+    #[must_use]
+    pub const fn slots(&self) -> u32 {
+        match self.pool_count {
+            None => 1,
+            Some(count) => count,
+        }
+    }
+}
+
 impl SemSupervisor {
-    /// The runtime slot of one child within its role kind.
+    /// The first runtime slot of one child within its role kind. A pool's
+    /// member `i` occupies `slot(child) + i`.
     #[must_use]
     pub fn slot(&self, child: usize) -> Option<u32> {
         let role = self.children.get(child)?.role;
@@ -87,13 +108,20 @@ impl SemSupervisor {
                     )
             )
         };
-        u32::try_from(
-            self.children[..child]
-                .iter()
-                .filter(|sibling| kind(&sibling.role))
-                .count(),
-        )
-        .ok()
+        self.children[..child]
+            .iter()
+            .filter(|sibling| kind(&sibling.role))
+            .try_fold(0u32, |base, sibling| base.checked_add(sibling.slots()))
+    }
+
+    /// Every runtime slot the declared children occupy, in registration order.
+    #[must_use]
+    pub fn registered_slots(&self) -> u32 {
+        self.children
+            .iter()
+            .map(SemSupervisorChild::slots)
+            .try_fold(0u32, u32::checked_add)
+            .unwrap_or(u32::MAX)
     }
 
     /// The stable role a lookup produces, for either child kind.
@@ -120,6 +148,44 @@ impl SemSupervisor {
                 .map(Self::child_ref_ty)
                 .ok_or_else(|| "nested supervisor role has no descriptor".into()),
         }
+    }
+
+    /// The first-class view a `pool` child's accessor produces:
+    /// `SupervisorPool<S, T>` over the owning supervisor and its member type.
+    pub(crate) fn pool_view_ty(
+        &self,
+        child: usize,
+        actors: &[crate::SemActor],
+        supervisors: &[Self],
+    ) -> Result<ResolvedTy, String> {
+        if self
+            .children
+            .get(child)
+            .ok_or("supervisor child slot is out of range")?
+            .pool_count
+            .is_none()
+        {
+            return Err("a pool view names no pool declaration".into());
+        }
+        let ResolvedTy::Named { args, .. } = &self.handle_ty else {
+            unreachable!("supervisor handle is validated as LocalPid<S>");
+        };
+        let ResolvedTy::Named {
+            args: member_args, ..
+        } = self.child_handle_ty(child, actors, supervisors)?
+        else {
+            return Err("pool member role lacks its member type".into());
+        };
+        let [member] = member_args.as_slice() else {
+            return Err("pool member role requires one member type".into());
+        };
+        let mut view = args.clone();
+        view.push(member.clone());
+        Ok(ResolvedTy::named_builtin(
+            hew_types::BuiltinType::SupervisorPool.canonical_name(),
+            hew_types::BuiltinType::SupervisorPool,
+            view,
+        ))
     }
 
     #[must_use]
@@ -150,6 +216,14 @@ impl SemSupervisor {
         for (index, child) in self.children.iter().enumerate() {
             if !names.insert(child.name.as_str()) {
                 return Err("supervisor child name is repeated".into());
+            }
+            if let Some(count) = child.pool_count {
+                if count == 0 {
+                    return Err("a pool child requires a positive count".into());
+                }
+                if self.strategy != SemRestartStrategy::SimpleOneForOne {
+                    return Err("a pool child requires the `simple_one_for_one` strategy".into());
+                }
             }
             self.child_handle_ty(index, &module.actors, &module.supervisors)?;
             let spawned = match child.role {

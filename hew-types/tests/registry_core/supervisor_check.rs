@@ -107,11 +107,10 @@ fn await_restart_on_static_child_accepted() {
     );
 }
 
-/// `await_restart` on a POOL member is rejected: a pool member has no per-slot
-/// restart signal (the `restart_notify` is per-supervisor, and pool dynamics
-/// recover via the pool path, not a static child slot).
+/// `await_restart` on a WHOLE pool is rejected: a pool names many slots, so it
+/// has no single restart signal. The diagnostic points at the member form.
 #[test]
-fn await_restart_on_pool_member_rejected() {
+fn await_restart_on_whole_pool_rejected() {
     let output = typecheck(
         r"
         actor Worker {
@@ -131,14 +130,49 @@ fn await_restart_on_pool_member_rejected() {
         }
         ",
     );
-    let rejected = output.errors.iter().any(|e| {
-        e.message.contains("await_restart") && e.message.contains("static supervised child")
-    });
+    let rejected = output
+        .errors
+        .iter()
+        .any(|e| e.message.contains("await_restart") && e.message.contains("sup.pool[i]"));
     assert!(
         rejected,
-        "`await_restart` on a pool member must be rejected with a static-child diagnostic; \
+        "`await_restart` on a whole pool must be rejected and name the member form; \
          got: {:#?}",
         output.errors
+    );
+}
+
+/// `await_restart sup.pool[i]` on ONE pool member type-checks: each member
+/// occupies its own supervised slot, so it has its own restart signal.
+#[test]
+fn await_restart_on_pool_member_accepted() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        supervisor Pool {
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
+
+            pool worker: Worker count: 3
+        }
+
+        fn main() {
+            let sup = spawn Pool;
+            let _w: ChildRef<Worker> = await_restart sup.worker[0];
+        }
+        ",
+    );
+    let relevant: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("await_restart"))
+        .collect();
+    assert!(
+        relevant.is_empty(),
+        "`await_restart sup.worker[0]` must type-check cleanly: {relevant:#?}"
     );
 }
 

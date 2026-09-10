@@ -301,8 +301,9 @@ language contracts:
   Stream values and iteration are separate from that gap (§6.5).
 - Native coalescing and ReplaceLatest realization require a checked key
   projection and remain pending (§6.3).
-- Native supervision supports declared children; pools, sibling wiring and
-  parts of the shutdown-deadline contract remain incomplete (§5).
+- Native supervision supports declared children and pools of them; a literal
+  `count:` is required, and sibling wiring and parts of the shutdown-deadline
+  contract remain incomplete (§5).
 - Captured WASI execution can still expose an internal trap tag as its exit
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
 - Resource-close checking covers inherent methods; trait-method checking has
@@ -4323,6 +4324,16 @@ fn main() {
   resolves the child name to a static slot and returns `ChildRef<Actor>`, which
   re-resolves the current incarnation on every ask or tell. The child name must
   match one of the `child` declarations in the supervisor definition.
+- `sup.pool_name` — a `pool` child's members, addressed by index. The members
+  are fungible: identical children in consecutive slots, each restarting on its
+  own. `len()` is the declared `count:`; `[i]` yields the member's
+  `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
+  `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
+  count are both out of range.
+- `await_restart sup.child_name` / `await_restart sup.pool_name[i]` — resume
+  once that one slot is Live again after a crash, or is permanently gone, with
+  the same `ChildRef<Actor>`. A whole pool names many slots and has no single
+  restart signal, so it is not an operand.
 - `close(sup)` — requests cooperative stop and waits for every child's terminal cleanup.
 - `fork close(sup)` — starts that stop operation as a `Task<()>`.
 - `closed(sup)` — waits for termination without requesting it.

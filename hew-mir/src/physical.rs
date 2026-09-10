@@ -926,6 +926,13 @@ pub struct PhysicalVariantArm {
 /// ownership or failure behaviour from a linker symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PhysicalRuntimeAction {
+    /// One fungible supervisor pool member, addressed by index within the
+    /// pool's consecutive slots. `option` names the `Option<ChildRef<T>>`
+    /// descriptor `get` builds; the trapping and awaiting forms have none.
+    SupervisorPool {
+        operation: hew_types::runtime_call::SupervisorPoolOp,
+        option: Option<PhysicalVariantId>,
+    },
     FileRead(hew_types::runtime_call::FileReadOp),
     Tcp(hew_types::runtime_call::TcpOp),
     StreamClose,
@@ -1143,6 +1150,7 @@ impl PhysicalRuntimeAction {
             Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
             Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
             Self::BytesAppendOwned => RuntimeCallFamily::BytesAppend,
+            Self::SupervisorPool { operation, .. } => RuntimeCallFamily::SupervisorPool(operation),
             Self::Array { operation, .. } => RuntimeCallFamily::Array(operation),
             Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
             Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
@@ -4054,6 +4062,21 @@ impl FunctionLowerer<'_> {
             RuntimeCallFamily::Map(op) => return self.map_action(op, args, result),
             RuntimeCallFamily::Set(op) => return self.set_action(op, args, result),
             _ => {}
+        }
+        if let RuntimeCallFamily::SupervisorPool(operation) = family {
+            let option = match operation {
+                hew_types::runtime_call::SupervisorPoolOp::Get => {
+                    let CallResult::Value(value) = result else {
+                        return Err(PhysicalError::new(
+                            "supervisor pool `get` has no result value",
+                        ));
+                    };
+                    Some(self.variant_id(&value.ty)?)
+                }
+                hew_types::runtime_call::SupervisorPoolOp::Member
+                | hew_types::runtime_call::SupervisorPoolOp::AwaitRestartMember => None,
+            };
+            return Ok(PhysicalRuntimeAction::SupervisorPool { operation, option });
         }
         if let RuntimeCallFamily::Array(operation) = family {
             let receiver = args

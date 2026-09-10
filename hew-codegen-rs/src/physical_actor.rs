@@ -1036,6 +1036,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorAwaitRestart { .. }
+            | ActorOperation::SupervisorPoolView { .. }
             | ActorOperation::SupervisorAwaitClosed(_)
             | ActorOperation::SupervisorRoleAwaitClosed { .. }
             | ActorOperation::SupervisorStop(_) => ActorId(u32::MAX),
@@ -1144,6 +1145,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorAwaitRestart { .. }
+            | ActorOperation::SupervisorPoolView { .. }
             | ActorOperation::SupervisorAwaitClosed(_)
             | ActorOperation::SupervisorRoleAwaitClosed { .. }
             | ActorOperation::SupervisorStop(_) => unreachable!("emitted above"),

@@ -8141,9 +8141,10 @@ fn verify_terminator(
             // variant results carry their own checked type and are verified by
             // their operation's contract.
             let scalar_optional = match action.family {
-                RuntimeCallFamily::StringFind => Some(ResolvedTy::I64),
                 RuntimeCallFamily::StringCharAt => Some(ResolvedTy::Char),
-                RuntimeCallFamily::StringCharAtUtf8 => Some(ResolvedTy::I64),
+                RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAtUtf8 => {
+                    Some(ResolvedTy::I64)
+                }
                 RuntimeCallFamily::BytesGet => Some(ResolvedTy::U8),
                 _ => None,
             };

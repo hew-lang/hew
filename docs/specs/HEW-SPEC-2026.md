@@ -1881,16 +1881,25 @@ fn eval(e: Expr) -> i64 {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
-- `Rc.new(value)` consumes `value`; `.clone()` creates another strong owner
+- `Rc.new(value)` takes ownership of `value`: an affine payload moves, and a
+  payload with a copy recipe is retained, so the caller's binding stays valid.
+  `.clone()` creates another strong owner
 - `.get()` copies the payload and therefore requires `T: Copy`
-- `.set(value)` consumes and replaces the entire shared payload; every strong alias observes the replacement
+- `.set(value)` takes ownership of `value` the same way and replaces the entire
+  shared payload; every strong alias observes the replacement, and the displaced
+  payload is released
 - `.downgrade()` creates a `Weak<T>`; `.strong_count()`, `.weak_count()`, and `.is_unique()` inspect the allocation
 - Supported payloads include scalars, `string`, `bytes`, `Rc`, `Weak`, tuples,
-  arrays, `Option`, `Result`, records, enums, and supported owned collections;
-  clone/drop synthesis recursively follows aggregate fields
-- `Vec<Rc<T>>`, `Vec<Weak<T>>`, and records containing these handles use
-  semantic field clone/drop operations; map and set shapes retain their own
-  independent key, value, `Eq`, `Hash`, and ABI restrictions
+  arrays, `Option`, `Result`, records, enums, `#[resource]` values, and supported
+  owned collections; clone/drop synthesis recursively follows aggregate fields.
+  A `#[resource]` payload releases through its own `close`, which the allocation
+  installs as its destructor. `#[linear]` payloads are refused: a shared handle
+  can outlive every path that would consume one
+- `Vec<Rc<T>>`, `Vec<Weak<T>>`, and records, tuples and map values containing
+  these handles use semantic field clone/drop operations: ingress retains and
+  the composite drop releases, so cloning such an aggregate is balanced. Map and
+  set shapes retain their own independent key, value, `Eq`, `Hash`, and ABI
+  restrictions
 
 ```hew
 let data: Rc<string> = Rc.new(expensive_computation());

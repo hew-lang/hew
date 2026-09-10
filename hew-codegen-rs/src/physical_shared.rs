@@ -178,7 +178,8 @@ impl FunctionEmitter<'_, '_> {
         self.emit_result_edge(Some(result), normal)
     }
 
-    /// Release every operand the operation adopts before it is handed over.
+    /// Give up the caller's claim on every operand the operation adopts, so
+    /// scope cleanup does not release what the allocation now owns.
     fn clear_moved(&self, transfers: &[ArgumentTransfer]) -> CodegenResult<()> {
         for transfer in transfers {
             if let ArgumentTransfer::Move(source) = transfer {

@@ -1001,7 +1001,8 @@ reference type. Writing `&x` is rejected with a diagnostic pointing you at
 
 `Rc<T>` gives multiple bindings ownership of one payload inside a single
 actor. Construct it with `Rc.new(value)` and create another strong owner with
-`.clone()`. Both handles are affine: assigning one without cloning moves it.
+`.clone()`. Rebinding a handle retains the allocation the way rebinding a
+string retains its buffer, so both names stay live and both release.
 Neither `Rc<T>` nor `Weak<T>` can be sent to another actor.
 
 ```hew
@@ -1015,7 +1016,10 @@ fn main() {
 ```
 
 `.get()` requires a `Copy` payload. `.set(value)` works for supported aggregate
-payloads and replaces the whole shared value, consuming the replacement.
+payloads and replaces the whole shared value; the displaced payload is released,
+and a replacement with a copy recipe leaves the caller's own binding valid.
+A `#[resource]` payload is supported and releases through its own `close` when
+the last strong owner goes; a `#[linear]` payload is refused.
 
 Use `Weak<T>` for graph back-edges so the graph does not form a strong cycle:
 

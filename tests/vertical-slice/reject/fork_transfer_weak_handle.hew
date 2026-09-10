@@ -1,0 +1,17 @@
+// The weak half shares the refusal: upgrading it would hand a second thread a
+// strong reference onto the same non-atomic count.
+fn observe(handle: Weak<i64>) -> i64 {
+    match handle.upgrade() {
+        .Some(strong) => strong.strong_count(),
+        .None => 0,
+    }
+}
+
+fn main() {
+    let shared = Rc.new(1);
+    let observer = shared.downgrade();
+    scope {
+        let task = fork observe(observer.clone());
+        println(await task);
+    };
+}

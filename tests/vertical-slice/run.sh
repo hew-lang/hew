@@ -1096,17 +1096,6 @@ expect_check_fail_contains \
     "on(upgrade)" \
     "on_upgrade_hook_kind_removed_reject"
 
-# Reject: spawned closures must not capture non-Send values. This fixture uses
-# a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
-# diagnostic rather than unrelated Rc construction or lowering diagnostics.
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/spawned_closure_non_send_capture.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected spawned_closure_non_send_capture fixture to fail" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-grep -q "spawned closure captures non-Send value 'r'" "${reject_output}" ||
-    record_failure "row ${LINENO}" "assertion failed"
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/var_by_value_param_noncopy.hew" \
     "by-value parameter" \
@@ -5839,13 +5828,15 @@ run_accept_expect_status "string_split_nonempty" 0
 # release, and a zero-sized payload.
 run_accept_expect_stdout "rc_weak_lifecycle"
 
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/spawned_closure_weak_non_send_capture.hew" \
-    1 "spawned_closure_weak_non_send_capture"
+# A task may run on another thread, so a shared handle cannot cross into one.
 expect_check_fail_contains \
-    "${ROOT}/tests/vertical-slice/reject/spawned_closure_weak_non_send_capture.hew" \
-    "spawned closure captures non-Send value 'weak'" \
-    "spawned_closure_weak_non_send_capture_message"
+    "${ROOT}/tests/vertical-slice/reject/fork_transfer_shared_handle.hew" \
+    "fork cannot transfer \`Rc<i64>\`: the value is not proven Send" \
+    "fork_transfer_shared_handle"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/fork_transfer_weak_handle.hew" \
+    "fork cannot transfer \`Weak<i64>\`: the value is not proven Send" \
+    "fork_transfer_weak_handle"
 
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/duplex_weak_non_send.hew" \
@@ -5863,15 +5854,12 @@ expect_check_fail_error_count \
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/rc_get_non_copy.hew" \
     1 "rc_get_non_copy"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/rc_use_after_move.hew" \
-    1 "rc_use_after_move"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/weak_use_after_move.hew" \
-    1 "weak_use_after_move"
-expect_check_fail_error_count \
-    "${ROOT}/tests/vertical-slice/reject/rc_set_replacement_use_after_move.hew" \
-    1 "rc_set_replacement_use_after_move"
+# Rebinding a shared handle retains it, the way rebinding a string does, so
+# both names stay live. A replacement adopted by `Rc.set` leaves the caller's
+# own value intact for the same reason.
+run_accept_expect_stdout "rc_rebind_retains"
+run_accept_expect_stdout "weak_rebind_retains"
+run_accept_expect_stdout "rc_set_replacement_stays_live"
 expect_check_fail_error_count \
     "${ROOT}/tests/vertical-slice/reject/rc_set_type_mismatch.hew" \
     1 "rc_set_type_mismatch"

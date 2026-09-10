@@ -1,0 +1,11 @@
+// The weak half rebinds the same way: the weak count records both names.
+fn main() {
+    let rc = Rc.new(1);
+    let weak = rc.downgrade();
+    let rebound = weak;
+    print(rc.weak_count());
+    println(match rebound.upgrade() {
+        .Some(strong) => strong.get(),
+        .None => 0,
+    });
+}

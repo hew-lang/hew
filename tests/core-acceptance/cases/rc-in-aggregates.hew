@@ -40,6 +40,29 @@ fn collection_members(source: Rc<Tag>) {
     println(f"map len={by_key.len()} strong={source.strong_count()}");
 }
 
+// Descriptor-backed data inside the allocation: the payload release the
+// runtime holds re-enters the release walker from inside a drop, and the
+// replacement `set` installs displaces the old payload through the same path.
+fn managed_payload() {
+    var deep: Vec<i64> = Vec.new();
+    for i in 0..4000 {
+        deep.push(i);
+    }
+    let held = Rc.new(deep);
+    let alias = held.clone();
+    println(f"managed strong={alias.strong_count()}");
+
+    var table: HashMap<i64, string> = HashMap.new();
+    for i in 0..2000 {
+        table.insert(i, f"entry{i}");
+    }
+    let mapped = Rc.new(table);
+    var replacement: HashMap<i64, string> = HashMap.new();
+    replacement.insert(1, "only");
+    mapped.set(replacement);
+    println(f"replaced strong={mapped.strong_count()}");
+}
+
 fn main() {
     let root = Rc.new(Tag { id: 7 });
     record_member(root.clone());
@@ -48,5 +71,6 @@ fn main() {
     println(f"after tuple strong={root.strong_count()}");
     collection_members(root.clone());
     println(f"after collections strong={root.strong_count()}");
+    managed_payload();
     println("root about to release");
 }

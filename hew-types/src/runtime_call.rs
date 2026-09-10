@@ -492,22 +492,27 @@ impl RuntimeSemanticContract {
                 self.arguments.len()
             ));
         }
-        let receiver = params
-            .iter()
-            .find(|ty| {
-                runtime_receiver_builtin(ty).is_some()
-                    || matches!(ty, ResolvedTy::Array(_, _))
-                    || FileReadHandleKind::of_ty(ty).is_some()
-                    || IoHandleKind::of_ty(ty).is_some()
-                    || ChannelHalfKind::of_ty(ty).is_some()
+        // `Rc.new(v)`'s only argument is the payload, and a payload can itself
+        // be a canonical receiver (`Rc.new(vec)`). A shared constructor's
+        // identity therefore comes from its result before any argument is
+        // scanned; every other operation names its receiver in an argument or,
+        // failing that, in its result.
+        let shared_constructor =
+            (runtime_receiver_builtin(result_hint) == Some(BuiltinType::Rc)).then_some(result_hint);
+        let receiver = shared_constructor
+            .or_else(|| {
+                params.iter().find(|ty| {
+                    runtime_receiver_builtin(ty).is_some()
+                        || matches!(ty, ResolvedTy::Array(_, _))
+                        || FileReadHandleKind::of_ty(ty).is_some()
+                        || IoHandleKind::of_ty(ty).is_some()
+                        || ChannelHalfKind::of_ty(ty).is_some()
+                })
             })
             .or_else(|| {
                 (params.is_empty()
-                    || runtime_receiver_builtin(result_hint).is_some_and(|builtin| {
-                        // Constructors whose arguments are payload values, not
-                        // receivers: the result names the receiver identity.
-                        builtin.is_encoding_value() || builtin == BuiltinType::Rc
-                    })
+                    || runtime_receiver_builtin(result_hint)
+                        .is_some_and(BuiltinType::is_encoding_value)
                     || FileReadHandleKind::of_ty(result_hint).is_some())
                 .then_some(result_hint)
                 .filter(|ty| {

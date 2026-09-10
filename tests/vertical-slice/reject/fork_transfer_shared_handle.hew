@@ -1,0 +1,12 @@
+// Reject fixture: a task may run on another thread, so everything it takes
+// must be Send. `Rc<T>` and `Weak<T>` count without synchronization and are
+// not, so forking work that takes one is refused at the transfer.
+fn hold(handle: Rc<i64>) -> i64 { handle.strong_count() }
+
+fn main() {
+    let shared = Rc.new(1);
+    scope {
+        let task = fork hold(shared.clone());
+        println(await task);
+    };
+}

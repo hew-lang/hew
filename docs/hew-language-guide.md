@@ -2900,7 +2900,7 @@ fn main() {
 
 The trigonometric, hyperbolic, exponential and rounding family also takes `f64`: `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `exp2`, `log2`, `log10`, `log1p`, `expm1`, `cbrt`, `hypot(x, y)`, `fma(a, b, c)`, `copysign(x, y)`, `powi(x, n)` (integer exponent `n: i32`), and `from_bits(bits: u64)` (the inverse of `.to_bits()`; spelled as a module function because a bare type name such as `f64` cannot be used as a call receiver). Each lowers to the matching LLVM intrinsic where one exists, or to the C library implementation otherwise (`log1p`, `expm1`, `cbrt`, `hypot`).
 
-Integer types (`i8`..`i64`, `u8`..`u64`) support bit-manipulation and overflow-policy methods directly, without importing `std.math`:
+Integer types (`i8`..`i64`, `isize`, `u8`..`u64`, `usize`) support bit-manipulation and overflow-policy methods directly, without importing `std.math`:
 
 ```hew
 fn main() {
@@ -2915,7 +2915,7 @@ fn main() {
 }
 ```
 
-`count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `swap_bytes`, `reverse_bits`, `rotate_left(n)` and `rotate_right(n)` are implemented for `i32`, `i64`, `u32` and `u64` (the widths the runtime's value-kind vocabulary carries a physical form for). `wrapping_add`/`sub`/`mul` and `saturating_add`/`sub` are implemented the same way for those four widths; `checked_add`/`sub`/`mul`, `saturating_mul`, and the same methods at `i8`/`i16`/`u8`/`u16`/`isize`/`usize` still type-check but hit a separate, pre-existing lowering gap (`E_SIR_UNSUPPORTED`) — a known limitation, not new surface.
+`count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `swap_bytes`, `reverse_bits`, `rotate_left(n)` and `rotate_right(n)` are implemented at every integer width: `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64` and `usize`. `swap_bytes` on `i8`/`u8` is the identity (a one-byte value has no other byte to swap with). `wrapping_add`/`sub`/`mul`, `saturating_add`/`sub`/`mul` and `checked_add`/`sub`/`mul` are implemented at every width too; `checked_add`/`sub`/`mul` return `Option<T>` and `saturating_mul` is built from an overflow-checked multiply plus a saturating select (no native saturating-multiply instruction exists).
 
 `f64` also has classification and bit methods: `to_bits() -> u64`, `is_nan()`, `is_finite()`, `is_infinite()`, `is_sign_negative()`, and `abs()` (equivalent to `math.abs`). `math.from_bits(bits)` is the inverse of `.to_bits()`.
 

@@ -6,14 +6,16 @@
 //! the element structurally:
 //!
 //! - a `for`-in generator-yield binding releases each yielded Vec through
-//!   `hew_vec_free_owned`;
+//!   `hew_vec_free_owned_walk`;
 //! - a record reassignment overriding a field releases the replaced Vec through
-//!   `hew_vec_free_owned`.
+//!   `hew_vec_free_owned_walk`.
 //!
-//! The ABI requires `hew_vec_free_owned` so every `HeapRow.payload` collection
-//! is released. The current runtime keeps `hew_vec_free` descriptor-aware for
-//! compatibility, so the oracle also pins the emitted symbol directly; its
-//! leak slopes were falsified against a buffer-only compatibility-free neuter.
+//! The ABI requires a descriptor-aware release so every `HeapRow.payload`
+//! collection is released, and codegen picks `hew_vec_free_owned_walk` for
+//! these pure-release shapes. The buffer-only `hew_vec_free` still exists in
+//! the runtime; it is unreachable from codegen today, and the zero-count
+//! negative below keeps it that way. The leak slopes were falsified against a
+//! buffer-only neuter.
 
 #![cfg(unix)]
 
@@ -106,15 +108,13 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
-fn llvm_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
-    let marker = format!("@{name}(");
-    let start = ir
-        .lines()
-        .enumerate()
-        .find_map(|(line_no, line)| {
-            (line.starts_with("define ") && line.contains(&marker)).then_some(line_no)
-        })
-        .unwrap_or_else(|| panic!("missing LLVM function `{name}`"));
+fn llvm_function_body<'a>(ir: &'a str, name: &str) -> Option<&'a str> {
+    let plain = format!("@{name}(");
+    let quoted = format!("@\"{name}\"(");
+    let start = ir.lines().enumerate().find_map(|(line_no, line)| {
+        (line.starts_with("define ") && (line.contains(&plain) || line.contains(&quoted)))
+            .then_some(line_no)
+    })?;
     let byte_start = ir
         .match_indices('\n')
         .nth(start.saturating_sub(1))
@@ -124,12 +124,14 @@ fn llvm_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
         .find("\n}\n")
         .unwrap_or_else(|| panic!("unterminated LLVM function `{name}`"))
         + 3;
-    &rest[..byte_end]
+    Some(&rest[..byte_end])
 }
 
-/// The symbol carrying the entry's own body in this module, asked of codegen
-/// rather than assumed: the target's entry wrapper decides the name.
-fn entry_body_symbol(ir: &str) -> &'static str {
+/// The symbols carrying the entry's own body in this module, asked of codegen
+/// rather than assumed: the target's entry wrapper decides the base name, and
+/// when `main` lowers to a coroutine trampoline its statements live in the
+/// `$root_start` / `$resume` halves rather than the base symbol.
+fn entry_body_symbols(ir: &str) -> Vec<String> {
     let triple = ir
         .lines()
         .find_map(|line| {
@@ -137,7 +139,12 @@ fn entry_body_symbol(ir: &str) -> &'static str {
                 .and_then(|value| value.strip_suffix('"'))
         })
         .unwrap_or_else(|| panic!("emitted LLVM IR must declare its target triple:\n{ir}"));
-    hew_codegen_rs::entry_body_symbol_for_triple(triple)
+    let base = hew_codegen_rs::entry_body_symbol_for_triple(triple);
+    vec![
+        base.to_string(),
+        format!("{base}$root_start"),
+        format!("{base}$resume"),
+    ]
 }
 
 fn assert_owned_release_symbol(source: &str, fixture: &str, function: Option<&str>) {
@@ -148,16 +155,26 @@ fn assert_owned_release_symbol(source: &str, fixture: &str, function: Option<&st
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), fixture);
     let ir = std::fs::read_to_string(bin.with_extension("ll")).expect("read emitted LLVM IR");
-    let function = function.unwrap_or_else(|| entry_body_symbol(&ir));
-    let body = llvm_function_body(&ir, function);
+    let names = function.map_or_else(|| entry_body_symbols(&ir), |name| vec![name.to_string()]);
+    let bodies: Vec<&str> = names
+        .iter()
+        .filter_map(|name| llvm_function_body(&ir, name))
+        .collect();
     assert!(
-        body.contains("call void @hew_vec_free_owned("),
-        "{function} must release the unharvested owned-element Vec through \
-         `hew_vec_free_owned`:\n{body}"
+        !bodies.is_empty(),
+        "none of {names:?} is defined in the emitted module"
+    );
+    let scope = names.join(" / ");
+    let body = bodies.concat();
+    assert!(
+        body.contains("call void @hew_vec_free_owned_walk("),
+        "{scope} must release the unharvested owned-element Vec through the \
+         descriptor-recursive `hew_vec_free_owned_walk`:\n{body}"
     );
     assert!(
         !body.contains("call void @hew_vec_free("),
-        "{function} must not select the plain Vec release for an owned-record element:\n{body}"
+        "{scope} must not select the buffer-only Vec release for an owned-record \
+         element:\n{body}"
     );
 }
 
@@ -170,7 +187,7 @@ fn affected_release_sites_emit_owned_symbol() {
     assert_owned_release_symbol(
         &field_reassignment_source(3),
         "field_symbol",
-        Some("replace_holder"),
+        Some("__hew_fn_replace_holder"),
     );
 }
 

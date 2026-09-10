@@ -11,7 +11,7 @@ fn deferred_bodies_reject_escaping_exits_before_codegen() {
         ("break", "fn main() { loop { defer { break; } break; } }"),
         ("continue", "fn main() { for i in 0..2 { defer { continue; } } }"),
         ("try", "fn bad() -> Result<i64, string> { defer { let n = Ok(4)?; } Ok(1) } fn main() { let result = bad(); }"),
-        ("scope", "fn main() { defer { scope {} } }"),
+        ("scope", "fn main() { defer { scope { return; } } }"),
     ];
     for (name, source) in cases {
         let input = dir.path().join(format!("{name}.hew"));
@@ -32,4 +32,19 @@ fn deferred_bodies_reject_escaping_exits_before_codegen() {
             describe_output(&output)
         );
     }
+
+    // Valid-input control: a recovery scope is not itself an escape, so an
+    // empty one inside a deferred body is admitted. Without this the rejection
+    // table could pass by refusing `scope` outright.
+    let valid = dir.path().join("scope_valid.hew");
+    std::fs::write(&valid, "fn main() { defer { scope {} } }").unwrap();
+    let mut check = Command::new(hew_binary());
+    check.arg("check").arg(valid);
+    let output = run_bounded_command(check, "admit an empty deferred scope".to_string());
+    assert!(output.status.success(), "{}", describe_output(&output));
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("deferred body"),
+        "{}",
+        describe_output(&output)
+    );
 }

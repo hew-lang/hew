@@ -233,12 +233,15 @@ fn no_entry_object_contains_its_public_function() {
         assert!(result.status.success(), "{}", describe_output(&result));
         let bytes = std::fs::read(output).unwrap();
         let object = object::File::parse(bytes.as_slice()).unwrap();
+        // A Hew body is emitted as `__hew_fn_<name>` under the status ABI, so a
+        // `pub fn` is deliberately not C-callable under its source name. The
+        // trim absorbs the Mach-O leading underscore, leaving `hew_fn_answer`.
         assert!(
             object.symbols().any(|symbol| symbol.is_definition()
                 && symbol
                     .name()
-                    .is_ok_and(|name| name.trim_start_matches('_') == "answer")),
-            "the object must define its selected public function"
+                    .is_ok_and(|name| name.trim_start_matches('_') == "hew_fn_answer")),
+            "the object must define its selected public function as `__hew_fn_answer`"
         );
     }
 }

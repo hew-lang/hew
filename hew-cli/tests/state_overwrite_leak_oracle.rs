@@ -962,11 +962,13 @@ fn record_self_store_emits_one_recursive_clone_authority() {
     );
 }
 
-/// The string-only walk follows the registered tuple clone kind. Three tuple
-/// occurrences yield three exact string owners.
+/// The string-only walk follows the tuple's own shape. Three tuple occurrences
+/// yield three exact string owners, and the old state's three leaves are
+/// released once each — after the retains, so an aliased leaf is never read
+/// through freed storage.
 #[test]
 fn tuple_alias_emits_one_retain_per_string_occurrence() {
-    const SOURCE: &str = r"
+    const SOURCE: &str = r#"
 type Wrap { nested: (string, string, string) }
 
 actor Keeper {
@@ -976,8 +978,12 @@ actor Keeper {
     }
 }
 
-fn main() -> i64 { 0 }
-";
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { nested: ("a", "b", "c") });
+    let _ = k.rewrite();
+    0
+}
+"#;
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -986,22 +992,33 @@ fn main() -> i64 { 0 }
         .expect("tempdir");
     let _bin = compile_to_native(SOURCE, dir.path(), "tuple_ir");
     let ir = std::fs::read_to_string(dir.path().join("tuple_ir.ll")).expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "define i32 @__hew_actor_0_Keeper__rewrite(");
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
         3,
         "the tuple has three string occurrences:\n{handler}"
     );
+    assert_eq!(
+        handler.matches("call void @hew_string_drop").count(),
+        3,
+        "the replaced state's three tuple leaves must be released once each:\n{handler}"
+    );
+    let last_retain = handler
+        .rfind("call ptr @hew_string_clone")
+        .expect("a retain per occurrence");
+    let first_release = handler
+        .find("call void @hew_string_drop")
+        .expect("a release per replaced occurrence");
     assert!(
-        handler.contains("mir_aggregate_share_d0_tuple_f0")
-            && handler.contains("mir_aggregate_share_d0_tuple_f1")
-            && handler.contains("mir_aggregate_share_d0_tuple_f2"),
-        "the recursive retain must follow the tuple clone kind:\n{handler}"
+        last_retain < first_release,
+        "every incoming leaf must be retained before the old value is released:\n{handler}"
     );
 }
 
 /// A borrowed aggregate with no inline string leaves is a true codegen no-op:
-/// it needs neither a retain call nor even recursive GEP/tag scaffolding.
+/// the handler moves the scalar leaves and emits no retain or release call at
+/// all. (The retired `mir_aggregate_share_*` thunk names are gone with the
+/// out-of-line recursive walk; `hew_string_*` is the live signal.)
 #[test]
 fn zero_string_aggregate_alias_emits_no_recursive_retain_code() {
     const SOURCE: &str = r"
@@ -1015,7 +1032,11 @@ actor Keeper {
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { leaf: Leaf { value: 1 } });
+    let _ = k.rewrite();
+    0
+}
 ";
     require_codegen();
 
@@ -1026,9 +1047,9 @@ fn main() -> i64 { 0 }
     let _bin = compile_to_native(SOURCE, dir.path(), "zero_string_alias_ir");
     let ir = std::fs::read_to_string(dir.path().join("zero_string_alias_ir.ll"))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "define i32 @__hew_actor_0_Keeper__rewrite(");
     assert!(
-        !handler.contains("hew_string_clone") && !handler.contains("mir_aggregate_share"),
+        !handler.contains("hew_string_"),
         "zero-string aggregate ingress must emit no recursive retain code:\n{handler}"
     );
 }

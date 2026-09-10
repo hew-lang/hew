@@ -87,12 +87,9 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
             "type `fn[once]() -> string` cannot be cloned"),
         ("borrowed", "read_borrowed(open());", 3,
             "E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value"),
-        ("declared", "let _custom = Custom { value: 1 };", 3,
-            "nested type `Custom` has no semantic value contract"),
     ] {
         let extra_declaration = match name {
             "borrowed" => "fn read_borrowed(input: Stream<string>) { input.close(); }",
-            "declared" => "#[resource] type Custom { value: i64 } impl Custom { fn close(consume self) { println(self.value); } }",
             _ => "",
         };
         let source = format!(r#"import std.stream;
@@ -114,4 +111,47 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         assert!(diagnostic.contains(expected_diagnostic), "{name}: expected {expected_diagnostic:?}, got {diagnostic}");
     }
+
+    // A field-bearing `#[resource]` record is a supported value, not a refusal:
+    // it builds and its `close` fires exactly once on scope exit, after the
+    // body's own output. The accept case belongs beside the refusals so a
+    // regression that starts refusing it again is visible here.
+    let input = dir.path().join("declared.hew");
+    let binary = hew_testutil::compiled_binary_path(dir.path(), "declared");
+    std::fs::write(
+        &input,
+        "#[resource] type Custom { value: i64 }\n\
+         impl Custom { fn close(consume self) { println(self.value); } }\n\
+         fn main() { let _custom = Custom { value: 1 }; println(\"body\"); }\n",
+    )
+    .unwrap();
+    let mut build = Command::new(hew_binary());
+    build
+        .arg("build")
+        .arg(&input)
+        .arg("-o")
+        .arg(&binary)
+        .current_dir(dir.path());
+    let output = run_bounded_command(build, "accept declared resource record".to_string());
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "declared: {}",
+        describe_output(&output)
+    );
+    let mut run = Command::new(&binary);
+    run.current_dir(dir.path());
+    let output = run_bounded_command(run, "run declared resource record".to_string());
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "declared: {}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "body\n1\n",
+        "declared: `close` must fire exactly once, on scope exit; {}",
+        describe_output(&output)
+    );
 }

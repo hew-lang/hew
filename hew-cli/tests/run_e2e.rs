@@ -1016,15 +1016,20 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let rejected_instantiations = combined.matches("MIR kind: NotYetImplemented").count();
+    // `for item in items` binds the element as a borrow, so counting no longer
+    // makes a shallow clone and there is nothing to refuse there. The
+    // fail-closed property moved to the escape: a borrowed element whose type
+    // has no copy operation cannot be transferred out of the loop. Lowering
+    // stops at the first refusing instantiation, so the per-instantiation count
+    // the old wording asserted is no longer observable. The refusal still
+    // arrives wrapped in the semantic-lowering limitation channel rather than as
+    // a source diagnostic; that is #3377.
     assert!(
-        combined.contains("E_NOT_YET_IMPLEMENTED")
-            && combined.contains("drop-only `Vec` element operation `get`")
-            && combined.contains("no semantic clone")
-            && combined.contains("would create a second owner")
-            && rejected_instantiations >= 4,
-        "expected every resource-bearing Vec instantiation to fail closed before a shallow clone; \
-         got {rejected_instantiations} canonical rejection(s): {combined}"
+        combined.contains("E_OWN_CONSUME_BORROWED")
+            && combined.contains("`item` is borrowed here")
+            && combined.contains("transfers only from an owning binding"),
+        "expected a resource-bearing Vec element to fail closed when it escapes the \
+         loop borrow: {combined}"
     );
 }
 
@@ -4533,13 +4538,10 @@ fn run_record_resource_fields_untouched_close_once_each() {
     );
 }
 
-/// The documented leak edge: closing ONE of two resource fields retires the
-/// whole root, so the untouched sibling is never closed. Pre-fix this program
-/// closed `a` twice; the trade is a leak, and this pins which side of it we are
-/// on so a future per-field retirement is a deliberate change.
-///
-/// KNOWN FAILURE (#3070): on the current lowerer this double-frees `a` instead
-/// of leaking `b`. See `scripts/nextest-expected-failures.tsv`.
+/// Per-field retirement: closing ONE of two resource fields retires only that
+/// field, so the untouched sibling still closes on scope exit. The earlier
+/// whole-root retirement leaked `b`; before that the program closed `a` twice.
+/// Exactly two `close` lines and no abort is the pin on both sides.
 #[test]
 fn run_record_resource_field_partial_close_leaks_the_sibling() {
     require_codegen();
@@ -4559,8 +4561,8 @@ fn run_record_resource_field_partial_close_leaks_the_sibling() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "close\ndone\n",
-        "exactly one close: `a` through the program, `b` leaked by the whole-root retirement"
+        "close\ndone\nclose\n",
+        "exactly two closes: `a` through the program, `b` on scope exit"
     );
 }
 

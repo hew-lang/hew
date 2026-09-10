@@ -164,24 +164,32 @@ fn machine_diagram_composite_json_carries_composites_array() {
     let input = dir.path().join("conn.hew");
     std::fs::write(&input, composite_fixture()).unwrap();
 
+    // The native evaluator does not admit composite states (HEW-SPEC-2026
+    // §3.11.2), so the checker refuses this fixture and the renderer only sees
+    // it behind `--no-check`.
     let output = Command::new(hew_binary())
         .arg("machine")
         .arg("diagram")
         .arg(&input)
-        .arg("--format")
-        .arg("json")
+        .args(["--format", "json", "--no-check"])
         .output()
         .unwrap();
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"composites\":[{\"name\":\"Connected\""),
-        "json must carry the composites array; stdout:\n{stdout}"
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        stdout.contains("\"initial\":\"Authenticating\""),
-        "stdout:\n{stdout}"
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagram: serde_json::Value = serde_json::from_str(&stdout).expect("diagram JSON");
+    assert_eq!(
+        diagram["composites"],
+        serde_json::json!([{
+            "name": "Connected",
+            "initial": "Authenticating",
+            "members": ["Authenticating", "Active"],
+        }]),
+        "json must carry the composite group with its initial substate; stdout:\n{stdout}"
     );
 }
 
@@ -226,7 +234,7 @@ fn machine_diagram_missing_file_exits_non_zero() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error reading"), "stderr: {stderr}");
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
     assert!(stderr.contains("missing.hew"), "stderr: {stderr}");
 }
 
@@ -322,7 +330,21 @@ fn machine_list_fails_closed_on_parse_error() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("parse error"), "stderr: {stderr}");
+    // Located diagnostics, anchored on the offending file: the machine command
+    // fails closed rather than listing a half-parsed machine.
+    assert!(
+        stderr.contains("parse_err.hew:2:10: error:"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("expected `,` between structural members"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).is_empty(),
+        "must not emit a fabricated inventory; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]
@@ -413,7 +435,9 @@ fn emits_fixture() -> &'static str {
      }\n"
 }
 
-/// Generic machine — HIR path must not crash; falls back to AST with a warning.
+/// Generic machine — the ordinary HIR check path admits it. `default { state }`
+/// satisfies exhaustiveness, which generic machines are checked for like any
+/// other.
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
@@ -674,15 +698,17 @@ fn machine_list_shows_emits_section() {
     );
 }
 
-// ── fix 4: generic machines fall back to AST (no crash) ──────────────────────
+// ── fix 4: generic machines go through the ordinary HIR check path ───────────
 
 #[test]
-fn machine_diagram_generic_fallback_exits_zero_with_warning() {
+fn machine_diagram_generic_renders_through_the_check_path() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
 
-    // Default (check) path — must not crash; must emit warning on stderr.
+    // Default (check) path — a generic machine is checked like any other and
+    // renders with nothing on stderr. The old AST fallback and its
+    // "skipping HIR checks" warning are retired.
     let output = Command::new(hew_binary())
         .args(["machine", "diagram"])
         .arg(&input)
@@ -691,25 +717,23 @@ fn machine_diagram_generic_fallback_exits_zero_with_warning() {
 
     assert!(
         output.status.success(),
-        "generic machine must not crash; stderr: {}",
+        "generic machine must render; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(
-            "warning: generic machine(s) skipping HIR checks — use --no-check to suppress"
-        ),
-        "must emit warning with suppression hint for generic machine; stderr:\n{stderr}"
+        output.stderr.is_empty(),
+        "the check path must not warn about generic machines; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("stateDiagram-v2"),
-        "must still produce diagram output; stdout:\n{stdout}"
+        "must produce diagram output; stdout:\n{stdout}"
     );
 }
 
 #[test]
-fn machine_list_generic_lists_with_warning() {
+fn machine_list_generic_lists_through_the_check_path() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
@@ -734,14 +758,10 @@ fn machine_list_generic_lists_with_warning() {
     assert!(stdout.contains("    Put { value }"), "stdout:\n{stdout}");
     assert!(stdout.contains("  Transitions: 2"), "stdout:\n{stdout}");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("warning: generic machine(s) skipping HIR checks"),
-        "stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("--no-check"),
-        "list warning must not mention unsupported --no-check flag; stderr:\n{stderr}"
+        output.stderr.is_empty(),
+        "the check path must not warn about generic machines; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -770,9 +790,12 @@ fn machine_diagram_generic_json_carries_type_params() {
 
 #[test]
 fn machine_diagram_json_no_wildcard_rows() {
-    // The connection_lifecycle fixture has wildcard `_ => _` transitions; the
-    // JSON output must not contain raw "_" as a from/to value — they must be
-    // expanded to concrete states (vacuous self-loops suppressed).
+    // A wildcard source must reach the JSON as concrete states, never a raw
+    // "_". The wildcard-derived `A => A` row is NOT suppressed: it is emitted
+    // flagged `selfTransition: true, external: false`, matching the mermaid
+    // renderer's `A --> A : Reset` edge. Whether a vacuous self-loop belongs in
+    // a diagram at all is an open question; this pins what both renderers
+    // actually agree on today so a change to either is deliberate.
     let dir = support::tempdir();
     // Minimal wildcard machine: one wildcard source, one named target.
     // `default { state }` satisfies exhaustiveness so the HIR path works.
@@ -796,19 +819,41 @@ fn machine_diagram_json_no_wildcard_rows() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagram: serde_json::Value = serde_json::from_str(&stdout).expect("diagram JSON");
+    let transitions = diagram["transitions"]
+        .as_array()
+        .expect("transitions array")
+        .clone();
     assert!(
-        !stdout.contains("\"from\":\"_\"") && !stdout.contains("\"to\":\"_\""),
-        "JSON must not contain raw wildcard _; stdout:\n{stdout}"
+        transitions
+            .iter()
+            .all(|row| row["from"] != "_" && row["to"] != "_"),
+        "JSON must not carry a raw wildcard state; stdout:\n{stdout}"
     );
-    // Reset from B => A must be present (wildcard expanded to B).
-    assert!(
-        stdout.contains("\"from\":\"B\",\"to\":\"A\""),
-        "wildcard Reset must expand to concrete B => A; stdout:\n{stdout}"
+    assert_eq!(
+        transitions,
+        vec![
+            serde_json::json!({"event": "Flip", "from": "A", "to": "B",
+                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
+            serde_json::json!({"event": "Reset", "from": "A", "to": "A",
+                "selfTransition": true, "guarded": false, "reenter": false, "external": false}),
+            serde_json::json!({"event": "Reset", "from": "B", "to": "A",
+                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
+        ],
+        "wildcard Reset must expand to both concrete sources; stdout:\n{stdout}"
     );
-    // Reset from A => A is a vacuous self-loop: must be suppressed.
+
+    // The mermaid renderer draws the same self-loop, so the two agree.
+    let mermaid = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(mermaid.status.success());
+    let mermaid = String::from_utf8_lossy(&mermaid.stdout).into_owned();
     assert!(
-        !stdout.contains("\"from\":\"A\",\"to\":\"A\""),
-        "wildcard-derived vacuous self-loop A=>A must be suppressed; stdout:\n{stdout}"
+        mermaid.contains("A --> A : Reset"),
+        "mermaid must draw the same wildcard-derived self-loop; stdout:\n{mermaid}"
     );
 }
 

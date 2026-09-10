@@ -72,7 +72,7 @@ fn assert_one_failure_cleanup(ir: &str, symbol: &str) {
         "{symbol} must consume the invalid handle exactly once:\n{body}"
     );
     assert_eq!(
-        body.matches("@\"GlobResult::close\"").count(),
+        body.matches("@\"__hew_fn_std.path.GlobResult::close\"").count(),
         0,
         "{symbol} must not close the success-arm GlobResult before transferring it to the caller:\n{body}"
     );
@@ -104,8 +104,5 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
 
     let ir = std::fs::read_to_string(dir.path().join("glob_ownership.ll"))
         .expect("read emitted LLVM IR");
-    assert_one_failure_cleanup(
-        &ir,
-        "define internal %\"Result$$std$mpath$mGlobResult$std$mpath$mPathError\" @\"std$path$glob\"",
-    );
+    assert_one_failure_cleanup(&ir, "define i32 @\"__hew_fn_std$path$glob\"(");
 }

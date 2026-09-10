@@ -1,0 +1,88 @@
+// Ordinary data is released through the runtime's iterative walker, so the
+// native stack does not grow with the structure and the work stays proportional
+// to what is released. A resource keeps its own recursive release path, and its
+// declared close still runs in the order it always did: a field's whole subtree
+// before the fields declared ahead of it, elements in order.
+
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Item { name: string }
+type Node { child: Vec<Node> }
+type Chain { next: HashMap<i64, Chain> }
+type Holder { tag: Tag, kids: Vec<Holder> }
+type Mixed { tag: Tag, data: Vec<Item> }
+
+// A wide collection is released one bounded step at a time, not one worklist
+// entry per element.
+fn wide_records() {
+    var items: Vec<Item> = Vec.new();
+    for i in 0..200000 {
+        items.push(Item { name: f"item{i}" });
+    }
+    println(f"wide={items.len()}");
+}
+
+// Depth through a map rather than a Vec: a record is only recursive through a
+// heap-owning collection, and HashMap is the other one.
+fn deep_map_chain() {
+    var chain = Chain { next: HashMap.new() };
+    for i in 0..50000 {
+        var link: HashMap<i64, Chain> = HashMap.new();
+        link.insert(1, chain);
+        chain = Chain { next: link };
+    }
+    println(f"deepmap={chain.next.len()}");
+}
+
+// The map's values are themselves deep, so releasing one entry has to flatten
+// before the scan reaches the next.
+fn map_of_deep_vectors() {
+    var roots: HashMap<i64, Node> = HashMap.new();
+    for key in 0..4 {
+        var node = Node { child: Vec.new() };
+        for i in 0..5000 {
+            var wrapper: Vec<Node> = Vec.new();
+            wrapper.push(node);
+            node = Node { child: wrapper };
+        }
+        roots.insert(key, node);
+    }
+    println(f"mapdeep={roots.len()}");
+}
+
+// The nested collection holds the resource, so `kids` releases before `tag`:
+// the inner close prints first.
+fn resource_release_order() {
+    var inner: Vec<Holder> = Vec.new();
+    inner.push(Holder { tag: Tag { id: 2 }, kids: Vec.new() });
+    var outer: Vec<Holder> = Vec.new();
+    outer.push(Holder { tag: Tag { id: 1 }, kids: inner });
+    println("resource-built");
+}
+
+// Ordinary data sitting beside a resource is deferred into the walk while the
+// close is not, so the closes still run in element order.
+fn mixed_release_order() {
+    var mixed: Vec<Mixed> = Vec.new();
+    for i in 0..2 {
+        var data: Vec<Item> = Vec.new();
+        data.push(Item { name: f"payload{i}" });
+        mixed.push(Mixed { tag: Tag { id: 10 + i }, data: data });
+    }
+    println("mixed-built");
+}
+
+fn main() {
+    wide_records();
+    deep_map_chain();
+    map_of_deep_vectors();
+    resource_release_order();
+    mixed_release_order();
+}

@@ -1521,26 +1521,30 @@ unsafe fn element_needs_drop(v: *mut HewVec) -> bool {
     }
 }
 
-/// Drop the live element at `index` through the Vec's single descriptor
+/// Drop the live elements at `indices` through the Vec's single descriptor
 /// protocol.
 ///
 /// # Safety
 ///
-/// `v` must be valid and `index < (*v).len`.
-unsafe fn drop_element_at(v: *mut HewVec, index: usize) {
-    // SAFETY: caller guarantees `v` and the index are valid.
+/// `v` must be valid and every index must be below `(*v).len`.
+unsafe fn drop_elements(v: *mut HewVec, indices: impl Iterator<Item = usize>) {
+    // SAFETY: caller guarantees `v` and the indices are valid.
     unsafe {
         let vec = &*v;
         if !vec.layout.is_null() {
             let layout = &*vec.layout;
             if let Some(drop_fn) = layout.drop_fn {
-                drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
+                for index in indices {
+                    drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
+                }
             }
             return;
         }
         if vec.elem_kind == ElemKind::String {
-            let slot = vec.data.cast::<*mut HewString>().add(index);
-            release_string_element(slot.read());
+            for index in indices {
+                let slot = vec.data.cast::<*mut HewString>().add(index);
+                release_string_element(slot.read());
+            }
         }
     }
 }
@@ -1568,35 +1572,40 @@ pub(crate) unsafe fn expand_vector(v: *mut HewVec, reverse: bool) {
     }
 }
 
-/// Walker step: release one element of `[next, end)` and keep the rest.
+/// Walker step: release the next chunk of `[next, end)` and keep the rest.
 ///
 /// # Safety
 ///
 /// `v` must be a Vec the walk owns, with `next < end <= (*v).len`.
-pub(crate) unsafe fn release_one_element(v: *mut HewVec, next: usize, end: usize, reverse: bool) {
+pub(crate) unsafe fn release_element_chunk(v: *mut HewVec, next: usize, end: usize, reverse: bool) {
     // SAFETY: caller guarantees the element range is live.
     unsafe {
-        let index = if reverse { end - 1 } else { next };
-        // The remaining range stays beneath whatever this element queues, so
-        // an element's whole subtree is released before its next sibling.
+        let count = (end - next).min(release_walker::STEP_ELEMENTS);
+        // The remaining range stays beneath whatever this chunk queues, so an
+        // element's whole subtree is released before the rest of the range.
         if reverse {
-            if index > next {
+            let stop = end - count;
+            if stop > next {
                 release_walker::queue(ReleaseItem::VectorElements {
                     vec: v,
                     next,
-                    end: index,
+                    end: stop,
                     reverse,
                 });
             }
-        } else if index + 1 < end {
-            release_walker::queue(ReleaseItem::VectorElements {
-                vec: v,
-                next: index + 1,
-                end,
-                reverse,
-            });
+            drop_elements(v, (stop..end).rev());
+        } else {
+            let stop = next + count;
+            if stop < end {
+                release_walker::queue(ReleaseItem::VectorElements {
+                    vec: v,
+                    next: stop,
+                    end,
+                    reverse,
+                });
+            }
+            drop_elements(v, next..stop);
         }
-        drop_element_at(v, index);
     }
 }
 

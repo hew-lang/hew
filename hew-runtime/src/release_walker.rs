@@ -69,6 +69,11 @@ thread_local! {
     static DRAINS: Cell<usize> = const { Cell::new(0) };
 }
 
+/// How many collection elements one worklist step releases. A step stays
+/// bounded so a wide collection can be driven in quanta, while the chunk keeps
+/// the worklist traffic off the per-element path.
+pub(crate) const STEP_ELEMENTS: usize = 64;
+
 /// Queue one step for the walk in progress.
 pub(crate) fn queue(item: ReleaseItem) {
     PENDING.with(|pending| pending.borrow_mut().push(item));
@@ -158,10 +163,10 @@ unsafe fn run(item: ReleaseItem) {
                 next,
                 end,
                 reverse,
-            } => crate::vec::release_one_element(vec, next, end, reverse),
+            } => crate::vec::release_element_chunk(vec, next, end, reverse),
             ReleaseItem::VectorStorage { vec } => crate::vec::free_vector_storage(vec),
             ReleaseItem::Map { map } => crate::hashmap::expand_map(map),
-            ReleaseItem::MapSlots { map, next } => crate::hashmap::release_one_slot(map, next),
+            ReleaseItem::MapSlots { map, next } => crate::hashmap::release_slot_chunk(map, next),
             ReleaseItem::MapStorage { map } => crate::hashmap::free_map_storage(map),
         }
     }

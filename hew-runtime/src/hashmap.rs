@@ -2044,8 +2044,8 @@ pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap) {
     release_walker::queue(ReleaseItem::MapSlots { map: m, next: 0 });
 }
 
-/// Walker step: release the first occupied slot at or after `next`, keeping the
-/// rest of the scan.
+/// Walker step: release the next chunk of occupied slots at or after `next`,
+/// keeping the rest of the scan.
 ///
 /// Tombstoned slots already had their blobs dropped at remove time and must not
 /// be dropped again.
@@ -2053,34 +2053,39 @@ pub(crate) unsafe fn expand_map(m: *mut HewLayoutHashMap) {
 /// # Safety
 ///
 /// `m` must be a map the walk owns whose entry buffer is still live.
-pub(crate) unsafe fn release_one_slot(m: *mut HewLayoutHashMap, next: usize) {
+pub(crate) unsafe fn release_slot_chunk(m: *mut HewLayoutHashMap, next: usize) {
     // SAFETY: caller guarantees the map and its entry buffer are live.
     let map_ref = unsafe { &*m };
     let entries = map_ref.entries;
     let stride = map_ref.stride;
-    let Some(idx) = (next..map_ref.cap).find(|idx| {
+    let key_drop_fn = map_ref.key_layout.value.drop_fn;
+    let val_drop_fn = map_ref.val_layout.drop_fn;
+    let mut released = 0;
+    let mut idx = next;
+    while idx < map_ref.cap {
         // SAFETY: idx < cap; stride matches allocation.
-        unsafe { *slot_state(entries, *idx, stride) == OCCUPIED }
-    }) else {
-        return;
-    };
-    // The remaining scan stays beneath whatever this slot queues, so a value's
-    // whole subtree is released before the next entry.
-    if idx + 1 < map_ref.cap {
-        release_walker::queue(ReleaseItem::MapSlots {
-            map: m,
-            next: idx + 1,
-        });
-    }
-    if let Some(key_drop) = map_ref.key_layout.value.drop_fn {
-        // SAFETY: occupied slot has a valid K blob at key_offset.
-        let slot_key_ptr = unsafe { slot_key(entries, idx, stride, map_ref.key_offset) };
-        key_drop(slot_key_ptr.cast::<c_void>());
-    }
-    if let Some(val_drop) = map_ref.val_layout.drop_fn {
-        // SAFETY: occupied slot has a valid V blob at val_offset.
-        let slot_val_ptr = unsafe { slot_val(entries, idx, stride, map_ref.val_offset) };
-        val_drop(slot_val_ptr.cast::<c_void>());
+        if unsafe { *slot_state(entries, idx, stride) } != OCCUPIED {
+            idx += 1;
+            continue;
+        }
+        if released == release_walker::STEP_ELEMENTS {
+            // The remaining scan stays beneath whatever this chunk queued, so a
+            // value's whole subtree is released before the rest of the map.
+            release_walker::queue(ReleaseItem::MapSlots { map: m, next: idx });
+            return;
+        }
+        if let Some(key_drop) = key_drop_fn {
+            // SAFETY: occupied slot has a valid K blob at key_offset.
+            let slot_key_ptr = unsafe { slot_key(entries, idx, stride, map_ref.key_offset) };
+            key_drop(slot_key_ptr.cast::<c_void>());
+        }
+        if let Some(val_drop) = val_drop_fn {
+            // SAFETY: occupied slot has a valid V blob at val_offset.
+            let slot_val_ptr = unsafe { slot_val(entries, idx, stride, map_ref.val_offset) };
+            val_drop(slot_val_ptr.cast::<c_void>());
+        }
+        released += 1;
+        idx += 1;
     }
 }
 

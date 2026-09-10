@@ -5182,22 +5182,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use MathIntrinsic as M;
-        let name = match kind {
-            M::Sqrt => "llvm.sqrt",
-            M::Exp => "llvm.exp",
-            M::Log => "llvm.log",
-            M::Sin => "llvm.sin",
-            M::Cos => "llvm.cos",
-            M::AbsI64 => "llvm.abs",
-            M::MinI64 => "llvm.smin",
-            M::MaxI64 => "llvm.smax",
-            M::AbsF64 => "llvm.fabs",
-            M::MinF64 => "llvm.minnum",
-            M::MaxF64 => "llvm.maxnum",
-            M::Pow => "llvm.pow",
-            M::Floor => "llvm.floor",
-            M::Ceil => "llvm.ceil",
-            M::Round => "llvm.round",
+        // Libm-only operations: LLVM has no core intrinsic for these on any
+        // supported LLVM version, so codegen declares and calls the C symbol
+        // directly. The executable already links libm transitively (the
+        // trig/exp/log intrinsics above lower to libm calls themselves), so
+        // this adds no new link dependency.
+        let libm_symbol = match kind {
+            M::Log1p => Some("log1p"),
+            M::Expm1 => Some("expm1"),
+            M::Cbrt => Some("cbrt"),
+            M::Hypot => Some("hypot"),
+            _ => None,
         };
         let mut arguments = transfers
             .iter()
@@ -5206,11 +5201,61 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         let first = *arguments.first().ok_or_else(|| {
             CodegenError::FailClosed("physical math intrinsic lacks its operand".into())
         })?;
-        let declaration = Intrinsic::find(name)
-            .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &[first.get_type()]))
-            .ok_or_else(|| {
-                CodegenError::FailClosed(format!("LLVM math intrinsic `{name}` is unavailable"))
-            })?;
+        let declaration = if let Some(symbol) = libm_symbol {
+            let f64_ty = self.ctx.f64_type();
+            let param_count = arguments.len();
+            let params = vec![f64_ty.into(); param_count];
+            get_or_declare_external(self.llvm, symbol, f64_ty.fn_type(&params, false))?
+        } else {
+            let name = match kind {
+                M::Sqrt => "llvm.sqrt",
+                M::Exp => "llvm.exp",
+                M::Log => "llvm.log",
+                M::Sin => "llvm.sin",
+                M::Cos => "llvm.cos",
+                M::AbsI64 => "llvm.abs",
+                M::MinI64 => "llvm.smin",
+                M::MaxI64 => "llvm.smax",
+                M::AbsF64 => "llvm.fabs",
+                M::MinF64 => "llvm.minnum",
+                M::MaxF64 => "llvm.maxnum",
+                M::Pow => "llvm.pow",
+                M::Floor => "llvm.floor",
+                M::Ceil => "llvm.ceil",
+                M::Round => "llvm.round",
+                M::Tan => "llvm.tan",
+                M::Asin => "llvm.asin",
+                M::Acos => "llvm.acos",
+                M::Atan => "llvm.atan",
+                M::Atan2 => "llvm.atan2",
+                M::Sinh => "llvm.sinh",
+                M::Cosh => "llvm.cosh",
+                M::Tanh => "llvm.tanh",
+                M::Exp2 => "llvm.exp2",
+                M::Log2 => "llvm.log2",
+                M::Log10 => "llvm.log10",
+                M::Fma => "llvm.fma",
+                M::Trunc => "llvm.trunc",
+                M::Copysign => "llvm.copysign",
+                M::Powi => "llvm.powi",
+                M::Log1p | M::Expm1 | M::Cbrt | M::Hypot => {
+                    unreachable!("libm-only kinds are handled by the `libm_symbol` branch above")
+                }
+            };
+            // `powi` is parameterized over both the float type and the
+            // integer exponent's type (`llvm.powi.f64.i32`); every other
+            // intrinsic here overloads on the first operand's type alone.
+            let overload_types: &[_] = if kind == M::Powi { &[0, 1] } else { &[0] };
+            let types: Vec<_> = overload_types
+                .iter()
+                .map(|&i| arguments[i].get_type())
+                .collect();
+            Intrinsic::find(name)
+                .and_then(|intrinsic| intrinsic.get_declaration(self.llvm, &types))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!("LLVM math intrinsic `{name}` is unavailable"))
+                })?
+        };
         if kind == M::AbsI64 {
             // Keep the minimum input defined while routing it to the checked
             // overflow edge, rather than creating poison before that branch.

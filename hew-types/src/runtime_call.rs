@@ -1171,6 +1171,34 @@ pub enum MathIntrinsic {
     Floor,
     Ceil,
     Round,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Sinh,
+    Cosh,
+    Tanh,
+    Exp2,
+    Log2,
+    Log10,
+    /// Not an LLVM intrinsic on this target's LLVM version; codegen declares
+    /// and calls the libm symbol `log1p` directly (see `emit_math_intrinsic`).
+    Log1p,
+    /// Libm-only, like `Log1p`: codegen calls `expm1` directly.
+    Expm1,
+    /// Libm-only, like `Log1p`: codegen calls `cbrt` directly.
+    Cbrt,
+    /// Libm-only, like `Log1p`: codegen calls `hypot` directly.
+    Hypot,
+    Fma,
+    Trunc,
+    Copysign,
+    /// `x.powi(n)`: `llvm.powi.f64.i32`. `n` is `i32` — LLVM's `powi` overload
+    /// is parameterized on a fixed integer width and does not generalize to
+    /// `i64`; widening `n` to `i64` in source would silently truncate at the
+    /// call site instead of at the declared signature.
+    Powi,
 }
 
 impl MathIntrinsic {}
@@ -3829,6 +3857,325 @@ impl RuntimeCallFamily {
                         ty: K::F64,
                         effect: E::Copy,
                     }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Tan) => RuntimeOpRow {
+                symbol: "tan",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Asin) => RuntimeOpRow {
+                symbol: "asin",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Acos) => RuntimeOpRow {
+                symbol: "acos",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Atan) => RuntimeOpRow {
+                symbol: "atan",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Atan2) => RuntimeOpRow {
+                symbol: "atan2",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Sinh) => RuntimeOpRow {
+                symbol: "sinh",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Cosh) => RuntimeOpRow {
+                symbol: "cosh",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Tanh) => RuntimeOpRow {
+                symbol: "tanh",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Exp2) => RuntimeOpRow {
+                symbol: "exp2",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Log2) => RuntimeOpRow {
+                symbol: "log2",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Log10) => RuntimeOpRow {
+                symbol: "log10",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Log1p) => RuntimeOpRow {
+                symbol: "log1p",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Expm1) => RuntimeOpRow {
+                symbol: "expm1",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Cbrt) => RuntimeOpRow {
+                symbol: "cbrt",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Hypot) => RuntimeOpRow {
+                symbol: "hypot",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Fma) => RuntimeOpRow {
+                symbol: "fma",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Trunc) => RuntimeOpRow {
+                symbol: "trunc",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Copysign) => RuntimeOpRow {
+                symbol: "copysign",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::Powi) => RuntimeOpRow {
+                symbol: "powi",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::F64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                    ],
                     result: R::BitCopy(K::F64),
                     failures: &[],
                 }),

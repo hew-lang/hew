@@ -395,6 +395,8 @@ const VEC_ANY_I64_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, Bu
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
+const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
+const F64_I32: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::I32];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
 const NODE_CONFIG: &[BuiltinTy] = &[BuiltinTy::NodeConfig];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
@@ -2223,6 +2225,177 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::F64,
         BuiltinLinkage::CompilerIntrinsic {
             intrinsic: "math.round",
+        },
+    ),
+    direct(
+        "math.tan",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.tan",
+        },
+    ),
+    direct(
+        "math.asin",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.asin",
+        },
+    ),
+    direct(
+        "math.acos",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.acos",
+        },
+    ),
+    direct(
+        "math.atan",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.atan",
+        },
+    ),
+    direct(
+        "math.atan2",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.atan2",
+        },
+    ),
+    direct(
+        "math.sinh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.sinh",
+        },
+    ),
+    direct(
+        "math.cosh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.cosh",
+        },
+    ),
+    direct(
+        "math.tanh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.tanh",
+        },
+    ),
+    direct(
+        "math.exp2",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.exp2",
+        },
+    ),
+    direct(
+        "math.log2",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log2",
+        },
+    ),
+    direct(
+        "math.log10",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log10",
+        },
+    ),
+    direct(
+        "math.log1p",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log1p",
+        },
+    ),
+    direct(
+        "math.expm1",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.expm1",
+        },
+    ),
+    direct(
+        "math.cbrt",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.cbrt",
+        },
+    ),
+    direct(
+        "math.hypot",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.hypot",
+        },
+    ),
+    direct(
+        "math.fma",
+        BuiltinClass::ClassB,
+        F64_F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.fma",
+        },
+    ),
+    direct(
+        "math.trunc",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.trunc",
+        },
+    ),
+    direct(
+        "math.copysign",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.copysign",
+        },
+    ),
+    direct(
+        "math.powi",
+        BuiltinClass::ClassB,
+        F64_I32,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.powi",
         },
     ),
     // Class B: random module runtime shims.

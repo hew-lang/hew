@@ -1,0 +1,11 @@
+[[case]]
+id = "math-functions"
+intent = "The trig, hyperbolic, exponential, logarithmic and rounding math functions added alongside the intrinsic family match libm to six decimal places, and min/max ignore a NaN operand rather than propagating it."
+source = "cases/math-functions.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "math functions match libm to six decimal places\n"
+stderr = ""
+exit = 0

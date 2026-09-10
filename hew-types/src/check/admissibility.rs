@@ -918,10 +918,15 @@ impl Checker {
         ty: &Ty,
     ) -> Result<(ValueClass, CloneKind), ClassError> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        // The enclosing item's own parameters render as abstract parameters
+        // rather than as user nominals, so an in-scope `T` reaches the class
+        // rule as the parameter it is and refuses with `TypeParam` instead of
+        // as a declaration nobody wrote.
         let rendered =
-            ResolvedTy::from_ty(&resolved).map_err(|_| ClassError::UnknownDeclaration {
-                name: resolved.user_facing().to_string(),
-            })?;
+            ResolvedTy::from_ty_with_type_params(&resolved, &self.current_type_param_names())
+                .map_err(|_| ClassError::UnknownDeclaration {
+                    name: resolved.user_facing().to_string(),
+                })?;
         crate::value_class::classify_ty(
             &rendered,
             &crate::value_class::ClassContext::new(&self.class_declarations()),

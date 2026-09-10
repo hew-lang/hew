@@ -111,7 +111,7 @@ impl Builder<'_, '_> {
         // Acquire its current value only after those effects have completed.
         let selected = self.owned_projection(&place)?;
         let (value, scalar_parents) = if let Some(selected) = selected {
-            let (root, _) = crate::projection::place_path(&self.places, selected)?;
+            let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(root, &mut arguments, &mut loans, &provenance)?;
             let value = self.emit_typed(
                 provenance.clone(),

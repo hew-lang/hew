@@ -350,7 +350,7 @@ pub fn run_layout_mono_pass(
         .iter()
         .filter(|spec| !spec.type_params.is_empty())
     {
-        let type_name = spec.type_name;
+        let type_name = spec.canonical_type_name;
         // Only seed if not already present (a user-declared enum named
         // "Option" or "Result" would shadow the builtin; honour that).
         enum_decls

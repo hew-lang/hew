@@ -830,8 +830,6 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 /// payload type-parameter names index into `type_params`.
 #[derive(Clone, Copy)]
 pub(crate) struct BuiltinEnumSpec {
-    /// Prelude spelling used only to publish compatibility aliases.
-    pub(crate) type_name: &'static str,
     /// Exact declaration identity used by every semantic registry.
     pub(crate) canonical_type_name: &'static str,
     pub(crate) item_id: ItemId,
@@ -905,7 +903,6 @@ const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicE
     hew_types::builtin_enums::monomorphic_builtin_enums();
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
 const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
-    type_name: "",
     canonical_type_name: "",
     item_id: ItemId(0),
     type_params: &[],
@@ -985,7 +982,6 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
 
     let mut specs = [EMPTY_BUILTIN_ENUM_SPEC; BUILTIN_ENUM_SPEC_COUNT];
     specs[0] = BuiltinEnumSpec {
-        type_name: "Option",
         canonical_type_name: "Option",
         item_id: SYNTHETIC_OPTION_ITEM,
         type_params: BuiltinType::Option.generic_enum().unwrap().type_params,
@@ -994,7 +990,6 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
         ),
     };
     specs[1] = BuiltinEnumSpec {
-        type_name: "Result",
         canonical_type_name: "Result",
         item_id: SYNTHETIC_RESULT_ITEM,
         type_params: BuiltinType::Result.generic_enum().unwrap().type_params,
@@ -1008,7 +1003,6 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
         let (canonical_type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
         let catalog_entry = monomorphic_builtin_enum(canonical_type_name);
         specs[index + 2] = BuiltinEnumSpec {
-            type_name: catalog_entry.name,
             canonical_type_name: catalog_entry.canonical_name,
             item_id,
             type_params: &[],
@@ -4167,12 +4161,6 @@ pub fn lower_program_with_mono_cap(
                     canonical,
                     (spec.canonical_type_name.to_string(), variant_idx),
                 );
-                // `Type::Variant` is a prelude presentation alias. Never let
-                // it replace an exact root declaration with the same leaf.
-                let qualified_alias = format!("{}::{variant_name}", spec.type_name);
-                ctx.machine_ctor_registry
-                    .entry(qualified_alias)
-                    .or_insert_with(|| (spec.canonical_type_name.to_string(), variant_idx));
                 // Register the bare form only when count == 1 (unique) AND
                 // the user has not declared their own variant with this name.
                 if bare_counts.get(variant_name).copied().unwrap_or(0) == 1

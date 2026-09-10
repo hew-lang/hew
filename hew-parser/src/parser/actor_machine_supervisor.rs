@@ -10,9 +10,10 @@ use super::*;
 ///
 /// The two positions have different grammars on purpose. `Source` is a
 /// pattern matched against the machine's current state — it has no expected
-/// type, carries no bare-variant lint, and therefore has no contextual
-/// (`.Variant`) form. `Target` is an expression checked against the machine's
-/// state enum, so it accepts `.Variant` and the bare form warns with a fix-it.
+/// type and therefore has no contextual (`.Variant`) form. `Target` is a state
+/// name in the machine's own namespace (HEW-SPEC-2026 §3.11.3), written bare;
+/// the contextual spelling is tolerated there and carries no bare-variant lint
+/// either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatePatternPosition {
     Source,
@@ -393,6 +394,8 @@ impl Parser<'_> {
                 transitions.push(transition);
             } else if self.eat_machine_kw("default") {
                 // `default { state }` — unhandled events stay in current state.
+                // One spelling: a bare `default` or `default;` said the same
+                // thing and is refused (D480).
                 if self.peek() == Some(&Token::LeftBrace) {
                     let block = self.parse_block()?;
                     if !block.stmts.is_empty()
@@ -401,6 +404,12 @@ impl Parser<'_> {
                         self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
                 } else {
+                    let span = self.peek_span();
+                    self.error_at_with_hint(
+                        "machine default must be `default { state }`".to_string(),
+                        span,
+                        "write the identity body: `default { state }`",
+                    );
                     self.eat(&Token::Semicolon);
                 }
                 has_default = true;
@@ -529,15 +538,14 @@ impl Parser<'_> {
 
         // Body forms:
         //   on Event: Source => Target,                     ← no body (unit)
-        //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
-        //   on Event: Source => Target { expression }       ← explicit body
+        //   on Event: Source => Target { field: expr, ... } ← field list, target elided
+        //   on Event: Source => Target { expression }       ← computed body
         let (body, body_form, body_start, body_end) = if self.peek() != Some(&Token::LeftBrace) {
             self.expect_structural_separator();
             // The implicit body is synthesized from the target state, so it is
             // spanned on the target token — not on whatever token follows the
-            // `,`. Diagnostics on this expression (notably the bare-variant
-            // fix-it that rewrites `Tgt` to `.Tgt`) are only applicable if they
-            // point at the text they ask the author to replace.
+            // `,`. A diagnostic on this expression has to point at the text it
+            // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state.clone(),
@@ -569,8 +577,7 @@ impl Parser<'_> {
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
-            // state enum exactly as `=> .Faulted;` does, and carries no
-            // bare-variant warning.
+            // state enum exactly as `=> .Faulted,` does.
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state.clone(),

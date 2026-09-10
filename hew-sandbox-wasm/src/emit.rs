@@ -2344,13 +2344,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "array-repeat lowering builds a four-block counted loop whose evaluation and clone order must remain visible"
-    )]
     /// `..operand` inside a bracket literal: walk the operand by index and push
     /// each element onto the literal's vector, mirroring the native desugar in
     /// `hew-hir`'s `lower_array_spread` so both paths build the same sequence.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the spread lowering builds a four-block counted loop whose read and push order must remain visible in one place"
+    )]
     fn lower_array_spread(
         &mut self,
         vector_local: &str,
@@ -2473,6 +2473,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "array-repeat lowering builds a four-block counted loop whose evaluation and clone order must remain visible"
+    )]
     fn lower_array_repeat(
         &mut self,
         expr: &Spanned<Expr>,

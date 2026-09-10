@@ -21347,6 +21347,10 @@ impl LowerCtx {
     /// rather than bound to a temp: a `Read`-load of an owned place would give
     /// the temp a second owner of the same heap. A value-producing operand
     /// keeps an eval-once temp so a side-effecting source runs once.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the spread desugar is a single ownership-sensitive expansion; splitting it would obscure the temp binding's lifetime"
+    )]
     fn lower_array_spread(
         &mut self,
         operand: &Spanned<Expr>,

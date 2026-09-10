@@ -852,8 +852,9 @@ impl MapValueOp {
             ty: TypeArgument(0),
             effect: Borrow,
         };
-        // A value with no clone moves into the slot the map owns; a clonable
-        // one is copied in and the caller keeps its own.
+        // The map adopts the value: it owns the slot's contents once the
+        // insertion returns. Lowering hands over an independent owner, so a
+        // caller that still reads its own binding keeps it.
         const VALUE: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: TypeArgument(1),
             effect: RuntimeArgumentEffect::Value,

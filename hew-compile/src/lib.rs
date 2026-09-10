@@ -283,14 +283,14 @@ impl Session {
         }
         compiled_roots.sort_unstable();
         compiled_roots.dedup();
-        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(
-            |error| match error {
-                hew_sir::SirOptimizationError::InvalidInput(diagnostics)
-                | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
-                    SessionError::Semantic(diagnostics)
-                }
-            },
-        )?;
+        let sir_error = |error| match error {
+            hew_sir::SirOptimizationError::InvalidInput(diagnostics)
+            | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
+                SessionError::Semantic(diagnostics)
+            }
+        };
+        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(sir_error)?;
+        hew_sir::transfer_module_dead_local_reads(&mut sir.module).map_err(sir_error)?;
         Ok(SessionOutput {
             sir,
             compiled_roots,

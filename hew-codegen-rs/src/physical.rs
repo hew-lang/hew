@@ -5930,8 +5930,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             PhysicalMapOp::Insert | PhysicalMapOp::Clear => {
                 if operation == PhysicalMapOp::Insert {
-                    // A value with no clone moves into the slot; a clonable one
-                    // is copied and the caller keeps its own.
+                    // The adopted value transfers into the slot; the key is
+                    // cloned in either entry point.
                     let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
                     self.emit_collection_callback(
                         if moved {
@@ -8271,8 +8271,10 @@ mod tests {
                 None,
             ),
             (
+                // The map adopts an owned value, so insertion takes it and
+                // clones only the key.
                 RuntimeCallFamily::Map(Map::Insert),
-                "hew_hashmap_insert_clone_layout",
+                "hew_hashmap_insert_take_layout",
                 Some("hew_hashmap_free_layout"),
             ),
             (

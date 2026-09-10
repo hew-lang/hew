@@ -1,0 +1,42 @@
+// Adopting runtime operands transfer instead of cloning: the wrap-and-push
+// loop costs one allocation per level rather than a full structural copy of
+// everything built so far, and a value the caller still reads keeps its own.
+
+type Node { child: Vec<Node> }
+type Item { name: string, parts: Vec<i64> }
+type Key { name: string }
+
+fn build_deep(depth: i64) -> Node {
+  var n = Node { child: Vec.new() };
+  for i in 0..depth {
+    var wrapper: Vec<Node> = Vec.new();
+    wrapper.push(n);
+    n = Node { child: wrapper };
+  }
+  return n;
+}
+
+fn main() {
+  // Each level pushes the whole structure built so far. Cloning it made this
+  // quadratic and overflowed the native stack before the loop finished.
+  let deep = build_deep(30000);
+  println(f"depth=30000 root={deep.child.len()}");
+
+  // A local the caller reads again is copied in, not moved out: the stored
+  // element and the caller's own value are independent afterwards.
+  var kept = Item { name: "kept", parts: Vec.new() };
+  kept.parts.push(1);
+  var bag: Vec<Item> = Vec.new();
+  bag.push(kept);
+  kept.parts.push(2);
+  println(f"kept={kept.parts.len()} stored={bag[0].parts.len()}");
+
+  // A map adopts an owned key and value; both read back intact.
+  var index: HashMap<Key, Item> = HashMap.new();
+  let key = Key { name: "first" };
+  var value = Item { name: "entry", parts: Vec.new() };
+  value.parts.push(7);
+  value.parts.push(8);
+  index.insert(key, value);
+  println(f"map={index.len()} parts={index[key].parts.len()} name={index[key].name}");
+}

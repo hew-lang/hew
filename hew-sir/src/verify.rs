@@ -5171,7 +5171,7 @@ fn verify_terminator_shape(
                             .is_some_and(|(yielded, _)| matches!(result, crate::CallResult::Value(value)
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![yielded.clone()]))))
                 }
-                crate::SuspendKind::StreamNext => {
+                crate::SuspendKind::StreamNext { .. } => {
                     resumes.len() == 1
                         && matches!(inputs.as_slice(), [input]
                         if input.decision == crate::BoundaryDecision::BorrowMut

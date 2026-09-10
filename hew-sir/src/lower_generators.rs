@@ -252,10 +252,14 @@ impl Builder<'_, '_> {
         self.end_call_loans(loans)
     }
 
+    /// A stream consumer takes the next element. `park` is `recv()`: an
+    /// exhausted stream with a live producer parks. `try_recv()` (`park:
+    /// false`) resumes with `None` instead.
     pub(super) fn lower_stream_next(
         &mut self,
         expression: &HirExpr,
         receiver: &HirExpr,
+        park: bool,
     ) -> Result<ValueId, String> {
         let mut loans = Vec::new();
         let stream = self.lower_borrowed_read(receiver, &mut loans)?;
@@ -274,7 +278,7 @@ impl Builder<'_, '_> {
         let unwind = self.new_block(Vec::new());
         let live = self.owned_live.clone();
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::StreamNext,
+            kind: SuspendKind::StreamNext { park },
             inputs: vec![BoundaryOperand {
                 operand: stream,
                 decision: BoundaryDecision::BorrowMut,

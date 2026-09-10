@@ -984,8 +984,11 @@ pub struct PhysicalWireTextResult {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalTerminator {
-    /// Park until the exclusively borrowed stream yields an element or ends.
+    /// Take the next element from the exclusively borrowed stream. `park`
+    /// waits for an element or for the producer to finish; without it an empty
+    /// stream produces `None` at once.
     StreamNext {
+        park: bool,
         stream: ArgumentTransfer,
         element: PhysicalValueRecipe,
         result: StorageId,
@@ -3415,7 +3418,7 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::StreamNext,
+                kind: hew_sir::SuspendKind::StreamNext { park },
                 inputs,
                 result: CallResult::Value(result),
                 resumes,
@@ -3435,6 +3438,7 @@ impl FunctionLowerer<'_> {
                     .map(|field| field.ty.clone())
                     .ok_or_else(|| PhysicalError::new("stream receive lacks its element type"))?;
                 Ok(PhysicalTerminator::StreamNext {
+                    park: *park,
                     stream: self.argument_transfers(inputs)?[0],
                     element: physical_value_recipe(self.module, self.glue_ids, &element)?,
                     result: self.value(result.id)?,

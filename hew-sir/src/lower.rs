@@ -8021,11 +8021,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.lower_sink_write(sink, value)?;
             return Ok(None);
         }
-        if family == hew_types::RuntimeCallFamily::StreamNextLayout {
+        if matches!(
+            family,
+            hew_types::RuntimeCallFamily::StreamNextLayout
+                | hew_types::RuntimeCallFamily::StreamTryNextLayout
+        ) {
             let [stream] = args else {
                 return Err("stream receive takes exactly one stream".into());
             };
-            return self.lower_stream_next(expr, stream).map(Some);
+            let park = family == hew_types::RuntimeCallFamily::StreamNextLayout;
+            return self.lower_stream_next(expr, stream, park).map(Some);
         }
         if matches!(
             family,

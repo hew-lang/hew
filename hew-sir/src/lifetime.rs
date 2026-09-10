@@ -1742,7 +1742,7 @@ impl<'a> Flow<'a> {
                     terminator,
                     SemTerminator::Suspend {
                         kind: crate::SuspendKind::GeneratorNext
-                            | crate::SuspendKind::StreamNext
+                            | crate::SuspendKind::StreamNext { .. }
                             | crate::SuspendKind::StreamSend
                             | crate::SuspendKind::ChannelRecv { .. }
                             | crate::SuspendKind::ChannelSend,

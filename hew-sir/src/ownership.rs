@@ -492,7 +492,13 @@ pub enum SuspendKind {
     /// A channel producer parks on a bounded channel's capacity. The element
     /// is deep-copied into the queue, so the producer keeps its value.
     ChannelSend,
-    StreamNext,
+    /// A stream consumer takes the next element. `park` is the `recv()`
+    /// contract: an exhausted stream with a live producer parks the
+    /// coroutine. `try_recv()` is the same take with `park: false` — an empty
+    /// stream resumes immediately with `None`.
+    StreamNext {
+        park: bool,
+    },
     StreamSend,
     CallClosure,
     /// Borrowed task observations, followed by an optional copied duration.

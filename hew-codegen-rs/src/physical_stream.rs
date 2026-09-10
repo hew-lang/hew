@@ -185,8 +185,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
+    /// `try_recv()` over a stream: one non-blocking take that resumes with
+    /// `Some` when an element was written and `None` when the stream is empty
+    /// or finished.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the take names its handle, slot, element layout, witness and both result halves"
+    )]
+    fn emit_stream_try_next(
+        &self,
+        handle: BasicValueEnum<'ctx>,
+        slot: PointerValue<'ctx>,
+        element_ty: BasicTypeEnum<'ctx>,
+        witness: PointerValue<'ctx>,
+        result: StorageId,
+        option: PhysicalVariantId,
+        normal: &PhysicalEdge,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let take = coro::external(
+            self.llvm,
+            "hew_stream_try_next_layout",
+            self.ctx
+                .i32_type()
+                .fn_type(&[pointer.into(), pointer.into(), pointer.into()], false),
+        )?;
+        let status = suspend::call_value(
+            &self.builder,
+            take,
+            &[handle.into(), slot.into(), witness.into()],
+            "stream.try_next.status",
+        )?
+        .into_int_value();
+        let some = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_next.some");
+        let none = self
+            .ctx
+            .append_basic_block(self.value, "stream.try_next.none");
+        let taken = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "stream.try_next.taken",
+            )
+            .llvm_ctx("observe a non-parking stream take")?;
+        self.builder
+            .build_conditional_branch(taken, some, none)
+            .llvm_ctx("dispatch non-parking stream receive outcome")?;
+        self.builder.position_at_end(some);
+        let value = self
+            .builder
+            .build_load(element_ty, slot, "stream.element")
+            .llvm_ctx("load transferred element")?;
+        self.write_variant_value(self.slots[result.0 as usize], 0, &[value], option)?;
+        self.set_place_initialized(result, true)?;
+        self.emit_edge(normal)?;
+        self.builder.position_at_end(none);
+        self.write_variant_value(self.slots[result.0 as usize], 1, &[], option)?;
+        self.set_place_initialized(result, true)?;
+        self.emit_edge(normal)
+    }
+
     pub(super) fn emit_stream_next(&self, block: &PhysicalBlock) -> CodegenResult<()> {
         let PhysicalTerminator::StreamNext {
+            park,
             stream,
             element,
             result,
@@ -200,13 +265,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             ));
         };
         let result = *result;
+        let park = *park;
         let witness = self.stream_witness(block.id)?;
         let ArgumentTransfer::BorrowMut(stream) = stream else {
             return Err(CodegenError::FailClosed(
                 "stream receive requires an exclusive stream".into(),
             ));
         };
-        let frame = self.stream_frame()?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let handle = self.load(*stream, "stream.receiver")?;
         let option = self
@@ -225,6 +290,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let slot = self
             .value_emitter()
             .entry_scratch(element_ty, "stream.element.slot")?;
+        if !park {
+            // A non-parking take never registers a waker or an in-flight read
+            // request, so there is nothing to abandon on an empty stream.
+            return self.emit_stream_try_next(
+                handle, slot, element_ty, witness, result, option.id, normal,
+            );
+        }
+        let frame = self.stream_frame()?;
         let waker = self.task_pointer_call("hew_coro_state_waker", &[frame.state.into()])?;
         let start = coro::external(
             self.llvm,

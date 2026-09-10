@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-try-recv"
+intent = "A non-blocking `Stream<string>.try_recv()` drains queued frames as `Some`, stays `None` once the queue is empty and the sink is closed, and releases an element left queued when the consumer goes away."
+source = "cases/stream-try-recv.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "poll [frame-0]\npoll []\npoll [frame-1]\ndrained 3 frames\nempty\ntook [kept-7]\n"
+exit = 0

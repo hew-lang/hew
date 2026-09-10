@@ -21,6 +21,13 @@ impl Builder<'_, '_> {
     /// loans and destructures the aggregate exactly once; its bindings become
     /// the field owners and the unbound owning fields join the candidate's
     /// cleanup set, which is what makes a partial move legal (A393).
+    ///
+    /// A field holding a variant pattern nests the same shape one level down:
+    /// the probed field is a loan, so the variant path's `lower_nested_predicate`
+    /// tests its tag and projects its payload without consuming it, and a failed
+    /// nested test restores the candidate's control state exactly as a literal
+    /// test does. `transfer_selected_payloads` then takes those nested enums
+    /// apart once the arm is selected and its aggregate destructured.
     #[expect(
         clippy::too_many_lines,
         reason = "ordered aggregate selection and candidate ownership form one match boundary"

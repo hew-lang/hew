@@ -1102,47 +1102,71 @@ mod tests {
     #[test]
     fn location_field_accessors_read_the_exact_fields() {
         let location = sample_location();
-        assert_eq!(unsafe { hew_location_node_id(&location) }, location.node);
-        assert_eq!(unsafe { hew_location_slot(&location) }, location.slot);
-        assert_eq!(
-            unsafe { hew_location_incarnation(&location) },
-            location.incarnation
-        );
+        // SAFETY: `location` is a live, readable `HewLocation` for this call.
+        let (node, slot, incarnation) = unsafe {
+            (
+                hew_location_node_id(&raw const location),
+                hew_location_slot(&raw const location),
+                hew_location_incarnation(&raw const location),
+            )
+        };
+        assert_eq!(node, location.node);
+        assert_eq!(slot, location.slot);
+        assert_eq!(incarnation, location.incarnation);
     }
 
     #[test]
     fn location_field_accessors_fail_closed_on_null() {
-        assert_eq!(
-            unsafe { hew_location_node_id(std::ptr::null()) },
-            HewNodeId::default()
-        );
-        assert_eq!(unsafe { hew_location_slot(std::ptr::null()) }, 0);
-        assert_eq!(unsafe { hew_location_incarnation(std::ptr::null()) }, 0);
-        assert!(unsafe { hew_location_display(std::ptr::null()) }.is_null());
+        // SAFETY: every accessor documents a null pointer as a fail-closed input.
+        let (node, slot, incarnation, display) = unsafe {
+            (
+                hew_location_node_id(std::ptr::null()),
+                hew_location_slot(std::ptr::null()),
+                hew_location_incarnation(std::ptr::null()),
+                hew_location_display(std::ptr::null()),
+            )
+        };
+        assert_eq!(node, HewNodeId::default());
+        assert_eq!(slot, 0);
+        assert_eq!(incarnation, 0);
+        assert!(display.is_null());
     }
 
     #[test]
     fn remote_pid_field_accessors_read_the_exact_fields() {
         let pid = sample_remote_pid();
-        assert_eq!(unsafe { hew_remote_pid_location(&pid) }, sample_location());
-        assert_eq!(unsafe { hew_remote_pid_node_id(&pid) }, pid.node);
-        assert_eq!(unsafe { hew_remote_pid_slot(&pid) }, pid.slot);
-        assert_eq!(unsafe { hew_remote_pid_incarnation(&pid) }, pid.incarnation);
+        // SAFETY: `pid` is a live, readable `HewRemotePid` for this call.
+        let (location, node, slot, incarnation) = unsafe {
+            (
+                hew_remote_pid_location(&raw const pid),
+                hew_remote_pid_node_id(&raw const pid),
+                hew_remote_pid_slot(&raw const pid),
+                hew_remote_pid_incarnation(&raw const pid),
+            )
+        };
+        assert_eq!(location, sample_location());
+        assert_eq!(node, pid.node);
+        assert_eq!(slot, pid.slot);
+        assert_eq!(incarnation, pid.incarnation);
     }
 
     #[test]
     fn remote_pid_field_accessors_fail_closed_on_null() {
-        assert_eq!(
-            unsafe { hew_remote_pid_location(std::ptr::null()) },
-            HewLocation::default()
-        );
-        assert_eq!(
-            unsafe { hew_remote_pid_node_id(std::ptr::null()) },
-            HewNodeId::default()
-        );
-        assert_eq!(unsafe { hew_remote_pid_slot(std::ptr::null()) }, 0);
-        assert_eq!(unsafe { hew_remote_pid_incarnation(std::ptr::null()) }, 0);
-        assert!(unsafe { hew_remote_pid_display(std::ptr::null()) }.is_null());
+        // SAFETY: every accessor documents a null pointer as a fail-closed input.
+        let (location, node, slot, incarnation, display) = unsafe {
+            (
+                hew_remote_pid_location(std::ptr::null()),
+                hew_remote_pid_node_id(std::ptr::null()),
+                hew_remote_pid_slot(std::ptr::null()),
+                hew_remote_pid_incarnation(std::ptr::null()),
+                hew_remote_pid_display(std::ptr::null()),
+            )
+        };
+        assert_eq!(location, HewLocation::default());
+        assert_eq!(node, HewNodeId::default());
+        assert_eq!(slot, 0);
+        assert_eq!(incarnation, 0);
+        assert!(display.is_null());
     }
 
     #[test]
@@ -1152,23 +1176,25 @@ mod tests {
         let expected_node = "0123456789abcdeffedcba9876543210".to_string();
         let expected_location = "0123456789abcdeffedcba9876543210/7@3".to_string();
 
-        assert_eq!(
-            owned_string_text(unsafe { hew_node_id_display(&location.node) }),
-            expected_node,
-        );
-        assert_eq!(
-            owned_string_text(unsafe { hew_location_display(&location) }),
-            expected_location,
-        );
-        assert_eq!(
-            owned_string_text(unsafe { hew_remote_pid_display(&pid) }),
-            expected_location,
-        );
+        // SAFETY: both carriers are live and readable; each display returns a
+        // fresh owned string that `owned_string_text` releases.
+        let (node_text, location_text, pid_text) = unsafe {
+            (
+                hew_node_id_display(&raw const location.node),
+                hew_location_display(&raw const location),
+                hew_remote_pid_display(&raw const pid),
+            )
+        };
+        assert_eq!(owned_string_text(node_text), expected_node);
+        assert_eq!(owned_string_text(location_text), expected_location);
+        assert_eq!(owned_string_text(pid_text), expected_location);
 
-        // Cross-check against the pre-existing `hew_node.rs` formatters this
+        // Cross-check against the pre-existing `hew_node.rs` formatter this
         // display text is required to reproduce exactly.
+        // SAFETY: the node id is live; `hew_node_id_format` returns an owned C
+        // string this block reads once and frees.
         let via_hew_node_format = unsafe {
-            let raw = crate::hew_node::hew_node_id_format(&location.node);
+            let raw = crate::hew_node::hew_node_id_format(&raw const location.node);
             assert!(!raw.is_null());
             let text = std::ffi::CStr::from_ptr(raw).to_str().unwrap().to_owned();
             crate::cabi::free_cstring(raw);
@@ -1179,6 +1205,7 @@ mod tests {
 
     #[test]
     fn node_id_display_fails_closed_on_null() {
+        // SAFETY: a null node id is a documented fail-closed input.
         assert!(unsafe { hew_node_id_display(std::ptr::null()) }.is_null());
     }
 

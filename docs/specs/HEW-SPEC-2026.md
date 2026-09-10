@@ -1728,9 +1728,9 @@ calls `close()` at scope exit as the single release path, guaranteeing that the
 resource is released exactly once.
 
 **Automatic field-wise drop** — for plain data types, the compiler emits a
-recursive drop that frees heap storage (strings, `Vec`, `HashMap`, nested
-types) in **reverse declaration order (LIFO)**. No annotation or `impl`
-is needed.
+release that walks the whole value and frees its heap storage (strings,
+`Vec`, `HashMap`, nested types) in **reverse declaration order (LIFO)**. No
+annotation or `impl` is needed.
 
 **Cleanup guarantees:**
 
@@ -1759,7 +1759,7 @@ indirect enum Expr {
 - All variant payloads are heap-allocated; the enum value itself is a pointer
 - Construction and pattern matching syntax are identical to regular enums
 - Memory is automatically freed when the value goes out of scope (RAII)
-- The compiler generates a recursive drop function that walks the data structure
+- The compiler generates a drop function that walks the data structure
 
 **Construction** works identically to regular enums:
 

@@ -5958,13 +5958,15 @@ impl Checker {
             // property, and must not leak here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
             // variants (not `Ty::Named`), so they remain queue-admissible via
             // the `_` arm's `primitive_copy_layout` check.
-            Ty::Named {
-                builtin: Some(_), ..
-            } => false,
+            //
             // A callable owns a heap environment the envelope has no ingress
             // for, which `queue_elem_rejection_reason` states in the same
             // words; every other shape is admitted on its value class.
-            Ty::Function { .. } | Ty::Closure { .. } => false,
+            Ty::Named {
+                builtin: Some(_), ..
+            }
+            | Ty::Function { .. }
+            | Ty::Closure { .. } => false,
             _ => self.queue_element_describable(elem_ty),
         }
     }

@@ -993,8 +993,7 @@ impl Checker {
                     .user_facing(),
                 class_description(class)
             )),
-            Ok(_) => None,
-            Err(ClassError::TypeParam { .. }) => None,
+            Ok(_) | Err(ClassError::TypeParam { .. }) => None,
             Err(error) => Some(error.to_string()),
         }
     }

@@ -11159,7 +11159,7 @@ mod map_set_semantic_contract_tests {
     }
 
     #[test]
-    fn set_updates_return_presence_without_consuming_the_input_element() {
+    fn set_updates_return_presence_and_adopt_an_owned_element() {
         let set = builtin(BuiltinType::HashSet, vec![ResolvedTy::String]);
         let vector = builtin(BuiltinType::Vec, vec![ResolvedTy::String]);
         for operation in [SetValueOp::Insert, SetValueOp::Remove] {
@@ -11176,7 +11176,15 @@ mod map_set_semantic_contract_tests {
             assert!(
                 !contract.matches_signature(&[set.clone(), ResolvedTy::String], &ResolvedTy::Bool)
             );
-            assert_eq!(family.arg_consume_verdict(1), ConsumeVerdict::ProvenBorrow);
+            // The element's ingress follows its clone fact - copied in when
+            // it has one, moved in when it has none - so insertion cannot
+            // prove a borrow for it, while removal only probes.
+            let expected = if operation == SetValueOp::Insert {
+                ConsumeVerdict::ConservativeConsume
+            } else {
+                ConsumeVerdict::ProvenBorrow
+            };
+            assert_eq!(family.arg_consume_verdict(1), expected);
             assert!(family.invalidates_collection_element_aliases());
         }
         let elements = RuntimeCallFamily::Set(SetValueOp::Elements);

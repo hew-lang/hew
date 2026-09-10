@@ -312,7 +312,7 @@ fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
     assert!(main.blocks.iter().any(|block| matches!(
         block.terminator,
         SemTerminator::Suspend {
-            kind: hew_sir::SuspendKind::StreamNext,
+            kind: hew_sir::SuspendKind::StreamNext { park: true },
             ..
         }
     )));

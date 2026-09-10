@@ -617,7 +617,7 @@ fn lambda_actor_call_syntax_typechecks() {
 /// and records `hew_duplex_send` in the rewrite table — the shared send-entry
 /// hint MIR resolves from the handle's `LambdaPid` type.
 #[test]
-fn lambda_actor_dot_send_records_send_entry_rewrite() {
+fn lambda_actor_dot_send_dispatches_as_an_actor_call() {
     let source = r"
         fn main() {
             let worker = actor |msg: i64| {
@@ -633,9 +633,18 @@ fn lambda_actor_dot_send_records_send_entry_rewrite() {
         output.errors
     );
     assert!(
-        has_rewrite(&output, "hew_duplex_send"),
-        "`.send()` on lambda-actor handle must record the hew_duplex_send entry hint \
-         (MIR resolves the delivery from the handle type); got: {:#?}",
+        output.actor_method_dispatch.values().any(|kind| matches!(
+            kind,
+            hew_types::ActorMethodKind::Ask { method_id, .. }
+                if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
+        )),
+        "`.send()` on a lambda-actor handle must publish the same lambda dispatch \
+         `handle(msg)` does; got: {:#?}",
+        output.actor_method_dispatch
+    );
+    assert!(
+        !has_rewrite(&output, "hew_duplex_send"),
+        "the retired duplex entry must not be named; got: {:#?}",
         output.method_call_rewrites
     );
 }
@@ -643,7 +652,7 @@ fn lambda_actor_dot_send_records_send_entry_rewrite() {
 /// `.close()` on a lambda-actor handle typechecks (the actor surface includes
 /// `close`) and consumes the handle.
 #[test]
-fn lambda_actor_dot_close_typechecks_and_consumes() {
+fn lambda_actor_dot_close_releases_through_the_actor_path() {
     let source = r"
         fn main() {
             let worker = actor |msg: i64| {
@@ -659,8 +668,17 @@ fn lambda_actor_dot_close_typechecks_and_consumes() {
         output.errors
     );
     assert!(
-        has_rewrite(&output, "hew_duplex_close"),
-        "`.close()` on lambda-actor handle must record the close entry hint; got: {:#?}",
+        output
+            .actor_delivery_calls
+            .values()
+            .any(|call| matches!(call, hew_types::actor_delivery::ActorDeliveryCall::Close)),
+        "`.close()` on a lambda-actor handle must publish the same terminal release \
+         `close(handle)` does; got: {:#?}",
+        output.actor_delivery_calls
+    );
+    assert!(
+        !has_rewrite(&output, "hew_duplex_close"),
+        "the retired duplex entry must not be named; got: {:#?}",
         output.method_call_rewrites
     );
 }

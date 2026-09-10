@@ -8906,8 +8906,10 @@ mod tests {
                 Some("hew_hashmap_free_layout_walk"),
             ),
             (
+                // The set adopts an owned element, so insertion takes it on
+                // both the vacant and the already-present path.
                 RuntimeCallFamily::Set(Set::Insert),
-                "hew_hashset_insert_clone_layout",
+                "hew_hashset_insert_take_layout",
                 Some("hew_hashset_free_layout_walk"),
             ),
         ];

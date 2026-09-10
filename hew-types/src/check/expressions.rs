@@ -1205,9 +1205,9 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`[{elem}; N]` array repeat copies the element into every slot, but \
-                     {blocker} has no copy operation; use an explicit loop that builds each \
-                     element, or a Copy element type",
+                    "E_ELEMENT_NO_COPY: `[{elem}; N]` array repeat copies the element into \
+                     every slot, but {blocker} has no copy operation; use an explicit loop \
+                     that builds each element, or a Copy element type",
                     elem = resolved_elem.user_facing()
                 ),
             );

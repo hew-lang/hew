@@ -1109,9 +1109,9 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`Vec<{}>` cannot be range-sliced: a slice copies each element into an \
-                 independent `Vec`, but {blocker} has no copy operation; use an owning \
-                 removal such as `pop()` to move the elements out instead",
+                "E_ELEMENT_NO_COPY: `Vec<{}>` cannot be range-sliced: a slice copies each \
+                 element into an independent `Vec`, but {blocker} has no copy operation; use \
+                 an owning removal such as `pop()` to move the elements out instead",
                 resolved.user_facing()
             ),
         );
@@ -1150,9 +1150,9 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`{operation}` copies each value out of the map, but the value type \
-                     {blocker} has no copy operation; read it with `get(k)`, which borrows, \
-                     or move it out with `remove(k)`"
+                    "E_ELEMENT_NO_COPY: `{operation}` copies each value out of the map, but \
+                     the value type {blocker} has no copy operation; read it with `get(k)`, \
+                     which borrows, or move it out with `remove(k)`"
                 ),
             );
             return false;

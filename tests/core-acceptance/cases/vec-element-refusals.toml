@@ -10,22 +10,22 @@ kind = "check"
 code = "InvalidOperation"
 line = 21
 column = 19
-message = "array repeat copies the element into every slot, but `Conn` (an affine resource) has no copy operation"
+message = "E_ELEMENT_NO_COPY: `[Conn; N]` array repeat copies the element into every slot, but `Conn` (an affine resource) has no copy operation"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 25
 column = 17
-message = "`Vec<Conn>` cannot be range-sliced: a slice copies each element into an independent `Vec`, but `Conn` (an affine resource) has no copy operation"
+message = "E_ELEMENT_NO_COPY: `Vec<Conn>` cannot be range-sliced: a slice copies each element into an independent `Vec`, but `Conn` (an affine resource) has no copy operation"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 29
 column = 19
-message = "array repeat copies the element into every slot, but `dyn Speaker` (a shared value whose descriptor carries no copy slot) has no copy operation"
+message = "E_ELEMENT_NO_COPY: `[dyn Speaker; N]` array repeat copies the element into every slot, but `dyn Speaker` (a shared value whose descriptor carries no copy slot) has no copy operation"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
 line = 33
 column = 19
-message = "`HashMap.values()` copies each value out of the map, but the value type `Conn` (an affine resource) has no copy operation"
+message = "E_ELEMENT_NO_COPY: `HashMap.values()` copies each value out of the map, but the value type `Conn` (an affine resource) has no copy operation"

@@ -8,6 +8,17 @@ type Holder {
     tags: Vec<string>,
 }
 
+#[resource]
+type Slot {
+    id: i64,
+}
+
+impl Slot {
+    fn close(consume self) {
+        println(f"released={self.id}");
+    }
+}
+
 machine Meter {
     events { Bump, }
     state Idle,
@@ -59,6 +70,11 @@ fn main() {
     meters.push(Meter.Idle);
     meters.push(Meter.Busy);
     println(f"meters={meters.len()}");
+
+    var slots: Vec<Slot> = Vec.new();
+    slots.push(Slot { id: 1 });
+    slots.push(Slot { id: 2 });
+    println(f"slots={slots.len()}");
 
     var total = 0;
     for row in rows {

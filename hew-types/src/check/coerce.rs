@@ -919,11 +919,10 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
 
 /// Render a mismatched pair so the two sides can be told apart.
 ///
-/// A builtin the catalog presents under a bare spelling — the channel
-/// endpoints, `Sender` and `Receiver` — can collide with a user declaration of
-/// the same name, and the plain rendering then reads `expected `Sender<i64>`,
-/// found `Sender<i64>``. When the two render alike, name the substrate side by
-/// the module that declares it.
+/// A builtin the catalog presents under a bare spelling - the channel endpoints
+/// `Sender` and `Receiver` - can collide with a user declaration of the same
+/// name, and the plain rendering then repeats one spelling on both sides. When
+/// the two render alike, name the substrate side by the module that declares it.
 fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) {
     let expected_label = expected.user_facing().to_string();
     let actual_label = actual.user_facing().to_string();

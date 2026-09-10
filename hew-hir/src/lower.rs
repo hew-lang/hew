@@ -2770,6 +2770,7 @@ fn module_file_import_fn_rewrites(
     rewrites
 }
 
+#[must_use]
 pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
@@ -9343,9 +9344,9 @@ impl LowerCtx {
         };
         let registry_name = if self.lookup(name).is_none() {
             self.imported_rewrite_symbol(name)
-                .unwrap_or_else(|| name.to_string())
+                .unwrap_or_else(|| name.clone())
         } else {
-            name.to_string()
+            name.clone()
         };
         self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
     }
@@ -9368,9 +9369,9 @@ impl LowerCtx {
         };
         let registry_name = if self.lookup(name).is_none() {
             self.imported_rewrite_symbol(name)
-                .unwrap_or_else(|| name.to_string())
+                .unwrap_or_else(|| name.clone())
         } else {
-            name.to_string()
+            name.clone()
         };
         let is_generic_user_fn = self
             .fn_registry

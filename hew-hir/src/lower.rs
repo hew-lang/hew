@@ -18866,7 +18866,12 @@ impl LowerCtx {
                 // binding must cross the same owner map used by type checking.
                 if let Expr::Identifier(module_name) = &object.0 {
                     let qualified_key = self.imported_module_member_key(module_name, field);
-                    if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
+                    // A file import's declaration is spliced into the root
+                    // namespace and registered under its bare name, so the
+                    // qualified spelling reaches it through the same mapping a
+                    // bare reference uses.
+                    let registry_key = self.published_const_key(&qualified_key).to_string();
+                    if let Some(entry) = self.const_registry.get(&registry_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
                         return HirExpr {

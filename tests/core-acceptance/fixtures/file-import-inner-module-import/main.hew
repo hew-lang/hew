@@ -1,5 +1,9 @@
 import "sub.hew";
 
 fn main() {
+    // The bare spelling and the file's own module spelling reach one
+    // declaration; the file it imported is in scope only inside that file.
     println(sub_k());
+    println(SUB_BASE);
+    println(sub.SUB_BASE);
 }

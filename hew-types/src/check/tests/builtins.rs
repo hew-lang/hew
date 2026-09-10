@@ -637,3 +637,38 @@ fn direct_main_observations_require_actor_context() {
         );
     }
 }
+
+/// A source declaration owns its name. `close` and `closed` are actor-handle
+/// spellings, so a program that declares one of them keeps its own signature
+/// while a handle call in the same program still reaches the builtin.
+#[test]
+fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
+    let source = "actor Worker { receive fn ping() {} }\n\
+         pub fn closed(value: i64, names: string) -> Result<(), string> {\n\
+             if value > 0 { Ok(()) } else { Err(names) }\n\
+         }\n\
+         fn check() -> Result<(), string> { closed(7, \"ok\")?; Ok(()) }\n\
+         fn main() {\n\
+             let worker = spawn Worker();\n\
+             let _sent = worker.ping();\n\
+             close(worker);\n\
+             let _checked = check();\n\
+         }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// Negative control: without a declaration the builtin still owns the name and
+/// still refuses a two-argument call.
+#[test]
+fn an_undeclared_closed_keeps_the_handle_builtin_arity() {
+    let output = check_source("fn main() { closed(7, \"ok\"); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("takes 1 argument")),
+        "{:?}",
+        output.errors
+    );
+}

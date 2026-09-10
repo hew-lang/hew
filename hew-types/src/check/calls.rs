@@ -1912,7 +1912,9 @@ impl Checker {
             // `close(actor)` requests a cooperative stop and waits until the
             // actor's terminal cleanup has run; `fork close(actor)` is the
             // non-waiting request. `closed(actor)` waits without requesting.
-            "close" | "closed" => {
+            // A source declaration of the name owns it: the handle builtin
+            // applies only where nothing in scope declares `close`/`closed`.
+            "close" | "closed" if !self.declares_function(&func_name) => {
                 if !self.check_arity(args, 1, &format!("`{func_name}`"), span) {
                     return Ty::Error;
                 }
@@ -2517,6 +2519,16 @@ impl Checker {
             similar,
         );
         Ty::Error
+    }
+
+    /// Whether a source declaration owns `name` in the current scope.
+    ///
+    /// `fn_def_spans` holds declaration sites, which only source items
+    /// produce, so a hit means the programmer declared the name and the
+    /// builtin of that spelling does not apply.
+    fn declares_function(&self, name: &str) -> bool {
+        self.fn_def_spans
+            .contains_key(&Self::declared_fn_identity(self.canonical_fn_owner(), name))
     }
 
     /// Reject a bare function binding published by more than one imported

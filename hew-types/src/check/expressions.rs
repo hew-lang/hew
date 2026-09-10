@@ -7284,37 +7284,9 @@ impl Checker {
             }
         }
 
-        if let Expr::Identifier(name) = &object.0 {
-            if name == "self" {
-                if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
-                    let self_ty = self.current_machine_transition.as_ref().map_or(
-                        Ty::Error,
-                        |(machine_name, _, _)| Ty::Named {
-                            builtin: None,
-                            name: machine_name.clone(),
-                            args: self
-                                .lookup_type_def(machine_name)
-                                .map_or_else(Vec::new, |def| {
-                                    def.type_params
-                                        .iter()
-                                        .map(|param| Ty::Named {
-                                            builtin: None,
-                                            name: param.clone(),
-                                            args: vec![],
-                                        })
-                                        .collect()
-                                }),
-                        },
-                    );
-                    self.publish_checked_expression(&object.0, &object.1, self_ty);
-                    return ty;
-                }
-            }
-
-            // Dotted type members were dispatched from the canonical head
-            // above. Remaining identifiers are ordinary value projections or
-            // unresolved names and continue through the existing diagnostics.
-        }
+        // Dotted type members were dispatched from the canonical head above.
+        // Remaining identifiers are ordinary value projections or unresolved
+        // names and continue through the existing diagnostics.
 
         // Dotted module-qualified unit constructor:
         // `module.Type.Variant`. The parser represents this as nested field
@@ -7574,70 +7546,6 @@ impl Checker {
                             .map(|(p, a)| (p.clone(), a.clone()))
                             .collect();
                         field_ty.substitute_named_params_parallel(&subst_map)
-                    } else if let Some((ref mn, ref src_state, ref evt_name)) =
-                        self.current_machine_transition
-                    {
-                        if td.kind == TypeDefKind::Machine && mn == name {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(src_state).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-
-                        // Inside a machine transition: resolve `event.field` on the event enum type
-                        let event_type_name = format!("{mn}Event");
-                        if *name == event_type_name && evt_name != "_" {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(evt_name).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-                        let similar =
-                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedField,
-                            span,
-                            format!("no field `{field}` on type `{name}`"),
-                            similar,
-                        );
-                        Ty::Error
-                    } else if let Some((ref mn, ref state_name)) =
-                        self.current_machine_lifecycle.clone()
-                    {
-                        // Inside a state entry/exit lifecycle block: resolve
-                        // `state.<field>` for payload states.  `event` is NOT
-                        // bound (that binding belongs to transition scope only),
-                        // so event-enum field access is correctly unreachable here.
-                        if td.kind == TypeDefKind::Machine && *mn == *name {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(state_name.as_str()).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-                        let similar =
-                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedField,
-                            span,
-                            format!("no field `{field}` on type `{name}`"),
-                            similar,
-                        );
-                        Ty::Error
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
@@ -7692,58 +7600,6 @@ impl Checker {
                 Ty::Error
             }
         }
-    }
-
-    fn check_machine_transition_self_field_access(
-        &mut self,
-        field: &str,
-        span: &Span,
-    ) -> Option<Ty> {
-        let (machine_name, source_state, _) = self.current_machine_transition.clone()?;
-        if source_state == "_" {
-            self.report_error(
-                TypeErrorKind::UndefinedField,
-                span,
-                format!(
-                    "cannot read `self.{field}` in wildcard transition for machine \
-                     `{machine_name}` because `_` has no single source-state payload"
-                ),
-            );
-            return Some(Ty::Error);
-        }
-
-        let variant_fields = match self.lookup_type_def(&machine_name) {
-            Some(td) if td.kind == TypeDefKind::Machine => td.variants.get(&source_state).cloned(),
-            _ => None,
-        };
-        let Some(VariantDef::Struct(variant_fields)) = variant_fields else {
-            self.report_error(
-                TypeErrorKind::UndefinedField,
-                span,
-                format!(
-                    "state `{source_state}` of machine `{machine_name}` has no payload field \
-                     `{field}`"
-                ),
-            );
-            return Some(Ty::Error);
-        };
-
-        if let Some((_, field_ty)) = variant_fields
-            .iter()
-            .find(|(field_name, _)| field_name == field)
-        {
-            return Some(field_ty.clone());
-        }
-
-        let similar =
-            crate::error::find_similar(field, variant_fields.iter().map(|(name, _)| name.as_str()));
-        self.report_error_with_suggestions(
-            TypeErrorKind::UndefinedField,
-            span,
-            format!("state `{source_state}` of machine `{machine_name}` has no field `{field}`"),
-            similar,
-        );
-        Some(Ty::Error)
     }
 
     pub(super) fn check_match_expr(

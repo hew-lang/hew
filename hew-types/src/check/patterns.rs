@@ -278,13 +278,6 @@ impl Checker {
         {
             return None;
         }
-        if self
-            .current_machine_transition
-            .as_ref()
-            .is_some_and(|(current_machine, _, _)| current_machine == machine_name)
-        {
-            return None;
-        }
         Some(type_name.to_string())
     }
 

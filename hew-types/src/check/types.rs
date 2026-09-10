@@ -3665,14 +3665,6 @@ pub struct Checker {
     pub(super) wasm_reject_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
-    /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
-    pub(super) current_machine_transition: Option<(String, String, String)>,
-    /// Inside a machine state `entry` or `exit` lifecycle block, the
-    /// (`machine_name`, `state_name`) pair.  Enables payload-state field
-    /// access (`state.seq`) without granting transition-event privileges
-    /// (no event-enum matching, no `event.field` binding).  Checked after
-    /// `current_machine_transition` in the field-access resolver.
-    pub(super) current_machine_lifecycle: Option<(String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<String, ConstValue>,
     /// Lexical bindings in `const_values` that originate from a real `const`
@@ -4119,8 +4111,6 @@ impl Checker {
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
-            current_machine_transition: None,
-            current_machine_lifecycle: None,
             const_values: HashMap::new(),
             declared_const_bindings: HashMap::new(),
             call_type_args: HashMap::new(),

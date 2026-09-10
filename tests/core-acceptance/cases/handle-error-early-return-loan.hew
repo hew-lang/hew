@@ -1,0 +1,56 @@
+// A `handle error` block that returns out of a `receive fn` loop releases
+// every loan open on that edge. The sender loan for `done.send(...)` is taken
+// before the interpolated element is built, and building it opens a fault
+// edge, so the fault path has to end the sender loan too.
+
+import std.channel;
+import std.encoding.hex;
+import std.encoding.utf8;
+import std.stream;
+
+actor Reader {
+    let input: stream.Stream<bytes>,
+    let done: channel.Sender<string>,
+    receive fn pump() {
+        var reading = true;
+        while reading {
+            match input.recv() {
+                .Some(chunk) => {
+                    let msg = utf8.decode(chunk) handle error {
+                        done.send(f"invalid: {error}");
+                        return;
+                    };
+                    done.send(f"read: {msg}");
+                },
+                .None => {
+                    done.send("ended");
+                    reading = false;
+                },
+            }
+        }
+    }
+}
+
+fn main() {
+    let (sink, input) = match stream.bytes_pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("channel.new failed"),
+    };
+    let reader = spawn Reader(input: input, done: tx);
+    fork reader.pump();
+    // Control: a chunk that decodes takes the handler's success path.
+    sink.write("first".to_bytes());
+    sink.write(hex.decode("ff"));
+    // The early return leaves this chunk unread.
+    sink.write("never read".to_bytes());
+    sink.close();
+    for _i in 0..2 {
+        if let .Some(msg) = rx.recv() {
+            println(msg);
+        }
+    }
+}

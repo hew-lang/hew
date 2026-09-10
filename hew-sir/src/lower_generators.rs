@@ -399,7 +399,17 @@ impl Builder<'_, '_> {
     ) -> Result<(), String> {
         let mut loans = Vec::new();
         let channel = self.lower_borrowed_read(sender, &mut loans)?;
-        let element = self.lower_borrowed_read(value, &mut loans)?;
+        // The sender loan is open while the element is evaluated, so a fault
+        // edge opened in there (an interpolated element calls `string::fmt`)
+        // must end it too.
+        let loan_depth = self.argument_receiver_loans.len();
+        self.argument_receiver_loans.extend(loans.iter().copied());
+        let element = self.lower_borrowed_read(value, &mut loans);
+        self.argument_receiver_loans.truncate(loan_depth);
+        let element = element?;
+        if !self.is_open() {
+            return Ok(());
+        }
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
         let cancel = self.new_block(Vec::new());

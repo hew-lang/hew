@@ -153,8 +153,13 @@ fn lower_program_to_semantics(
     .lower_program(program, tco)
     .map_err(|error| match error {
         hew_compile::SessionError::Hir(diagnostics) => {
-            let diagnostics =
-                hew_compile::hir_diagnostics_to_frontend(program, source, label, diagnostics);
+            let diagnostics = hew_compile::hir_diagnostics_to_frontend(
+                program,
+                source,
+                label,
+                diagnostics,
+                &hew_compile::DocumentSet::new(),
+            );
             compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
         }
         error @ hew_compile::SessionError::Semantic(_) => {

@@ -65,6 +65,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        documents: hew_compile::DocumentSet::new(),
     }
 }
 
@@ -86,6 +87,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        documents: hew_compile::DocumentSet::new(),
     }
 }
 
@@ -611,6 +613,7 @@ fn main() {
         let root_label = root_path.display().to_string();
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -620,6 +623,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
 
         let module_graph = build_module_graph(
@@ -699,6 +703,7 @@ fn main() {
         let root_label = root_path.display().to_string();
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -708,6 +713,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
 
         let module_graph = build_module_graph(
@@ -755,6 +761,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -764,6 +771,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -813,6 +821,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -822,6 +831,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -873,6 +883,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -882,6 +893,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -931,6 +943,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -940,6 +953,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,

@@ -63,6 +63,69 @@ pub struct FrontendOptions {
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
+    /// Open editor buffers that override on-disk content for this run.
+    ///
+    /// Every source read the frontend performs consults this set first, so an
+    /// unsaved buffer checks against its saved siblings. Empty for the CLI.
+    pub documents: DocumentSet,
+}
+
+/// Source text that overrides the filesystem for one frontend run.
+///
+/// The LSP, the browser analysis surface and the REPL all check buffers that
+/// either have no file behind them or differ from the file on disk. They hand
+/// the driver this set instead of running a frontend of their own.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentSet {
+    sources: BTreeMap<PathBuf, String>,
+}
+
+impl DocumentSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `source` as the current content of `path`.
+    ///
+    /// The canonical spelling is recorded alongside the given one because the
+    /// import resolver canonicalizes every candidate before loading it.
+    pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
+        let path = path.into();
+        let source = source.into();
+        if let Ok(canonical) = path.canonicalize() {
+            if canonical != path {
+                self.sources.insert(canonical, source.clone());
+            }
+        }
+        self.sources.insert(path, source);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    fn get(&self, path: &Path) -> Option<&str> {
+        if let Some(source) = self.sources.get(path) {
+            return Some(source);
+        }
+        let canonical = path.canonicalize().ok()?;
+        self.sources.get(&canonical).map(String::as_str)
+    }
+}
+
+/// The overlay used when a caller supplies no [`FrontendOptions`].
+static EMPTY_DOCUMENTS: DocumentSet = DocumentSet {
+    sources: BTreeMap::new(),
+};
+
+/// Read a source file, preferring an open buffer over the file on disk.
+fn read_source(documents: &DocumentSet, path: &Path) -> std::io::Result<String> {
+    match documents.get(path) {
+        Some(source) => Ok(source.to_string()),
+        None => std::fs::read_to_string(path),
+    }
 }
 
 /// Target facts that must stay coupled while a source is lowered.
@@ -937,6 +1000,8 @@ pub struct ImportResolutionContext<'a> {
     pub package_name: Option<&'a str>,
     pub project_dir: &'a Path,
     pub module_search_paths: Option<&'a [PathBuf]>,
+    /// Open buffers that override on-disk content while resolving imports.
+    pub documents: &'a DocumentSet,
 }
 
 #[derive(Debug)]
@@ -1109,19 +1174,27 @@ fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec
 fn load_project_context(
     input: &str,
     options: Option<&FrontendOptions>,
+    source_override: Option<&str>,
 ) -> Result<ProjectContext, FrontendFailure> {
     // A directory is a package root, not a source file. The CLI resolves
     // package forms through the manifest before calling in here; anything else
     // reaching this point gets a real diagnostic rather than the raw
     // `Is a directory` OS error a bare read would surface.
-    if Path::new(input).is_dir() {
-        return Err(FrontendFailure::message_only(format!(
-            "Error: {input} is a directory, not a .hew source file\n  \
-             hint: a package directory is built with `hew build {input}`"
-        )));
-    }
-    let source = std::fs::read_to_string(input)
-        .map_err(|e| FrontendFailure::message_only(format!("Error: cannot read {input}: {e}")))?;
+    let documents = options.map_or(&EMPTY_DOCUMENTS, |options| &options.documents);
+    let source = match source_override {
+        Some(source) => source.to_string(),
+        None => {
+            if Path::new(input).is_dir() {
+                return Err(FrontendFailure::message_only(format!(
+                    "Error: {input} is a directory, not a .hew source file\n  \
+                     hint: a package directory is built with `hew build {input}`"
+                )));
+            }
+            read_source(documents, Path::new(input)).map_err(|e| {
+                FrontendFailure::message_only(format!("Error: cannot read {input}: {e}"))
+            })?
+        }
+    };
     let input_dir = Path::new(input).parent().unwrap_or(Path::new("."));
     let project_dir = options
         .and_then(|options| options.project_dir.clone())
@@ -1149,6 +1222,7 @@ fn load_project_context(
 fn directory_module_entry_for_peer(
     program: &Program,
     input: &Path,
+    documents: &DocumentSet,
     mode: FrontendParseMode,
 ) -> Option<String> {
     let input_name = input.file_name()?.to_str()?;
@@ -1167,7 +1241,7 @@ fn directory_module_entry_for_peer(
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let entry_source = std::fs::read_to_string(entry_path).ok()?;
+    let entry_source = read_source(documents, &entry_path).ok()?;
     let entry_parse = parse_for_frontend(&entry_source, mode);
     if entry_parse
         .errors
@@ -1203,9 +1277,10 @@ fn directory_module_entry_for_peer(
 fn import_directory_module_entry_for_peer(
     program: &mut Program,
     input: &Path,
+    documents: &DocumentSet,
     mode: FrontendParseMode,
 ) {
-    let Some(entry_name) = directory_module_entry_for_peer(program, input, mode) else {
+    let Some(entry_name) = directory_module_entry_for_peer(program, input, documents, mode) else {
         return;
     };
     program.items.insert(0, file_import(entry_name));
@@ -1342,6 +1417,7 @@ fn resolve_imports_internal(
         package_name: project.package_name.as_deref(),
         project_dir: &project.project_dir,
         module_search_paths: options.module_search_paths.as_deref(),
+        documents: &options.documents,
     };
     let module_graph = build_module_graph_with_diagnostics(
         input_path,
@@ -1355,7 +1431,7 @@ fn resolve_imports_internal(
     Ok(())
 }
 
-fn build_module_source_map(program: &Program) -> ModuleSourceMap {
+fn build_module_source_map(program: &Program, documents: &DocumentSet) -> ModuleSourceMap {
     let Some(ref module_graph) = program.module_graph else {
         return ModuleSourceMap::new();
     };
@@ -1371,7 +1447,7 @@ fn build_module_source_map(program: &Program) -> ModuleSourceMap {
         let Some(path) = module.source_paths.first() else {
             continue;
         };
-        if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(text) = read_source(documents, path) {
             map.insert(mod_id.path.join("."), (text, path.display().to_string()));
         }
         // Per-file routing entries (rc1-F1 stage C): a directory module's
@@ -1383,7 +1459,7 @@ fn build_module_source_map(program: &Program) -> ModuleSourceMap {
             if map.contains_key(&key) {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(text) = read_source(documents, path) {
                 map.insert(key.clone(), (text, key));
             }
         }
@@ -1435,8 +1511,9 @@ pub fn hir_diagnostics_to_frontend(
     root_source: &str,
     root_filename: &str,
     diagnostics: Vec<hew_hir::HirDiagnostic>,
+    documents: &DocumentSet,
 ) -> Vec<FrontendDiagnostic> {
-    let module_source_map = build_module_source_map(program);
+    let module_source_map = build_module_source_map(program, documents);
     diagnostics
         .into_iter()
         .map(|diagnostic| {
@@ -1466,18 +1543,18 @@ fn typecheck_program_with_diagnostics(
     options: &FrontendOptions,
     mode: FrontendParseMode,
     entry_selection: Option<hew_types::DeclarationOccurrence>,
-) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
+) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
     let search_paths = checker_search_paths(options, input);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
-        return Ok((
+        return (
             TypeCheckResult {
                 tco: None,
                 module_registry,
             },
             Vec::new(),
-        ));
+        );
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
@@ -1498,7 +1575,7 @@ fn typecheck_program_with_diagnostics(
     // `// hew:allow(...)` directives. The root source owns the entry file's
     // spans; each non-root module owns its own (built from the same source map
     // the diagnostic renderer uses below).
-    let module_source_map = build_module_source_map(program);
+    let module_source_map = build_module_source_map(program, &options.documents);
     let mut lint_sources = hew_types::LintSources::new();
     lint_sources.set_root(source.to_string());
     for (module, (module_source, _filename)) in &module_source_map {
@@ -1518,18 +1595,14 @@ fn typecheck_program_with_diagnostics(
         type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
     }));
 
-    if !tco.errors.is_empty() {
-        return Err(FrontendFailure::new("type errors found", diagnostics));
-    }
-
     let module_registry = checker.into_module_registry();
-    Ok((
+    (
         TypeCheckResult {
             tco: Some(tco),
             module_registry,
         },
         diagnostics,
-    ))
+    )
 }
 
 /// Type-check a parsed program after import resolution.
@@ -1548,15 +1621,26 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    typecheck_program_with_diagnostics(
+    let (result, diagnostics) = typecheck_program_with_diagnostics(
         program,
         source,
         input,
         options,
         FrontendParseMode::Strict,
         None,
-    )
-    .map(|(result, _)| result)
+    );
+    if type_check_failed(&result) {
+        return Err(FrontendFailure::new("type errors found", diagnostics));
+    }
+    Ok(result)
+}
+
+/// Whether the checker reported hard errors for this run.
+fn type_check_failed(result: &TypeCheckResult) -> bool {
+    result
+        .tco
+        .as_ref()
+        .is_some_and(|tco| !tco.errors.is_empty())
 }
 
 /// Resolve imports and type-check an already-parsed in-memory program.
@@ -1594,30 +1678,29 @@ pub fn check_program(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    match typecheck_program_with_diagnostics(
+    let (tcr, type_diagnostics) = typecheck_program_with_diagnostics(
         &program,
         source,
         source_label,
         options,
         FrontendParseMode::Strict,
         None,
-    ) {
-        Ok((tcr, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
-            let stack_hints = tcr
-                .tco
-                .as_ref()
-                .map(|tco| tco.stack_hints.clone())
-                .unwrap_or_default();
-            Ok(CheckOutput {
-                diagnostics,
-                stack_hints,
-                source: source.to_string(),
-            })
-        }
-        Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
+    );
+    diagnostics.extend(type_diagnostics);
+    if type_check_failed(&tcr) {
+        return Err(FrontendFailure::new("type errors found", diagnostics));
     }
+    let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
+    let stack_hints = tcr
+        .tco
+        .as_ref()
+        .map(|tco| tco.stack_hints.clone())
+        .unwrap_or_default();
+    Ok(CheckOutput {
+        diagnostics,
+        stack_hints,
+        source: source.to_string(),
+    })
 }
 
 pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
@@ -1756,6 +1839,7 @@ fn cycle_error_to_frontend_failure(
     graph: &hew_parser::module::ModuleGraph,
     cycle_err: &hew_parser::module::CycleError,
     manifest_project_dir: Option<&Path>,
+    documents: &DocumentSet,
 ) -> FrontendFailure {
     let chain = cycle_err.to_string();
     let edge_count = cycle_err.import_spans.len();
@@ -1772,7 +1856,7 @@ fn cycle_error_to_frontend_failure(
         else {
             return FrontendFailure::message_only(chain);
         };
-        let Ok(source) = std::fs::read_to_string(source_path) else {
+        let Ok(source) = read_source(documents, source_path) else {
             return FrontendFailure::message_only(chain);
         };
         let label = match (i == 0, i + 1 == edge_count) {
@@ -1844,6 +1928,7 @@ fn rewrite_direct_stdlib_module_root(
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
     manifest_project_dir: Option<&Path>,
+    documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::{Module, ModuleId};
 
@@ -1869,7 +1954,7 @@ fn rewrite_direct_stdlib_module_root(
         })
         .expect("synthetic floor-check root is unique");
     module_graph.compute_topo_order().map_err(|cycle_err| {
-        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir)
+        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir, documents)
     })?;
     items.clear();
 
@@ -1927,6 +2012,7 @@ fn build_module_graph_with_diagnostics(
             &graph,
             &cycle_err,
             manifest_project_dir,
+            ctx.documents,
         ));
     }
 
@@ -1970,6 +2056,7 @@ fn build_module_graph_with_diagnostics(
         items,
         &input_canonical,
         ctx.package_name.is_some().then_some(ctx.project_dir),
+        ctx.documents,
     )?;
 
     // Canonical module IDs may share a final component. Reject only when two
@@ -2485,7 +2572,7 @@ fn resolve_file_imports_internal(
                         let message = format!(
                             "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
                         );
-                        return Err(match std::fs::read_to_string(source_file) {
+                        return Err(match read_source(ctx.documents, source_file) {
                             Ok(module_source) => FrontendFailure::coded_message_at(
                                 "E_PEER_IMPORT",
                                 message,
@@ -2538,7 +2625,7 @@ fn resolve_file_imports_internal(
                     let message = format!(
                         "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
                     );
-                    return Err(match std::fs::read_to_string(source_file) {
+                    return Err(match read_source(ctx.documents, source_file) {
                         Ok(module_source) => FrontendFailure::coded_message_at(
                             "E_MODULE_NOT_FOUND",
                             message,
@@ -2689,7 +2776,7 @@ fn parse_and_resolve_file_internal(
     diagnostics: &mut Vec<FrontendDiagnostic>,
     mode: FrontendParseMode,
 ) -> Result<Vec<Spanned<Item>>, FrontendFailure> {
-    let source = std::fs::read_to_string(canonical).map_err(|e| {
+    let source = read_source(ctx.documents, canonical).map_err(|e| {
         FrontendFailure::message_only(format!(
             "Error reading imported file '{}': {e}",
             canonical.display()
@@ -2815,7 +2902,7 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Strict)
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict).into_result()
 }
 
 /// Run the shared file frontend for the checker-backed syntax migrator.
@@ -2833,18 +2920,136 @@ pub fn run_file_frontend_to_typecheck_for_migration(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Migration)
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Migration)
+        .into_result()
 }
 
-fn run_file_frontend_to_typecheck_with_mode(
+/// What the shared frontend produced for one document.
+///
+/// The editor surfaces need the diagnostics and whatever the pipeline managed
+/// to build, not a single fatal failure, so this never reports an error by
+/// itself: [`Self::stopped`] carries the very [`FrontendFailure`] the fallible
+/// entry points return, and the artefacts built before that point stay
+/// available for hover, completion and navigation.
+#[allow(
+    missing_debug_implementations,
+    reason = "transient pipeline value; Debug not required by any current consumer"
+)]
+pub struct DocumentFrontendState {
+    /// The root buffer's text, from the document set or from disk.
+    pub source: String,
+    /// The root buffer's parse. `None` when the host supplied an already
+    /// parsed program through [`run_program_frontend_to_typecheck`].
+    pub parse_result: Option<hew_parser::ParseResult>,
+    /// The program after import resolution.
+    pub program: Program,
+    /// Every diagnostic the run produced, including those of the failure that
+    /// stopped it.
+    pub diagnostics: Vec<FrontendDiagnostic>,
+    /// The checker output. Present whenever type-checking ran, including when
+    /// it reported errors.
+    pub typecheck_result: Option<TypeCheckResult>,
+    /// The stage failure that ended the run, if any.
+    pub stopped: Option<FrontendFailure>,
+}
+
+impl DocumentFrontendState {
+    fn stop(mut self, failure: FrontendFailure) -> Self {
+        let failure = merge_prior_diagnostics(std::mem::take(&mut self.diagnostics), failure);
+        self.diagnostics.clone_from(&failure.diagnostics);
+        self.stopped = Some(failure);
+        self
+    }
+
+    fn into_result(self) -> Result<FileFrontendState, FrontendFailure> {
+        if let Some(failure) = self.stopped {
+            return Err(failure);
+        }
+        Ok(FileFrontendState {
+            program: self.program,
+            diagnostics: self.diagnostics,
+            typecheck_result: self
+                .typecheck_result
+                .expect("a completed frontend run has a type-check result"),
+            source: self.source,
+        })
+    }
+}
+
+/// Run the shared frontend over a document that may not match its file.
+///
+/// Same load → parse → import resolution → builtins preload → manifest
+/// validation → type check as [`run_file_frontend_to_typecheck`]. `input`
+/// names the document; every source read consults `options.documents` first,
+/// so an open buffer checks against its saved siblings.
+#[must_use]
+pub fn run_document_frontend(input: &str, options: &FrontendOptions) -> DocumentFrontendState {
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict)
+}
+
+/// [`run_document_frontend`] for a buffer with no file behind it.
+///
+/// `label` names the buffer in diagnostics and anchors module resolution.
+#[must_use]
+pub fn run_source_frontend(
+    source: &str,
+    label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
+}
+
+fn run_document_frontend_with_mode(
     input: &str,
+    source_override: Option<&str>,
     options: &FrontendOptions,
     mode: FrontendParseMode,
-) -> Result<FileFrontendState, FrontendFailure> {
-    let project = load_project_context(input, Some(options))?;
-    let (mut program, parse_diagnostics) =
-        parse_source_with_diagnostics(&project.source, input, mode)?;
-    import_directory_module_entry_for_peer(&mut program, Path::new(input), mode);
+) -> DocumentFrontendState {
+    let project = match load_project_context(input, Some(options), source_override) {
+        Ok(project) => project,
+        Err(failure) => {
+            let empty = parse_for_frontend("", mode);
+            return DocumentFrontendState {
+                source: String::new(),
+                program: empty.program.clone(),
+                parse_result: Some(empty),
+                diagnostics: Vec::new(),
+                typecheck_result: None,
+                stopped: None,
+            }
+            .stop(failure);
+        }
+    };
+
+    let parse_result = parse_for_frontend(&project.source, mode);
+    let diagnostics = parse_result
+        .errors
+        .iter()
+        .cloned()
+        .map(|diagnostic| FrontendDiagnostic::parse(&project.source, input, diagnostic))
+        .collect::<Vec<_>>();
+    let parse_failed = parse_result
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error);
+    let mut state = DocumentFrontendState {
+        source: project.source.clone(),
+        program: parse_result.program.clone(),
+        parse_result: Some(parse_result),
+        diagnostics,
+        typecheck_result: None,
+        stopped: None,
+    };
+    if parse_failed {
+        return state.stop(FrontendFailure::message_only("parsing failed"));
+    }
+
+    import_directory_module_entry_for_peer(
+        &mut state.program,
+        Path::new(input),
+        &options.documents,
+        mode,
+    );
     let entry_selection = (mode == FrontendParseMode::Strict)
         .then_some(options.entry_selection)
         .flatten();
@@ -2852,57 +3057,65 @@ fn run_file_frontend_to_typecheck_with_mode(
         .then_some(options.companion.as_deref())
         .flatten();
     if let Some(companion) = companion {
-        program
+        state
+            .program
             .items
             .push(file_import(companion.display().to_string()));
     }
-    let mut diagnostics = parse_diagnostics;
 
+    run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
+}
+
+/// The frontend stages every host shares once a program exists: import
+/// resolution, the builtins preload, manifest validation and type-checking.
+fn run_frontend_after_parse(
+    mut state: DocumentFrontendState,
+    project: &ProjectContext,
+    input: &str,
+    options: &FrontendOptions,
+    mode: FrontendParseMode,
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+) -> DocumentFrontendState {
     if let Err(failure) = resolve_imports_internal(
-        &mut program,
+        &mut state.program,
         &project.source,
         input,
-        &project,
+        project,
         options,
-        &mut diagnostics,
+        &mut state.diagnostics,
         mode,
     ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
+        return state.stop(failure);
     }
 
-    let mut typecheck_result = match typecheck_program_with_diagnostics(
-        &program,
+    let (typecheck_result, type_diagnostics) = typecheck_program_with_diagnostics(
+        &state.program,
         &project.source,
         input,
         options,
         mode,
         entry_selection,
-    ) {
-        Ok((result, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            result
-        }
-        Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-    };
+    );
+    state.diagnostics.extend(type_diagnostics);
+    let type_check_failed = type_check_failed(&typecheck_result);
+    state.typecheck_result = Some(typecheck_result);
+    if type_check_failed {
+        return state.stop(FrontendFailure::message_only("type errors found"));
+    }
 
-    if let Some(normalized) = typecheck_result
-        .tco
+    if let Some(normalized) = state
+        .typecheck_result
         .as_mut()
+        .and_then(|result| result.tco.as_mut())
         .and_then(|tco| tco.normalized_machines.as_mut())
     {
         flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
     } else {
-        flatten_file_import_items(&mut program);
+        flatten_file_import_items(&mut state.program);
     }
     let stdlib_roots = configured_stdlib_roots(options);
-    retain_user_facing_diagnostics(input, &stdlib_roots, &mut diagnostics);
-
-    Ok(FileFrontendState {
-        program,
-        diagnostics,
-        typecheck_result,
-        source: project.source,
-    })
+    retain_user_facing_diagnostics(input, &stdlib_roots, &mut state.diagnostics);
+    state
 }
 
 /// Shared frontend driver for already-parsed in-memory programs.
@@ -2916,60 +3129,61 @@ fn run_file_frontend_to_typecheck_with_mode(
 /// Returns [`FrontendFailure`] when manifest loading, import resolution, or
 /// type-checking fails.
 pub fn run_program_frontend_to_typecheck(
-    mut program: Program,
+    program: Program,
     source: &str,
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<ProgramFrontendState, FrontendFailure> {
-    let project = project_context_for_program(source, options)?;
-    let mut diagnostics = Vec::new();
+    let state = run_program_frontend(program, source, source_label, options);
+    let file_state = state.into_result()?;
+    let diagnostics = fail_on_warning_diagnostics(file_state.diagnostics, options)?;
+    Ok(ProgramFrontendState {
+        program: file_state.program,
+        diagnostics,
+        typecheck_result: file_state.typecheck_result,
+        source: file_state.source,
+    })
+}
 
-    if let Err(failure) = resolve_imports_internal(
-        &mut program,
-        source,
-        source_label,
+/// [`run_program_frontend_to_typecheck`] without the fatal failure, for hosts
+/// that need the diagnostics and artefacts of a run that could not complete.
+#[must_use]
+pub fn run_program_frontend(
+    program: Program,
+    source: &str,
+    source_label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    let project = match project_context_for_program(source, options) {
+        Ok(project) => project,
+        Err(failure) => {
+            return DocumentFrontendState {
+                source: source.to_string(),
+                parse_result: None,
+                program,
+                diagnostics: Vec::new(),
+                typecheck_result: None,
+                stopped: None,
+            }
+            .stop(failure)
+        }
+    };
+    let state = DocumentFrontendState {
+        source: source.to_string(),
+        parse_result: None,
+        program,
+        diagnostics: Vec::new(),
+        typecheck_result: None,
+        stopped: None,
+    };
+    run_frontend_after_parse(
+        state,
         &project,
-        options,
-        &mut diagnostics,
-        FrontendParseMode::Strict,
-    ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
-    }
-
-    let mut typecheck_result = match typecheck_program_with_diagnostics(
-        &program,
-        source,
         source_label,
         options,
         FrontendParseMode::Strict,
         None,
-    ) {
-        Ok((result, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            result
-        }
-        Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-    };
-
-    if let Some(normalized) = typecheck_result
-        .tco
-        .as_mut()
-        .and_then(|tco| tco.normalized_machines.as_mut())
-    {
-        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
-    } else {
-        flatten_file_import_items(&mut program);
-    }
-    let stdlib_roots = configured_stdlib_roots(options);
-    retain_user_facing_diagnostics(source_label, &stdlib_roots, &mut diagnostics);
-
-    let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
-    Ok(ProgramFrontendState {
-        program,
-        diagnostics,
-        typecheck_result,
-        source: source.to_string(),
-    })
+    )
 }
 
 /// Parse, resolve imports, and type-check a Hew source file.
@@ -3195,8 +3409,9 @@ mod tests {
     use super::{
         build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
         hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
-        parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, DiagnosticPolicy, FrontendDiagnostic,
+        parse_source, retain_user_facing_diagnostics, run_document_frontend,
+        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
+        run_source_frontend, DiagnosticPolicy, DocumentSet, FrontendDiagnostic,
         FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
@@ -3213,6 +3428,77 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
         file.write_all(content.as_bytes()).expect("write hew.lock");
+    }
+
+    /// An unsaved buffer checks against its saved siblings: the driver reads
+    /// the open document for `lib.hew` and the file on disk for everything
+    /// else.
+    #[test]
+    fn an_open_buffer_overrides_the_file_on_disk() {
+        let dir = tempfile::tempdir().expect("create document-overlay fixture");
+        write_source(dir.path(), "lib.hew", "pub fn answer() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"lib.hew\";\n\nfn main() { println(answer() + bonus()); }\n",
+        );
+
+        // Negative control: the saved `lib.hew` has no `bonus`.
+        let saved = run_document_frontend(&input, &FrontendOptions::default());
+        assert!(
+            saved.stopped.is_some(),
+            "the saved sibling declares no `bonus`: {:#?}",
+            saved.diagnostics
+        );
+
+        let mut documents = DocumentSet::new();
+        documents.insert(
+            dir.path().join("lib.hew"),
+            "pub fn answer() -> i64 { 1 }\npub fn bonus() -> i64 { 2 }\n",
+        );
+        let options = FrontendOptions {
+            documents,
+            ..FrontendOptions::default()
+        };
+        let open = run_document_frontend(&input, &options);
+        assert!(
+            open.stopped.is_none(),
+            "the open buffer declares `bonus`: {:#?}",
+            open.diagnostics
+        );
+    }
+
+    /// A buffer with no file behind it runs the same frontend, including the
+    /// implicit `std.text.regex` import a regex literal needs.
+    #[test]
+    fn a_buffer_without_a_file_gets_the_implicit_regex_import() {
+        let source = "fn main() { let pattern = re\"a+\"; println(pattern.is_match(\"aaa\")); }\n";
+        let state = run_source_frontend(source, "<buffer>", &FrontendOptions::default());
+        assert!(
+            state.stopped.is_none(),
+            "the driver injects the regex import: {:#?}",
+            state.diagnostics
+        );
+    }
+
+    /// The editors need the checker output of a run that reported errors, not
+    /// only the failure.
+    #[test]
+    fn a_stopped_run_still_carries_its_checker_output() {
+        let state = run_source_frontend(
+            "fn main() { let x: i64 = \"text\"; println(x); }\n",
+            "<buffer>",
+            &FrontendOptions::default(),
+        );
+        let stopped = state.stopped.as_ref().expect("the assignment is ill-typed");
+        assert_eq!(stopped.message, "type errors found");
+        let tco = state
+            .typecheck_result
+            .as_ref()
+            .and_then(|result| result.tco.as_ref())
+            .expect("a type-checked run keeps its checker output");
+        assert!(!tco.errors.is_empty());
+        assert!(state.parse_result.is_some());
     }
 
     fn write_source(dir: &Path, name: &str, content: &str) -> String {
@@ -3668,6 +3954,7 @@ mod tests {
             );
             let source = fs::read_to_string(&input).expect("read module-owner fixture");
             let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+            let documents = DocumentSet::new();
             let mut ctx = ImportResolutionContext {
                 in_progress_imports: HashSet::new(),
                 resolved_imports: HashMap::new(),
@@ -3677,6 +3964,7 @@ mod tests {
                 package_name: None,
                 project_dir: dir.path(),
                 module_search_paths: Some(std::slice::from_ref(&repo_root)),
+                documents: &documents,
             };
 
             let graph = build_module_graph(
@@ -3781,6 +4069,7 @@ mod tests {
         );
         let source = fs::read_to_string(&input).expect("read module-owner fixture");
         let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+        let documents = DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -3790,6 +4079,7 @@ mod tests {
             package_name: None,
             project_dir: dir.path(),
             module_search_paths: None,
+            documents: &documents,
         };
 
         let failure = build_module_graph(
@@ -6380,6 +6670,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("dep".to_string()))],
+            &DocumentSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -6412,6 +6703,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("missing".to_string()))],
+            &DocumentSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);

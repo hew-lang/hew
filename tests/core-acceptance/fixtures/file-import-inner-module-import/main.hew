@@ -1,0 +1,5 @@
+import "sub.hew";
+
+fn main() {
+    println(sub_k());
+}

@@ -849,6 +849,24 @@ pub struct TypeCheckOutput {
     /// to the checker's canonical owner (`hew.lmonobox.Box`) before a generic
     /// type argument can reach layout registration or unification.
     pub module_import_bindings: HashMap<ImportBindingKey, String>,
+    /// Exact declaring owner for each bare constant binding an import published
+    /// into a file's scope, keyed by that file.
+    ///
+    /// A named import (`import lib.{ LIB_K };`) binds `LIB_K` only in the file
+    /// that wrote it, whichever file that is: a root program, a package module,
+    /// or a file the root pulled in with `import "sub.hew";`. HIR resolves a
+    /// bare constant reference through this table so it reads the same scope the
+    /// checker admitted the reference under, rather than re-deriving import
+    /// scope from the AST.
+    pub published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
+    /// Exact declaring owner for each bare function binding an import published
+    /// into a file's scope, keyed by that file.
+    ///
+    /// The companion of [`TypeCheckOutput::published_bare_const_owners`] for
+    /// functions: HIR maps the owner to the module-qualified symbol it emitted
+    /// the body under, so a bare call in a spliced file reaches the same
+    /// declaration the checker resolved it to.
+    pub import_fn_name_aliases: HashMap<ImportBindingKey, String>,
 }
 
 /// Whether a wire struct field's enclosing map key may be absent.
@@ -1467,6 +1485,8 @@ impl Default for TypeCheckOutput {
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
             module_import_bindings: HashMap::new(),
+            published_bare_const_owners: HashMap::new(),
+            import_fn_name_aliases: HashMap::new(),
         }
     }
 }

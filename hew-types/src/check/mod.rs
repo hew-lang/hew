@@ -2473,6 +2473,8 @@ impl Checker {
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             module_import_bindings: std::mem::take(&mut self.module_import_bindings),
+            published_bare_const_owners: std::mem::take(&mut self.published_bare_const_owners),
+            import_fn_name_aliases: std::mem::take(&mut self.import_fn_name_aliases),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),

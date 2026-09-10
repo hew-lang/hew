@@ -18,12 +18,11 @@ use std::{
 
 use hew_parser::ast::{
     condition_exprs, ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp,
-    ConditionItem, ConstDecl, Expr, FnDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl,
-    Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
-    VariantKind,
+    ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal, MachineDecl, Param,
+    Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker as AstResourceMarker,
+    RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -2771,59 +2770,6 @@ fn module_file_import_fn_rewrites(
     rewrites
 }
 
-/// Build the root scope's bare imported-function bindings.
-///
-/// The checker publishes selected names from `import module::{name}` and
-/// `import module.{name}`, but HIR emits the function body under its module-qualified
-/// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
-/// where the checker's root value namespace already owns the same binding.
-fn root_imported_fn_rewrites(
-    program: &Program,
-    root_value_bindings: &HashSet<String>,
-) -> HashMap<String, String> {
-    let mut rewrites = HashMap::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        let Some(resolved_items) = decl.resolved_items.as_ref() else {
-            continue;
-        };
-        let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items.iter() {
-            let Item::Function(function) = resolved_item else {
-                continue;
-            };
-            if !function.visibility.is_pub() {
-                continue;
-            }
-            let binding = match &decl.spec {
-                Some(ImportSpec::Names(names)) => names
-                    .iter()
-                    .find(|imported| imported.name == function.name)
-                    .map(|imported| {
-                        imported
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| function.name.clone())
-                    }),
-                None => None,
-            };
-            if let Some(binding) = binding {
-                if root_value_bindings.contains(&binding) {
-                    continue;
-                }
-                rewrites.insert(
-                    binding,
-                    crate::mangle_dotted_name(&format!("{module_full_path}.{}", function.name)),
-                );
-            }
-        }
-    }
-    rewrites
-}
-
-#[must_use]
 pub fn lower_program(
     program: &Program,
     type_check_output: &TypeCheckOutput,
@@ -3603,59 +3549,6 @@ pub fn lower_program_with_mono_cap(
                 }
                 ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
-            }
-        }
-    }
-    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(
-        program,
-        &type_check_output.root_value_bindings,
-    ));
-
-    // Selective/glob imports bind a pub const's bare (or aliased) name at
-    // root, but the pre-pass above registers imported consts only under the
-    // qualified `{module}.{CONST}` key. Alias the importer-visible binding to
-    // the same entry so a bare `MAX_RETRIES` resolves to the identical
-    // `ItemId`/descriptor a dotted `reasons.MAX_RETRIES` reaches. Root-owned
-    // consts registered by the root pre-pass keep precedence (`or_insert`),
-    // mirroring `root_imported_fn_rewrites` for functions.
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.path.is_empty() {
-            continue;
-        }
-        let Some(spec) = &decl.spec else {
-            continue;
-        };
-        let Some(resolved_items) = &decl.resolved_items else {
-            continue;
-        };
-        let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items.iter() {
-            let Item::Const(const_decl) = resolved_item else {
-                continue;
-            };
-            if !const_decl.visibility.is_pub() {
-                continue;
-            }
-            let binding = match spec {
-                ImportSpec::Names(names) => names
-                    .iter()
-                    .find(|imported| imported.name == const_decl.name)
-                    .map(|imported| {
-                        imported
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| const_decl.name.clone())
-                    }),
-            };
-            let Some(binding) = binding else {
-                continue;
-            };
-            let qualified = format!("{module_full_path}.{}", const_decl.name);
-            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
-                ctx.const_registry.entry(binding).or_insert(entry);
             }
         }
     }
@@ -8343,6 +8236,18 @@ struct LowerCtx {
     /// `closableerr.CloseError` still resolves to
     /// `hew.closableerr.CloseError` without a leaf-name retry.
     module_import_bindings: HashMap<(Option<String>, u32, String), String>,
+    /// Exact owner identities for the bare constant bindings an import
+    /// published, keyed by the file that wrote the import. A file the root
+    /// pulled in with `import "sub.hew";` is spliced into `program.items`, so
+    /// its own `import lib.{ LIB_K };` never reaches HIR as an item; this fact
+    /// is how a bare `LIB_K` in that file resolves to `lib.LIB_K` under the
+    /// same scope the checker admitted it in.
+    published_bare_const_owners:
+        HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
+    /// Exact owner identities for the bare function bindings an import
+    /// published, keyed by the file that wrote the import. The companion of
+    /// `published_bare_const_owners`; see `imported_rewrite_symbol`.
+    import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8667,6 +8572,8 @@ impl LowerCtx {
             resolving_type_aliases: HashSet::new(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
+            published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
+            import_fn_name_aliases: tc_output.import_fn_name_aliases.clone(),
             identity: tc_output.identity.clone(),
         }
     }
@@ -9267,10 +9174,52 @@ impl LowerCtx {
             .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
-    fn imported_rewrite_symbol(&self, name: &str) -> Option<&str> {
-        self.imported_fn_rewrites
+    /// The symbol HIR emitted a published declaration under.
+    ///
+    /// A package module's declaration keeps its `{owner}.{name}` identity. A
+    /// file import's declaration was spliced into the root namespace by the
+    /// frontend, so the same declaration is emitted under its bare name.
+    fn published_declaration_symbol(&self, source_identity: &str) -> String {
+        match source_identity.rsplit_once('.') {
+            Some((owner, name)) if self.file_import_module_names.contains(owner) => {
+                name.to_string()
+            }
+            _ => crate::mangle_dotted_name(source_identity),
+        }
+    }
+
+    /// The registry key HIR holds a published constant under: the bare name for
+    /// a file import's spliced declaration, the qualified identity otherwise.
+    fn published_const_key<'a>(&self, source_identity: &'a str) -> &'a str {
+        source_identity
+            .rsplit_once('.')
+            .filter(|(owner, _)| self.file_import_module_names.contains(*owner))
+            .map_or(source_identity, |(_, name)| name)
+    }
+
+    /// The emitted symbol a bare function name reaches from the file being
+    /// lowered: the same-module rewrite map while an imported module's bodies
+    /// lower, else the exact owner an import published into this file's scope.
+    ///
+    /// The published fact is keyed by file, so a file the root spliced in
+    /// (`import "sub.hew";`) resolves its own `import lib.{ bump };` here and a
+    /// file that never wrote that import does not see `bump`.
+    fn imported_rewrite_symbol(&self, name: &str) -> Option<String> {
+        if let Some(symbol) = self
+            .imported_fn_rewrites
             .as_ref()
-            .and_then(|rewrites| rewrites.get(name).map(String::as_str))
+            .and_then(|rewrites| rewrites.get(name))
+        {
+            return Some(symbol.clone());
+        }
+        self.import_fn_name_aliases
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
+            .map(|owner| self.published_declaration_symbol(owner))
+            .filter(|symbol| self.fn_registry.contains_key(symbol))
     }
 
     fn record_var_self_direct_monomorphisation(
@@ -9384,11 +9333,11 @@ impl LowerCtx {
             return;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name).unwrap_or(name)
+            self.imported_rewrite_symbol(name)
+                .unwrap_or_else(|| name.to_string())
         } else {
-            name
-        }
-        .to_string();
+            name.to_string()
+        };
         self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
     }
 
@@ -9409,11 +9358,11 @@ impl LowerCtx {
             return false;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name).unwrap_or(name)
+            self.imported_rewrite_symbol(name)
+                .unwrap_or_else(|| name.to_string())
         } else {
-            name
-        }
-        .to_string();
+            name.to_string()
+        };
         let is_generic_user_fn = self
             .fn_registry
             .get(&registry_name)
@@ -22167,7 +22116,7 @@ impl LowerCtx {
                 );
             }
         }
-        if let Some(symbol) = self.imported_rewrite_symbol(name).map(str::to_string) {
+        if let Some(symbol) = self.imported_rewrite_symbol(name) {
             if self.fn_registry.contains_key(&symbol) {
                 return self.lower_function_value(&symbol, &span, site);
             }
@@ -22193,6 +22142,32 @@ impl LowerCtx {
             .imported_module_consts
             .as_ref()
             .and_then(|m| m.get(name))
+            .cloned()
+        {
+            let ty = entry.ty.clone();
+            let id = entry.id;
+            return (
+                HirExprKind::BindingRef {
+                    name: name.to_string(),
+                    resolved: ResolvedRef::Const(id),
+                },
+                ty,
+            );
+        }
+        // A bare constant an import published into THIS file's scope. The
+        // checker recorded the exact declaring owner per importing file, so a
+        // file the root spliced in resolves its own `import lib.{ LIB_K };`
+        // here and a file that never wrote that import does not see `LIB_K`.
+        if let Some(entry) = self
+            .published_bare_const_owners
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
+            .filter(|owners| owners.len() == 1)
+            .and_then(|owners| owners.iter().next())
+            .and_then(|owner| self.const_registry.get(self.published_const_key(owner)))
             .cloned()
         {
             let ty = entry.ty.clone();

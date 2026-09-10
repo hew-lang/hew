@@ -6516,6 +6516,19 @@ machine Traffic {
     }
 
     #[test]
+    fn lsp_reject_self_in_transition_diagnostic_code() {
+        // `self` in a machine body is refused (E_MACHINE_SELF), and the
+        // refusal has to reach the editor rather than only the CLI.
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_self_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_self_in_transition.hew"),
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
+            9, // 0-indexed: `self.hits` is on line 9 (1-indexed line 10)
+        );
+    }
+
+    #[test]
     fn v05_record_literals_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_record_literals",

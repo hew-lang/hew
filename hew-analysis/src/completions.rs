@@ -679,11 +679,30 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 }
             }
             Item::Machine(m) => {
+                // `state` and `event` are the only names a machine body binds
+                // (HEW-SPEC-2026 §3.11.3); `self` belongs to actors and
+                // methods, so it is never offered here.
+                if let Some(scope) = crate::machine_scope::scope_at(m, offset) {
+                    for binding in &scope.bindings {
+                        locals.push(typed_local_completion(binding.name, &binding.ty));
+                    }
+                    for name in &scope.head_bindings {
+                        locals.push(local_completion(name));
+                    }
+                }
                 for transition in &m.transitions {
                     if let Some(guard) = &transition.guard {
                         collect_locals_from_spanned_expr(guard, offset, &mut locals);
                     }
                     collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
+                }
+                for state in &m.states {
+                    for hook in [state.entry.as_ref(), state.exit.as_ref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        collect_locals_from_block(hook, offset, &mut locals);
+                    }
                 }
             }
             // Record fields carry no expressions; no locals to collect.
@@ -1049,6 +1068,14 @@ fn local_completion(name: &str) -> CompletionItem {
     }
 }
 
+/// A local whose type the editor can show, such as a machine's `state`.
+fn typed_local_completion(name: &str, ty: &str) -> CompletionItem {
+    CompletionItem {
+        detail: Some(format!("{name}: {ty}")),
+        ..local_completion(name)
+    }
+}
+
 /// Build a completion item from a function signature.
 fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
     let detail = format_fn_signature_inline(name, sig);
@@ -1194,6 +1221,54 @@ mod tests {
         );
 
         complete(&source, &parse_result, type_output, offset)
+    }
+
+    const MACHINE_SOURCE: &str = concat!(
+        "machine Counter {\n",
+        "    events { Tick { by: i64 } }\n",
+        "    state Idle,\n",
+        "    state Live { hits: i64 },\n",
+        "    on Tick(by): Idle => Live { hits: by }\n",
+        "    on Tick: Live => Live reenter {\n",
+        "        /*cursor*/\n",
+        "        Live { hits: state.hits + event.by }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn machine_transition_body_offers_state_and_event_never_self() {
+        let items = items_at_cursor(MACHINE_SOURCE, None);
+        let state = items
+            .iter()
+            .find(|item| item.label == "state")
+            .expect("a transition body binds `state`");
+        assert_eq!(state.detail.as_deref(), Some("state: Counter.Live"));
+        let event = items
+            .iter()
+            .find(|item| item.label == "event")
+            .expect("a transition body binds `event`");
+        assert_eq!(event.detail.as_deref(), Some("event: CounterEvent.Tick"));
+        assert!(
+            !items.iter().any(|item| item.label == "self"),
+            "`self` is an actor receiver and is never bound in a machine body"
+        );
+    }
+
+    #[test]
+    fn machine_event_head_binding_is_a_local() {
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick { by: i64 } }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick(by): Idle => Live {\n",
+            "        hits: /*cursor*/by\n",
+            "    }\n",
+            "    on Tick: Live => Live reenter { hits: state.hits }\n",
+            "}\n",
+        );
+        assert!(labels_at_cursor(source).contains(&"by".to_string()));
     }
 
     fn labels_at_cursor(source_with_cursor: &str) -> Vec<String> {

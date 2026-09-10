@@ -1235,10 +1235,20 @@ fn hover_param_in_item(
             }
             None
         }
-        Item::Machine(_) | Item::Supervisor(_) => {
-            // Machine transitions bind event fields as plain names (not Param
-            // objects with type annotations), and supervisors carry no callable
-            // bodies. Neither has a Param list for hover_param_in_decl.
+        Item::Machine(machine) => {
+            // A machine body has no Param list, but it does bind `state` and
+            // `event` (HEW-SPEC-2026 §3.11.3). Report those with the types the
+            // rule refines them to.
+            let scope = crate::machine_scope::scope_at(machine, offset)?;
+            let binding = scope.bindings.iter().find(|binding| binding.name == word)?;
+            Some(HoverResult {
+                contents: format!("```hew\n{word}: {}\n```", binding.ty),
+                span: Some(word_span),
+            })
+        }
+        Item::Supervisor(_) => {
+            // Supervisors carry no callable bodies, so there is no Param list
+            // for hover_param_in_decl.
             None
         }
         _ => None,
@@ -2336,8 +2346,8 @@ mod tests {
             "    }\n",
             "    state Idle,\n",
             "    state Running,\n",
-            "    on Start: Idle => Running { Running }\n",
-            "    on Start: Running => Running { Running }\n",
+            "    on Start: Idle => Running,\n",
+            "    on Start: Running => Running,\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);
@@ -2358,6 +2368,41 @@ mod tests {
                 && hr.contents.contains("state_name"),
             "hover should name the machine, its states and its step surface; got: {}",
             hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_reports_machine_state_and_event_bindings() {
+        // A machine body binds `state` and `event` and nothing else; the
+        // editor reports the types the rule refines them to.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick { by: i64 } }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick: Idle => Live { hits: event.by }\n",
+            "    on Tick: Live => Live reenter { hits: state.hits + event.by }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+
+        let state_offset = source.find("state.hits").unwrap();
+        let state_hover = hover(source, &pr, Some(&tc), state_offset)
+            .expect("hover over `state` in a transition body must resolve");
+        assert!(
+            state_hover.contents.contains("state: Counter.Live"),
+            "hover should name the refined source state; got: {}",
+            state_hover.contents
+        );
+
+        let event_offset = source.rfind("event.by").unwrap();
+        let event_hover = hover(source, &pr, Some(&tc), event_offset)
+            .expect("hover over `event` in a transition body must resolve");
+        assert!(
+            event_hover.contents.contains("event: CounterEvent.Tick"),
+            "hover should name the selected input; got: {}",
+            event_hover.contents
         );
     }
 

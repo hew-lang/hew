@@ -12,6 +12,7 @@ pub mod definition;
 pub mod folding;
 pub mod hover;
 pub mod inlay_hints;
+pub mod machine_scope;
 mod method_lookup;
 pub mod references;
 pub mod rename;

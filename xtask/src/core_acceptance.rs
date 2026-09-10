@@ -58,8 +58,8 @@ struct Case {
 ///   vertical-slice reject oracle: it pins the diagnostic that matters
 ///   without freezing every unrelated cascade line around it.
 /// - `Doc` is a fence source, not a single observation: the runner extracts
-///   every ```hew fence from `source` and expands each into its own case,
-///   named by the fence's content, and `hew check`s it.
+///   every fenced hew block from `source` and expands each into its own
+///   case, named by the fence's content, and `hew check`s it.
 ///
 /// Safety (ASan/LSan) stays a suite selected by `suites`, not a case kind —
 /// only a `run` case is ever sanitizer-compiled.
@@ -250,15 +250,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         run_dir: run_dir.path(),
         instrumentation_request,
     };
-    let outcomes = run_selected(&runner, &selected, options.jobs);
-
-    for (_, _, log) in &outcomes {
-        print!("{log}");
-    }
-    let verdicts: Vec<(&str, bool)> = outcomes
-        .iter()
-        .map(|(case, passed, _)| (case.id.as_str(), *passed))
-        .collect();
+    let verdicts = run_selected(&runner, &selected, options.jobs);
     let Ratchet {
         failed,
         known,
@@ -267,7 +259,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
 
     println!(
         "core-acceptance results: {} passed, {} known-failing, {} failed",
-        outcomes.len() - failed.len() - known.len() - now_passing.len(),
+        verdicts.len() - failed.len() - known.len() - now_passing.len(),
         known.len(),
         failed.len(),
     );
@@ -303,41 +295,37 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     }
 }
 
-/// Run the selected cases across `jobs` threads and return their outcomes in
-/// manifest order. Each case buffers its own report so a parallel run reads
-/// exactly like a serial one.
+/// Run the selected cases across `jobs` threads, reporting each as it
+/// finishes, and return the verdicts.
+///
+/// Each case buffers its own report and prints it whole under a lock, so two
+/// cases never interleave their lines and a long run says what it is doing
+/// while it does it.
 fn run_selected<'a>(
     runner: &Runner<'_>,
     selected: &[&'a Case],
     jobs: usize,
-) -> Vec<(&'a Case, bool, String)> {
+) -> Vec<(&'a str, bool)> {
     let next = AtomicUsize::new(0);
-    let mut slots: Vec<Option<(bool, String)>> = vec![None; selected.len()];
-    {
-        let slot_refs: Vec<&mut Option<(bool, String)>> = slots.iter_mut().collect();
-        let shared = std::sync::Mutex::new(slot_refs);
-        thread::scope(|scope| {
-            for _ in 0..jobs.min(selected.len().max(1)) {
-                scope.spawn(|| loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(case) = selected.get(index) else {
-                        return;
-                    };
-                    let mut log = String::new();
-                    let passed = runner.run_case(case, &mut log);
-                    *shared.lock().expect("slot lock")[index] = Some((passed, log));
-                });
-            }
-        });
-    }
-    selected
-        .iter()
-        .zip(slots)
-        .map(|(case, slot)| {
-            let (passed, log) = slot.expect("every selected case reports an outcome");
-            (*case, passed, log)
-        })
-        .collect()
+    let verdicts = std::sync::Mutex::new(Vec::with_capacity(selected.len()));
+    thread::scope(|scope| {
+        for _ in 0..jobs.min(selected.len().max(1)) {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(case) = selected.get(index) else {
+                    return;
+                };
+                let mut log = String::new();
+                let passed = runner.run_case(case, &mut log);
+                let mut reported = verdicts.lock().expect("verdict lock");
+                print!("{log}");
+                reported.push((case.id.as_str(), passed));
+            });
+        }
+    });
+    let mut reported = verdicts.into_inner().expect("verdict lock");
+    reported.sort_unstable();
+    reported
 }
 
 /// How a run's verdicts land against the expected-failure ledger.
@@ -424,7 +412,7 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut hew_bin = root.join("target/debug/hew");
     let mut timeout_seconds = None;
     let mut kinds = Vec::new();
-    let mut jobs = default_jobs();
+    let mut jobs = None;
     let mut index = 0;
 
     while index < args.len() {
@@ -449,12 +437,13 @@ fn parse_options(args: &[String]) -> Result<Options> {
             }
             "--jobs" => {
                 let value = required_value(args, &mut index, "--jobs")?;
-                jobs = value
+                let requested: usize = value
                     .parse()
                     .map_err(|_| format!("--jobs must be a positive integer, got {value:?}"))?;
-                if jobs == 0 {
+                if requested == 0 {
                     return Err("--jobs must be positive".to_string());
                 }
+                jobs = Some(requested);
             }
             "--timeout-seconds" => {
                 let value = required_value(args, &mut index, "--timeout-seconds")?;
@@ -481,6 +470,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
     if timeout_seconds == Some(0) {
         return Err("--timeout-seconds must be positive".to_string());
     }
+    // Safety runs sanitizer-instrumented binaries whose faults and scheduler
+    // interleavings are the subject; running them alongside 31 others changes
+    // what is being observed, and each one is memory-heavy besides.
+    let jobs = jobs.unwrap_or_else(|| if suite == "safety" { 1 } else { default_jobs() });
     Ok(Options {
         suite,
         cases,
@@ -491,14 +484,17 @@ fn parse_options(args: &[String]) -> Result<Options> {
     })
 }
 
-/// One case at a time per core. Every case shells out to the compiler and
-/// then to the compiled program, so the runner is almost entirely waiting on
-/// child processes; the migrated suite is thousands of compile-and-run pairs
-/// and is unusable serially.
+/// One case at a time per core, capped. Every case shells out to the compiler
+/// and then to the compiled program, so the runner is almost entirely waiting
+/// on child processes and the migrated suite is unusable serially — but each
+/// compile is an LLVM pass and a link against a multi-hundred-MB archive, and
+/// past a point more of those at once only produces timeouts on a shared box.
+const MAX_DEFAULT_JOBS: usize = 16;
+
 fn default_jobs() -> usize {
     thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1)
+        .map_or(1, std::num::NonZero::get)
+        .min(MAX_DEFAULT_JOBS)
 }
 
 fn required_value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&'a str> {
@@ -517,7 +513,7 @@ fn usage() -> String {
         "  --case ID                             run one named manifest case",
         "  --hew-bin PATH                        use a prebuilt compiler binary",
         "  --kind run,check,reject,doc           run only cases of these kinds",
-        "  --jobs N                              cases to run concurrently (default: cores)",
+        "  --jobs N                              cases to run concurrently (default: cores; 1 for safety)",
         "  --timeout-seconds N                   override each case timeout",
     ]
     .join("\n")
@@ -594,85 +590,92 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
         {
             return Err(format!("{} has invalid suite membership", case.id));
         }
-        match case.kind {
-            CaseKind::Run => {
-                if !case.expected.diagnostics.is_empty() {
-                    return Err(format!(
-                        "{} has kind run but declares expected diagnostics (that shape is check-only)",
-                        case.id
-                    ));
-                }
-                if case.expected.stdout.is_none() || case.expected.exit.is_none() {
-                    return Err(format!(
-                        "{} has kind run and must declare both expected stdout and exit",
-                        case.id
-                    ));
-                }
+        validate_case(case, root)?;
+    }
+    Ok(())
+}
+
+/// The checks that belong to one case: what its kind requires of its
+/// expectation, and that its source exists.
+fn validate_case(case: &Case, root: &Path) -> Result<()> {
+    match case.kind {
+        CaseKind::Run => {
+            if !case.expected.diagnostics.is_empty() {
+                return Err(format!(
+                    "{} has kind run but declares expected diagnostics (that shape is check-only)",
+                    case.id
+                ));
             }
-            CaseKind::Check | CaseKind::Reject => {
-                if case.expected.diagnostics.is_empty() {
-                    return Err(format!(
-                        "{} has kind {} but declares no expected diagnostics",
-                        case.id,
-                        case.kind.label()
-                    ));
-                }
-                if case.suites.iter().any(|suite| suite == "safety") {
-                    return Err(format!(
-                        "{} has kind {} but belongs to the safety suite; safety stays a suite, not a kind",
-                        case.id,
-                        case.kind.label()
-                    ));
-                }
-                if case.expected.stdout.is_some()
-                    || case.expected.exit.is_some()
-                    || !case.expected.stderr.is_empty()
-                {
-                    return Err(format!(
-                        "{} has kind {} but declares run-only expected stdout/stderr/exit",
-                        case.id,
-                        case.kind.label()
-                    ));
-                }
-            }
-            CaseKind::Doc => {
-                // Every doc case in the manifest was expanded into one case
-                // per extracted fence before validation, so what survives
-                // here is a fence: it proves a clean `hew check`, and has no
-                // expectation of its own to declare.
-                if !case.expected.diagnostics.is_empty()
-                    || case.expected.stdout.is_some()
-                    || case.expected.exit.is_some()
-                    || !case.expected.stderr.is_empty()
-                {
-                    return Err(format!(
-                        "{} is a doc fence and must not declare an expectation; a fence proves a clean check",
-                        case.id
-                    ));
-                }
-                if case.suites.iter().any(|suite| suite == "safety") {
-                    return Err(format!(
-                        "{} has kind doc but belongs to the safety suite",
-                        case.id
-                    ));
-                }
+            if case.expected.stdout.is_none() || case.expected.exit.is_none() {
+                return Err(format!(
+                    "{} has kind run and must declare both expected stdout and exit",
+                    case.id
+                ));
             }
         }
-        if !case.env.is_empty() && case.kind != CaseKind::Run {
-            return Err(format!(
-                "{} has kind {} but declares run-only environment",
-                case.id,
-                case.kind.label()
-            ));
+        CaseKind::Check | CaseKind::Reject => {
+            if case.expected.diagnostics.is_empty() {
+                return Err(format!(
+                    "{} has kind {} but declares no expected diagnostics",
+                    case.id,
+                    case.kind.label()
+                ));
+            }
+            if case.suites.iter().any(|suite| suite == "safety") {
+                return Err(format!(
+                    "{} has kind {} but belongs to the safety suite; safety stays a suite, not a kind",
+                    case.id,
+                    case.kind.label()
+                ));
+            }
+            if case.expected.stdout.is_some()
+                || case.expected.exit.is_some()
+                || !case.expected.stderr.is_empty()
+            {
+                return Err(format!(
+                    "{} has kind {} but declares run-only expected stdout/stderr/exit",
+                    case.id,
+                    case.kind.label()
+                ));
+            }
         }
-        let source = case_source(root, case);
-        if !source.is_file() {
-            return Err(format!(
-                "{} source does not exist: {}",
-                case.id,
-                source.display()
-            ));
+        CaseKind::Doc => {
+            // Every doc case in the manifest was expanded into one case
+            // per extracted fence before validation, so what survives
+            // here is a fence: it proves a clean `hew check`, and has no
+            // expectation of its own to declare.
+            if !case.expected.diagnostics.is_empty()
+                || case.expected.stdout.is_some()
+                || case.expected.exit.is_some()
+                || !case.expected.stderr.is_empty()
+            {
+                return Err(format!(
+                    "{} is a doc fence and must not declare an expectation; a fence proves a clean check",
+                    case.id
+                ));
+            }
+            if case.suites.iter().any(|suite| suite == "safety") {
+                return Err(format!(
+                    "{} has kind doc but belongs to the safety suite",
+                    case.id
+                ));
+            }
         }
+    }
+    if !case.env.is_empty() && case.kind != CaseKind::Run {
+        return Err(format!(
+            "{} has kind {} but declares run-only environment",
+            case.id,
+            case.kind.label()
+        ));
+    }
+    let source = case_source(root, case);
+    if !source.is_file() {
+        return Err(format!(
+            "{} source does not exist: {}",
+            case.id,
+            source.display()
+        ));
     }
     Ok(())
 }
@@ -847,69 +850,79 @@ impl Runner<'_> {
                     );
                     return false;
                 };
-                // A clean check exits 0 and a refused one does not: that is
-                // the contract the kind verifies, not a per-case expectation.
-                // `check` pins the exact refusal shape and so pins exit 1;
-                // `reject` only proves the compile was refused, and a refusal
-                // by a compiler limitation exits 3.
-                let wrong_exit = match case.kind {
-                    CaseKind::Doc => actual_exit != 0,
-                    CaseKind::Reject => actual_exit == 0,
-                    _ => actual_exit != 1,
-                };
-                if wrong_exit {
-                    let expected_exit = match case.kind {
-                        CaseKind::Doc => "0",
-                        CaseKind::Reject => "non-zero",
-                        _ => "1",
-                    };
+                Self::check_reported(case, expect_clean, actual_exit, &stdout, &stderr, log)
+            }
+        }
+    }
+
+    /// Compare one finished `hew check` against the case.
+    fn check_reported(
+        case: &Case,
+        expect_clean: bool,
+        actual_exit: i32,
+        stdout: &str,
+        stderr: &str,
+        log: &mut String,
+    ) -> bool {
+        // A clean check exits 0 and a refused one does not: that is
+        // the contract the kind verifies, not a per-case expectation.
+        // `check` pins the exact refusal shape and so pins exit 1;
+        // `reject` only proves the compile was refused, and a refusal
+        // by a compiler limitation exits 3.
+        let wrong_exit = match case.kind {
+            CaseKind::Doc => actual_exit != 0,
+            CaseKind::Reject => actual_exit == 0,
+            _ => actual_exit != 1,
+        };
+        if wrong_exit {
+            let expected_exit = match case.kind {
+                CaseKind::Doc => "0",
+                CaseKind::Reject => "non-zero",
+                _ => "1",
+            };
+            let _ = writeln!(
+                log,
+                "FAIL {} profile={} class=wrong-exit expected={expected_exit} actual={actual_exit}{}{}",
+                case.id,
+                case.kind.label(),
+                summarise(stdout),
+                summarise(stderr)
+            );
+            return false;
+        }
+        if !expect_clean {
+            let actual: Vec<ActualDiagnostic> = match serde_json::from_str(stdout) {
+                Ok(diagnostics) => diagnostics,
+                Err(err) => {
                     let _ = writeln!(
                         log,
-                        "FAIL {} profile={} class=wrong-exit expected={expected_exit} actual={actual_exit}{}{}",
+                        "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
                         case.id,
                         case.kind.label(),
-                        summarise(&stdout),
-                        summarise(&stderr)
+                        summarise(stdout)
                     );
                     return false;
                 }
-                if !expect_clean {
-                    let actual: Vec<ActualDiagnostic> = match serde_json::from_str(&stdout) {
-                        Ok(diagnostics) => diagnostics,
-                        Err(err) => {
-                            let _ = writeln!(
-                                log,
-                                "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
-                                case.id,
-                                case.kind.label(),
-                                summarise(&stdout)
-                            );
-                            return false;
-                        }
-                    };
-                    let exact = case.kind == CaseKind::Check;
-                    if let Err(detail) =
-                        diagnostics_match(&case.expected.diagnostics, &actual, exact)
-                    {
-                        let _ = writeln!(
-                            log,
-                            "FAIL {} profile={} class=wrong-diagnostics detail={detail}{}",
-                            case.id,
-                            case.kind.label(),
-                            summarise(&stderr)
-                        );
-                        return false;
-                    }
-                }
+            };
+            let exact = case.kind == CaseKind::Check;
+            if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual, exact) {
                 let _ = writeln!(
                     log,
-                    "PASS {} profile={} exit={actual_exit}",
+                    "FAIL {} profile={} class=wrong-diagnostics detail={detail}{}",
                     case.id,
-                    case.kind.label()
+                    case.kind.label(),
+                    summarise(stderr)
                 );
-                true
+                return false;
             }
         }
+        let _ = writeln!(
+            log,
+            "PASS {} profile={} exit={actual_exit}",
+            case.id,
+            case.kind.label()
+        );
+        true
     }
 
     fn run_profile(&self, case: &Case, profile: Profile, log: &mut String) -> bool {
@@ -1133,43 +1146,56 @@ impl Runner<'_> {
                 stderr,
             } => {
                 let actual_exit = status.code().expect("checked above");
-                let (expected_stdout, expected_exit) = case.expected.run_expectation();
-                if actual_exit != expected_exit {
-                    let _ = writeln!(
-                        log,
-                        "FAIL {} profile={} class=wrong-exit expected={} actual={}{}{}",
-                        case.id,
-                        profile.label(),
-                        expected_exit,
-                        actual_exit,
-                        summarise(&stdout),
-                        summarise(&stderr)
-                    );
-                    return false;
-                }
-                if stdout != expected_stdout || stderr != case.expected.stderr {
-                    let _ = writeln!(
-                        log,
-                        "FAIL {} profile={} class=wrong-output expected={:?} actual={:?}{}",
-                        case.id,
-                        profile.label(),
-                        expected_stdout,
-                        stdout,
-                        summarise(&stderr)
-                    );
-                    return false;
-                }
-                let _ = writeln!(
-                    log,
-                    "PASS {} profile={} exit={} instrumentation-requested={}",
-                    case.id,
-                    profile.label(),
-                    actual_exit,
-                    self.instrumentation_request
-                );
-                true
+                self.report_run(case, profile, actual_exit, &stdout, &stderr, log)
             }
         }
+    }
+
+    /// Compare one finished fixture run against the case.
+    fn report_run(
+        &self,
+        case: &Case,
+        profile: Profile,
+        actual_exit: i32,
+        stdout: &str,
+        stderr: &str,
+        log: &mut String,
+    ) -> bool {
+        let (expected_stdout, expected_exit) = case.expected.run_expectation();
+        if actual_exit != expected_exit {
+            let _ = writeln!(
+                log,
+                "FAIL {} profile={} class=wrong-exit expected={} actual={}{}{}",
+                case.id,
+                profile.label(),
+                expected_exit,
+                actual_exit,
+                summarise(stdout),
+                summarise(stderr)
+            );
+            return false;
+        }
+        if stdout != expected_stdout || stderr != case.expected.stderr {
+            let _ = writeln!(
+                log,
+                "FAIL {} profile={} class=wrong-output expected={:?} actual={:?}{}",
+                case.id,
+                profile.label(),
+                expected_stdout,
+                stdout,
+                summarise(stderr)
+            );
+            return false;
+        }
+        let _ = writeln!(
+            log,
+            "PASS {} profile={} exit={} instrumentation-requested={}",
+            case.id,
+            profile.label(),
+            actual_exit,
+            self.instrumentation_request
+        );
+        true
     }
 }
 
@@ -1393,14 +1419,15 @@ struct FenceSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum FenceStyle {
-    /// One Markdown file. Fences open with ```hew.
+    /// One Markdown file, whose fences carry an explicit hew tag.
     Markdown,
     /// A directory of `.hew` documentation modules. Only `//!` lines carry
-    /// prose; fences open with ```hew. Ids are `<prefix>-<stem>-<cksum>`.
+    /// prose, and their fences carry an explicit hew tag. Ids are
+    /// `<prefix>-<stem>-<cksum>`.
     Module,
     /// The standard library, walked recursively. Both `//!` and `///` carry
-    /// prose, fences open with a bare ``` (hew is the only language std
-    /// writes), and an explicitly tagged fence is skipped. Ids are
+    /// prose, an untagged fence is hew (the only language std writes in),
+    /// and an explicitly tagged fence is skipped. Ids are
     /// `<prefix>-<slug>-<cksum>`.
     Std,
 }
@@ -1585,7 +1612,8 @@ fn posix_cksum(data: &[u8]) -> u32 {
     }
     let mut length = data.len();
     while length > 0 {
-        crc = step(crc, (length & 0xFF) as u8);
+        let byte = u8::try_from(length & 0xFF).expect("masked to one byte");
+        crc = step(crc, byte);
         length >>= 8;
     }
     !crc
@@ -1614,8 +1642,8 @@ fn fence_is_skipped(lines: &[String], fence_index: usize) -> bool {
     })
 }
 
-/// Extract ```hew fences from a Markdown document, or from the `//!` prose of
-/// a `.hew` documentation module when `strip_module_prefix` is set.
+/// Extract the hew-tagged fences from a Markdown document, or from the `//!`
+/// prose of a `.hew` documentation module when `strip_module_prefix` is set.
 fn extract_fences(text: &str, strip_module_prefix: bool) -> Vec<(String, bool)> {
     let lines: Vec<String> = document_lines(text)
         .into_iter()

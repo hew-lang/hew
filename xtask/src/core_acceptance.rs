@@ -45,17 +45,39 @@ enum CaseKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ExpectedOutcome {
+    /// `kind = "run"` only, and required there: the exact stdout the
+    /// program must produce. `Option` (not a default-empty `String`) so a
+    /// run case that forgets it is a validation error, not a silent pass
+    /// against an empty expectation.
     #[serde(default)]
-    stdout: String,
+    stdout: Option<String>,
     #[serde(default)]
     stderr: String,
+    /// `kind = "run"` only, and required there: see `stdout` for why this is
+    /// `Option` rather than default-zero.
     #[serde(default)]
-    exit: i32,
+    exit: Option<i32>,
     /// `kind = "check"` only: the exact diagnostics `hew check --format json`
     /// must report, matched as a set on `(code, line, column)` with an
     /// optional message substring.
     #[serde(default)]
     diagnostics: Vec<ExpectedDiagnostic>,
+}
+
+impl ExpectedOutcome {
+    /// The `(stdout, exit)` a `run` case expects. `validate_manifest`
+    /// requires both to be present before a `run` case ever reaches
+    /// `execute`, so the `expect`s here document an already-checked
+    /// invariant rather than a fallible lookup.
+    fn run_expectation(&self) -> (&str, i32) {
+        (
+            self.stdout
+                .as_deref()
+                .expect("run case validated to have expected stdout"),
+            self.exit
+                .expect("run case validated to have an expected exit"),
+        )
+    }
 }
 
 /// One expected diagnostic for a `check` case.
@@ -327,6 +349,12 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
                         case.id
                     ));
                 }
+                if case.expected.stdout.is_none() || case.expected.exit.is_none() {
+                    return Err(format!(
+                        "{} has kind run and must declare both expected stdout and exit",
+                        case.id
+                    ));
+                }
             }
             CaseKind::Check => {
                 if case.expected.diagnostics.is_empty() {
@@ -338,6 +366,15 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
                 if case.suites.iter().any(|suite| suite == "safety") {
                     return Err(format!(
                         "{} has kind check but belongs to the safety suite; safety stays a suite, not a kind",
+                        case.id
+                    ));
+                }
+                if case.expected.stdout.is_some()
+                    || case.expected.exit.is_some()
+                    || !case.expected.stderr.is_empty()
+                {
+                    return Err(format!(
+                        "{} has kind check but declares run-only expected stdout/stderr/exit",
                         case.id
                     ));
                 }
@@ -735,24 +772,25 @@ impl Runner<'_> {
                 stderr,
             } => {
                 let actual_exit = status.code().expect("checked above");
-                if actual_exit != case.expected.exit {
+                let (expected_stdout, expected_exit) = case.expected.run_expectation();
+                if actual_exit != expected_exit {
                     println!(
                         "FAIL {} profile={} class=wrong-exit expected={} actual={}{}{}",
                         case.id,
                         profile.label(),
-                        case.expected.exit,
+                        expected_exit,
                         actual_exit,
                         summarise(&stdout),
                         summarise(&stderr)
                     );
                     return false;
                 }
-                if stdout != case.expected.stdout || stderr != case.expected.stderr {
+                if stdout != expected_stdout || stderr != case.expected.stderr {
                     println!(
                         "FAIL {} profile={} class=wrong-output expected={:?} actual={:?}{}",
                         case.id,
                         profile.label(),
-                        case.expected.stdout,
+                        expected_stdout,
                         stdout,
                         summarise(&stderr)
                     );
@@ -1051,7 +1089,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
         let mut case = manifest().cases.remove(0);
-        case.expected.exit = 23;
+        case.expected.exit = Some(23);
         let options = Options {
             suite: "safety".to_string(),
             cases: Vec::new(),
@@ -1171,9 +1209,9 @@ mod tests {
             timeout_seconds: 1,
             kind,
             expected: ExpectedOutcome {
-                stdout: String::new(),
+                stdout: None,
                 stderr: String::new(),
-                exit: 0,
+                exit: None,
                 diagnostics,
             },
         }
@@ -1213,6 +1251,20 @@ mod tests {
         let error = validate_manifest(&manifest, directory.path())
             .expect_err("a run case declaring diagnostics is a check-only shape");
         assert!(error.contains("check-only"));
+    }
+
+    #[test]
+    fn run_case_requires_expected_stdout_and_exit() {
+        // `stdout`/`exit` are `Option`, not default-empty/default-zero:
+        // a run case that forgets one must fail validation rather than
+        // silently comparing against "" / 0 and passing when the program
+        // happens to match by coincidence.
+        let directory = manifest_root_with_source("cases/case.hew");
+        let case = make_case(CaseKind::Run, Vec::new(), &["acceptance"], "cases/case.hew");
+        let manifest = Manifest { cases: vec![case] };
+        let error = validate_manifest(&manifest, directory.path())
+            .expect_err("a run case missing stdout/exit must fail validation");
+        assert!(error.contains("must declare both expected stdout and exit"));
     }
 
     #[test]

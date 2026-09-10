@@ -93,6 +93,11 @@ tests/hew/hew_test_emit_*/
 # compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
 # directory untracked without deleting it.
 /hew-codegen/
+
+# Node identity keys and session journals a distributed-node example mints on
+# first run (Node.start(NodeConfig { key: "...", ... })); never source.
+examples/**/*.key
+examples/**/*.key.hew-state
 .[Cc]odex/
 .env
 .env.*

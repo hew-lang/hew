@@ -40,13 +40,18 @@ fn main() {
     };
     // The Stream half moves into the actor's state; the Sink half stays local.
     let d = spawn Drainer(input: input);
-    let _ = d.run();
+    // `fork` starts the completion call concurrently: an ordinary call here
+    // would wait for the handler to finish before this function's next
+    // statement runs, and the handler cannot finish until the producer below
+    // sends frames — an ordinary call would deadlock the two sides.
+    fork d.run();
     // Producer side: drive the local sink, then close it to signal EOF.
     for i in 0 .. 3 {
         sink.send(f"frame-{i}".to_bytes());
     }
     sink.close();
-    // Every printed line comes from the handler; runtime shutdown drains it to
-    // quiescence after `main` returns. A trailing print here would be ordered
-    // against the handler only by a sleep, which is not an edge.
+    // Every printed line comes from the handler; runtime shutdown drains the
+    // forked call to quiescence after `main` returns. A trailing print here
+    // would be ordered against the handler only by a sleep, which is not an
+    // edge.
 }

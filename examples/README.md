@@ -119,7 +119,7 @@ The learning paths here are mostly language-focused. When you want shipped libra
   - [`unicode_runes.hew`](v05/surfaces/unicode_runes.hew) -- unicode rune helpers + classification predicates
   - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std.io.scanner` API. It is admitted to `make test-surface-examples` with an exact five-line normalized-output expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the gate.
 - Networking surfaces live under **net/**:
-  - [`http_await_service.hew`](net/http_await_service.hew) -- HTTP/1.1 client + server with suspending calls (two routes). Uses loopback (`127.0.0.1`) and has a paired `.expected`. Its client/server launch order still needs migration to concurrent tasks; a stored expectation does not establish that it runs on the current compiler.
+  - [`http_await_service.hew`](net/http_await_service.hew) -- HTTP/1.1 client + server with suspending calls (two routes). Uses loopback (`127.0.0.1`) and has a paired `.expected`. The server's accept loop runs as a `fork`ed task so the client below it can dial concurrently.
   - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from `make test-surface-examples`** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
 
 ### Cross-Language Comparisons

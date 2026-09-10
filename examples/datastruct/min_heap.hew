@@ -25,7 +25,7 @@ fn heap_peek(heap: Vec<i32>) -> i32 {
 fn heap_pop(var heap: Vec<i32>) -> i32 {
     let min_val = heap[0];
     let last = heap.pop();
-    if heap.len() > 0 {
+    if !heap.is_empty() {
         heap.set(0, last);
         // Sift down
         var i = 0;
@@ -176,7 +176,7 @@ fn test_single_element() -> i32 {
     let popped = heap_pop(heap);
     if pk == 42 {
         if popped == 42 {
-            if heap.len() == 0 {
+            if heap.is_empty() {
                 println("PASS: single element heap");
                 return 1;
             }

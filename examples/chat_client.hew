@@ -62,19 +62,13 @@ fn main() {
     let arguments = os.args();
     let argc = arguments.len();
     if argc > 1 {
-        match arguments.get(1) {
-            .Some(value) => {
-                port = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(1) {
+            port = value;
         }
     }
     if argc > 2 {
-        match arguments.get(2) {
-            .Some(value) => {
-                name = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(2) {
+            name = value;
         }
     }
     let addr = f"127.0.0.1:{port}";

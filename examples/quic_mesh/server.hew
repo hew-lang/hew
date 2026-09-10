@@ -1,7 +1,7 @@
 // quic_mesh/server.hew — QUIC mesh server node
 //
 // Demonstrates:
-//   - Node.set_transport("quic") for QUIC-based mesh (TLS 1.3)
+//   - Node.start(NodeConfig { transport: "quic-mesh", ... }) for QUIC-based mesh (TLS 1.3)
 //   - Spawning, registering, and serving a named actor
 //   - Receiving remote messages from a connected client
 //
@@ -34,8 +34,11 @@ impl ActorMsg for Counter {
 
 fn main() {
     println("[server] starting QUIC mesh node...");
-    Node.set_transport("quic");
-    Node.start("127.0.0.1:9000");
+    let config = NodeConfig { bind: "127.0.0.1:9000", transport: "quic-mesh", key: "quic-mesh-server.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     println("[server] listening on 127.0.0.1:9000 (QUIC/TLS 1.3)");
     let counter = spawn Counter(count: 0);
     Node.register("counter", counter);

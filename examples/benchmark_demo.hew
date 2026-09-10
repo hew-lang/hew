@@ -22,7 +22,7 @@ fn sum_to(n: i64) -> i64 {
 }
 
 fn main() {
-    let s = bench.suite("Demo Benchmarks");
+    var s = bench.suite("Demo Benchmarks");
     s.add("fibonacci(20)", 100, || {
         fibonacci(20);
     });

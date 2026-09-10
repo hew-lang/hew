@@ -36,7 +36,7 @@ fn test_integers() -> i32 {
 }
 
 fn test_float() -> i32 {
-    let y: f64 = 3.14;
+    let _y: f64 = 3.14;
     // f64 is supported but println truncates to i64
     // Just verify it compiles and doesn't crash
     println("PASS: f64 compiles");
@@ -46,7 +46,7 @@ fn test_float() -> i32 {
 fn test_string() -> i32 {
     let name: string = "hello";
     let world: string = "world";
-    let combined = name + world;
+    let _combined = name + world;
     let len = name.len();
     let eq = name == name;
     if len == 5 {
@@ -113,8 +113,8 @@ fn test_let_immutable() -> i32 {
 
 fn test_type_inference() -> i32 {
     let a = 100; // inferred i32
-    let b = "inferred"; // inferred string
-    let c = true; // inferred bool
+    let _b = "inferred"; // inferred string
+    let _c = true; // inferred bool
     if a == 100 {
         println("PASS: type inference");
         1

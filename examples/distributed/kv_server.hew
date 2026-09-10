@@ -59,17 +59,17 @@ fn main() {
     var port: string = "9100";
     let arguments = os.args();
     if arguments.len() > 1 {
-        match arguments.get(1) {
-            .Some(value) => {
-                port = value;
-            },
-            .None => {},
+        if let .Some(value) = arguments.get(1) {
+            port = value;
         }
     }
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");
-    Node.set_transport("tcp");
-    Node.start(addr);
+    let config = NodeConfig { bind: addr, transport: "tcp", key: "kv-server.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     println("[kv-server] node started");
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);

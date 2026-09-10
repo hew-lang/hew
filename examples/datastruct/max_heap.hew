@@ -24,7 +24,7 @@ fn heap_peek(heap: Vec<i32>) -> i32 {
 fn heap_pop(var heap: Vec<i32>) -> i32 {
     let max_val = heap[0];
     let last = heap.pop();
-    if heap.len() > 0 {
+    if !heap.is_empty() {
         heap.set(0, last);
         var i = 0;
         var done = false;
@@ -241,7 +241,7 @@ fn test_heapsort() -> i32 {
     let _ = heap_push(heap, 7);
     // Extract all to get sorted descending
     var sorted: Vec<i32> = Vec.new();
-    while heap.len() > 0 {
+    while !heap.is_empty() {
         sorted.push(heap_pop(heap));
     }
     // Verify descending order

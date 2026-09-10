@@ -1090,23 +1090,6 @@ pub fn assert_eq<T: Eq + Display>(left: T, right: T) {}
 pub fn assert_ne<T: Eq + Display>(left: T, right: T) {}
 
 // ---------------------------------------------------------------------------
-// Numeric conversion
-// ---------------------------------------------------------------------------
-/// Convert an integer to a floating-point number.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let f = to_float(42);  // 42.0
-/// ```
-pub fn to_float(x: i32) -> f64 {
-    0.0
-}
-
-// ---------------------------------------------------------------------------
 // string operations
 // ---------------------------------------------------------------------------
 /// Convert any value to its string representation.

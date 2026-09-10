@@ -474,10 +474,9 @@ mod tests {
         let offset = source.find("let x").unwrap() + 4;
 
         let newly_added = [
-            // Math
-            "min",
-            "max",
-            "to_float",
+            // Math free functions are gone (A409: one module-qualified
+            // spelling) and `to_float` was a dead builtin; a rename onto any
+            // of them is allowed.
             // String conversions. The legacy string free functions
             // (string_concat, substring, string_split and the rest) were
             // retired in favour of `string` methods, so they are no longer

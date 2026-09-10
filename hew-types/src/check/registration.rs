@@ -1099,7 +1099,6 @@ impl Checker {
 
         // Numeric conversion. The math functions live in `std.math`; there is
         // no bare spelling for them (A409).
-        self.register_builtin_fn("to_float", vec![Ty::I64], Ty::F64);
 
         // String operations
         self.register_builtin_fn_with_bounds(

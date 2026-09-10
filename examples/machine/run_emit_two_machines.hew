@@ -27,11 +27,9 @@ machine Alarm {
 
     on Trigger: Armed => Tripped {
         emit Ring {};
-        Alarm.Tripped
+        Tripped
     }
-    on Trigger: Tripped => Tripped reenter {
-        Alarm.Tripped
-    }
+    on Trigger: Tripped => Tripped reenter,
     on Ring: _ => _ {
         state
     }
@@ -46,12 +44,8 @@ machine Beacon {
     state Idle,
     state Lit,
 
-    on Trigger: Idle => Lit {
-        Beacon.Lit
-    }
-    on Trigger: Lit => Lit reenter {
-        Beacon.Lit
-    }
+    on Trigger: Idle => Lit,
+    on Trigger: Lit => Lit reenter,
     on Ring: _ => _ {
         state
     }

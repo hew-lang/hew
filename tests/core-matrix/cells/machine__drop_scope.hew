@@ -13,8 +13,8 @@ machine Gate {
     events { Open, Shut, }
     state Closed,
     state Opened { tok: Tok, },
-    on Open: Closed => Opened { Opened { tok: Tok { id: 1 } } }
-    on Shut: Opened => Closed { .Closed }
+    on Open: Closed => Opened { tok: Tok { id: 1 } }
+    on Shut: Opened => Closed,
     default { state }
 }
 

@@ -5,11 +5,11 @@ machine Slot<T> {
     state Full { value: T },
     on Put: Empty => Full {
         emit Stored { note: "stored" };
-        .Full { value: event.value }
+        Full { value: event.value }
     }
     on Clear: Full => Empty {
         emit Stored { note: "cleared" };
-        .Empty
+        Empty
     }
     default { state }
 }

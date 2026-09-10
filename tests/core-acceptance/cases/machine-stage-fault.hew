@@ -4,8 +4,8 @@ machine Gate {
     state Closed { label: string },
     state Opened { label: string, value: i64 },
     on Open: Closed => Opened {
-        emit Pending { label: self.label + ":pending" };
-        .Opened { label: self.label + ":candidate", value: 8 / event.divisor }
+        emit Pending { label: state.label + ":pending" };
+        Opened { label: state.label + ":candidate", value: 8 / event.divisor }
     }
     default { state }
 }

@@ -16,19 +16,19 @@ machine Handshake {
 
     on Begin: Idle => Waiting {
         emit Exchange { nonce: event.nonce, label: event.label };
-        .Waiting { nonce: event.nonce, label: event.label }
+        Waiting { nonce: event.nonce, label: event.label }
     }
-    on Answer: Waiting => Established when event.nonce == self.nonce {
-        emit StartSession { label: self.label };
-        .Established { label: self.label }
+    on Answer: Waiting => Established when event.nonce == state.nonce {
+        emit StartSession { label: state.label };
+        Established { label: state.label }
     }
     on Answer: Waiting => Failed {
         emit Refused { reason: "unexpected acknowledgement" };
-        .Failed { reason: "unexpected acknowledgement" }
+        Failed { reason: "unexpected acknowledgement" }
     }
     on TimedOut: Waiting => Failed {
-        emit Refused { reason: self.label };
-        .Failed { reason: self.label }
+        emit Refused { reason: state.label };
+        Failed { reason: state.label }
     }
     default { state }
 }

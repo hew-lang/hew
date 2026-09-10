@@ -7,12 +7,8 @@ machine Turnstile {
     state Locked,
     state Unlocked,
 
-    on Coin: Locked => Unlocked {
-        .Unlocked
-    }
-    on Push: Unlocked => Locked {
-        .Locked
-    }
+    on Coin: Locked => Unlocked,
+    on Push: Unlocked => Locked,
 }
 
 fn machine_methods_probe() -> i32 {

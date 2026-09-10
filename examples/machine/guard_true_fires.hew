@@ -1,6 +1,6 @@
 // Runnable fixture: the sibling of `guard_gates_transition.hew` — proves a
 // guard does not simply always block. Same `Latch` machine shape, started
-// from `Closed { code: 42 }`: the `self.code == 42` guard is now TRUE, so
+// from `Closed { code: 42 }`: the `state.code == 42` guard is now TRUE, so
 // the `Try` transition to `Open` fires. Together the two fixtures prove the
 // guard is actually evaluated both ways, not just "always false" by
 // coincidence of the fix.
@@ -14,15 +14,9 @@ machine Latch {
     state Closed { code: i64, },
     state Open,
 
-    on Try: Closed => Open when self.code == 42 {
-        Latch.Open
-    }
-    on Try: Closed => Closed reenter when self.code != 42 {
-        Closed { code: self.code }
-    }
-    on Try: Open => Open reenter {
-        Latch.Open
-    }
+    on Try: Closed => Open when state.code == 42,
+    on Try: Closed => Closed reenter when state.code != 42 { code: state.code }
+    on Try: Open => Open reenter,
 
     default { state }
 }

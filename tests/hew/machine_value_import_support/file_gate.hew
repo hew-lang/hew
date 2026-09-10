@@ -6,8 +6,8 @@ pub machine Gate {
     state Closed { label: string },
     state Opened { label: string },
     on Open: Closed => Opened {
-        emit Changed { label: decorate(self.label) };
-        .Opened { label: self.label }
+        emit Changed { label: decorate(state.label) };
+        Opened { label: state.label }
     }
     default { state }
 }

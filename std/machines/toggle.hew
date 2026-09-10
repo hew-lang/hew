@@ -20,10 +20,6 @@ pub machine Toggle {
     state Off,
     state On,
 
-    on Flip: Off => On {
-        Toggle.On
-    }
-    on Flip: On => Off {
-        Toggle.Off
-    }
+    on Flip: Off => On,
+    on Flip: On => Off,
 }

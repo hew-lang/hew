@@ -19,9 +19,9 @@ machine M {
         match channel.new(8) {
             .Ok((_tx, rx)) => {
                 let _received: Option<i64> = rx.recv();
-                .Done
+                Done
             },
-            .Err(_) => .Done,
+            .Err(_) => Done,
         }
     }
 

@@ -8,12 +8,8 @@ pub machine RunLifecycle {
     state Failed,
     state Completed,
 
-    on StageFailed: Running => Failed {
-        RunLifecycle.Failed
-    }
-    on GateCompleted: Running => Completed {
-        RunLifecycle.Completed
-    }
+    on StageFailed: Running => Failed,
+    on GateCompleted: Running => Completed,
     default {
         state
     }
@@ -31,9 +27,7 @@ pub machine PayloadLifecycle {
     state Empty,
     state Loaded { label: string, },
 
-    on Load: Empty => Loaded {
-        Loaded { label: "transitioned".to_upper() }
-    }
+    on Load: Empty => Loaded { label: "transitioned".to_upper() }
     default {
         state
     }

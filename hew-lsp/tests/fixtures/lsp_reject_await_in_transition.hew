@@ -10,9 +10,7 @@ machine Door {
         await pending;
         Open
     }
-    on Toggle: Open => Closed {
-        .Closed
-    }
+    on Toggle: Open => Closed,
 }
 
 fn await_transition_rejection_probe() -> i32 {

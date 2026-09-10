@@ -12,7 +12,7 @@
 // all the way past the (missing) wildcard arm to
 // `TrapKind::ExhaustivenessFallthrough` instead.
 //
-// `on Try: Closed => Open when self.code == 42` is the only explicit arm
+// `on Try: Closed => Open when state.code == 42` is the only explicit arm
 // for `(Closed, Try)`; `on Try: _ => Bailed` is the same-event wildcard.
 // Starting from `Closed { code: 1 }`, the `== 42` guard is FALSE, so the
 // CORRECT result is the wildcard firing -> `Bailed`.
@@ -31,12 +31,8 @@ machine Latch {
     state Open,
     state Bailed,
 
-    on Try: Closed => Open when self.code == 42 {
-        Latch.Open
-    }
-    on Try: _ => Bailed {
-        Latch.Bailed
-    }
+    on Try: Closed => Open when state.code == 42,
+    on Try: _ => Bailed,
 }
 
 fn main() {

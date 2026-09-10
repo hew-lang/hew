@@ -32,23 +32,13 @@ machine Signal {
 
     on Start: Idle => Active {
         emit Ready {};
-        Signal.Active
+        Active
     }
-    on Stop: Active => Idle {
-        Signal.Idle
-    }
-    on Ready: Idle => Idle reenter {
-        Signal.Idle
-    }
-    on Ready: Active => Active reenter {
-        Signal.Active
-    }
-    on Start: Active => Active reenter {
-        Signal.Active
-    }
-    on Stop: Idle => Idle reenter {
-        Signal.Idle
-    }
+    on Stop: Active => Idle,
+    on Ready: Idle => Idle reenter,
+    on Ready: Active => Active reenter,
+    on Start: Active => Active reenter,
+    on Stop: Idle => Idle reenter,
 }
 
 fn main() {

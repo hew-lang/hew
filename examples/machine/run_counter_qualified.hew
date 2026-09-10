@@ -9,12 +9,8 @@ machine Counter {
     state Idle,
     state Running,
 
-    on Tick: Idle => Running {
-        Counter.Running
-    }
-    on Tick: Running => Running reenter {
-        Counter.Running
-    }
+    on Tick: Idle => Running,
+    on Tick: Running => Running reenter,
 }
 
 fn main() {

@@ -9,9 +9,7 @@ machine Door {
     on Toggle: Closed => Open {
         gen { yield Open; }
     }
-    on Toggle: Open => Closed {
-        Door.Closed
-    }
+    on Toggle: Open => Closed,
 }
 
 fn main() {}

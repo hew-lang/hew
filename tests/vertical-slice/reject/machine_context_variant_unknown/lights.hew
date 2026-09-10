@@ -12,9 +12,7 @@ pub machine Light {
     on Toggle: On => Off {
         .Nope
     }
-    on Toggle: Off => On {
-        .On
-    }
+    on Toggle: Off => On,
 
     default { state }
 }

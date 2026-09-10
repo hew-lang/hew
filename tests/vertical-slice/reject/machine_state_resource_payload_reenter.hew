@@ -25,12 +25,8 @@ machine Session {
     state Idle,
     state Active { h: Handle, },
 
-    on Open: Idle => Active {
-        Active { h: Handle { fd: 42 } }
-    }
-    on UseIt: Active => Active reenter {
-        Active { h: self.h }
-    }
+    on Open: Idle => Active { h: Handle { fd: 42 } }
+    on UseIt: Active => Active reenter { h: state.h }
 
     default { state }
 }

@@ -12,11 +12,11 @@ machine Gate {
 
     on Open: Shut => Ajar {
         emit Opened { label: event.label };
-        .Ajar { label: event.label }
+        Ajar { label: event.label }
     }
     on Close: Ajar => Shut {
-        emit Closed { label: self.label };
-        .Shut
+        emit Closed { label: state.label };
+        Shut
     }
     default { state }
 }

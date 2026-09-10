@@ -10,9 +10,7 @@ machine Door {
         let _g = gen { yield Open; };
         Open
     }
-    on Toggle: Open => Closed {
-        .Closed
-    }
+    on Toggle: Open => Closed,
 }
 
 fn gen_transition_rejection_probe() -> i32 {

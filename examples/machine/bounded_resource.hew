@@ -39,18 +39,10 @@ machine Bounded<T: Resource> {
     state Idle,
     state Holding { handle: T, },
 
-    on Start: Idle => Holding {
-        Holding { handle: event.handle }
-    }
-    on Finish: Holding => Idle {
-        Bounded.Idle
-    }
-    on Start: Holding => Holding reenter {
-        Holding { handle: self.handle }
-    }
-    on Finish: Idle => Idle reenter {
-        Bounded.Idle
-    }
+    on Start: Idle => Holding { handle: event.handle }
+    on Finish: Holding => Idle,
+    on Start: Holding => Holding reenter { handle: state.handle }
+    on Finish: Idle => Idle reenter,
 }
 
 fn main() {

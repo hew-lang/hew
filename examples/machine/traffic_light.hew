@@ -37,17 +37,10 @@ machine TrafficLight {
         }
     },
 
-    on Tick: Red => Green {
-
-        // Red → Green → Yellow → Red cycle
-        TrafficLight.Green
-    }
-    on Tick: Green => Yellow {
-        TrafficLight.Yellow
-    }
-    on Tick: Yellow => Red {
-        TrafficLight.Red
-    }
+    // Red → Green → Yellow → Red cycle
+    on Tick: Red => Green,
+    on Tick: Green => Yellow,
+    on Tick: Yellow => Red,
 }
 
 fn main() {

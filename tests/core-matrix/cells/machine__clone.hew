@@ -2,9 +2,9 @@ machine Counter {
     events { Inc, Reset, }
     state Zero,
     state NonZero { value: i64, },
-    on Inc: Zero => NonZero { NonZero { value: 1 } }
-    on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { .Zero }
+    on Inc: Zero => NonZero { value: 1 }
+    on Inc: NonZero => NonZero reenter { value: state.value + 1 }
+    on Reset: NonZero => Zero,
     default { state }
 }
 

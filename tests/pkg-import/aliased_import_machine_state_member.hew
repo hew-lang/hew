@@ -10,7 +10,7 @@
 // transition bodies constructing `Full { item: Tag { code: 40 } }` resolved to
 // `aliassrc.Payload`. The machine's state-variant table is re-resolved after
 // imports so:
-//   * the transition body reads the aliased field (`self.item.code + 2`), which
+//   * the transition body reads the aliased field (`state.item.code + 2`), which
 //     only type-checks if `item` is `aliassrc.Payload` (it has `.code`), and
 //   * matching the machine value externally binds the payload
 //     (`Holder::.Full { item } => item.code`) and reads it back.
@@ -28,18 +28,10 @@ machine Holder {
     state Vacant,
     state Full { item: Tag, },
 
-    on Fill: Vacant => Full {
-        Full { item: Tag { code: 40 } }
-    }
-    on Bump: Full => Full reenter {
-        Full { item: Tag { code: self.item.code + 2 } }
-    }
-    on Fill: Full => Full reenter {
-        Full { item: Tag { code: self.item.code } }
-    }
-    on Bump: Vacant => Vacant reenter {
-        .Vacant
-    }
+    on Fill: Vacant => Full { item: Tag { code: 40 } }
+    on Bump: Full => Full reenter { item: Tag { code: state.item.code + 2 } }
+    on Fill: Full => Full reenter { item: Tag { code: state.item.code } }
+    on Bump: Vacant => Vacant reenter,
 }
 
 fn main() {

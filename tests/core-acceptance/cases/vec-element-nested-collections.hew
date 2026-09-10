@@ -23,8 +23,8 @@ machine Meter {
     events { Bump, }
     state Idle,
     state Busy,
-    on Bump: Idle => .Busy { .Busy }
-    on Bump: Busy => .Idle { .Idle }
+    on Bump: Idle => Busy,
+    on Bump: Busy => Idle,
 }
 
 fn main() {

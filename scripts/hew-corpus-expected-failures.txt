@@ -144,7 +144,6 @@ hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
 hew-sandbox-vm/fixtures/17-channel-select/main.hew
 hew-sandbox-vm/fixtures/18-task-await/main.hew
 hew-sandbox-vm/fixtures/19-supervisor-restart/main.hew
-hew-sandbox-vm/fixtures/20-machine-traffic-light/main.hew
 hew-sandbox-vm/fixtures/21-replay-stdin/main.hew
 hew-sandbox-vm/fixtures/22-deterministic-random/main.hew
 hew-sandbox-vm/fixtures/24-actor-pipeline/main.hew

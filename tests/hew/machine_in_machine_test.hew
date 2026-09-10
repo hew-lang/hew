@@ -29,9 +29,7 @@ machine InnerA {
     state Ready { payload: string, },
     state Done,
 
-    on go: Ready => Done {
-        InnerA.Done
-    }
+    on go: Ready => Done,
     on go: _ => _ {
         state
     }
@@ -45,9 +43,7 @@ machine OuterA {
     state Holding { inner: InnerA, },
     state Empty,
 
-    on step: Holding => Empty {
-        OuterA.Empty
-    }
+    on step: Holding => Empty,
     on step: _ => _ {
         state
     }
@@ -78,9 +74,7 @@ machine OuterB {
     state HoldingB { inner: InnerB, },
     state EmptyB,
 
-    on step: HoldingB => EmptyB {
-        OuterB.EmptyB
-    }
+    on step: HoldingB => EmptyB,
     on step: _ => _ {
         state
     }
@@ -94,9 +88,7 @@ machine InnerB {
     state ReadyB { payload: string, },
     state DoneB,
 
-    on go: ReadyB => DoneB {
-        InnerB.DoneB
-    }
+    on go: ReadyB => DoneB,
     on go: _ => _ {
         state
     }

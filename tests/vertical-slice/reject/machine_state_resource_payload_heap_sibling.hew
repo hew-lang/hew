@@ -26,12 +26,8 @@ machine Mixed {
     state Idle,
     state Active { h: Handle, label: string, },
 
-    on Open(fd): Idle => Active {
-        Active { h: Handle { fd: fd }, label: "conn".to_upper() }
-    }
-    on Touch: Active => Active reenter {
-        Active { h: self.h, label: self.label }
-    }
+    on Open(fd): Idle => Active { h: Handle { fd: fd }, label: "conn".to_upper() }
+    on Touch: Active => Active reenter { h: state.h, label: state.label }
 
     default { state }
 }
@@ -45,12 +41,8 @@ machine Plain {
     state Idle,
     state Live { h: Handle, },
 
-    on Open(fd): Idle => Live {
-        Live { h: Handle { fd: fd } }
-    }
-    on Shut: Live => Idle {
-        .Idle
-    }
+    on Open(fd): Idle => Live { h: Handle { fd: fd } }
+    on Shut: Live => Idle,
 
     default { state }
 }

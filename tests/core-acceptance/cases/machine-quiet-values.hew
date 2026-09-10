@@ -2,8 +2,8 @@ machine Quiet {
     events { Begin, Finish }
     state Idle,
     state Active { label: string },
-    on Begin: Idle => Active { .Active { label: "quiet".to_upper() } }
-    on Finish: Active => Idle { .Idle }
+    on Begin: Idle => Active { label: "quiet".to_upper() }
+    on Finish: Active => Idle,
     default { state }
 }
 

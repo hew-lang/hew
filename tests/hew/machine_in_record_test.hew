@@ -22,9 +22,7 @@ machine F {
     state S1,
     state S2,
 
-    on a: S1 => S2 {
-        F.S2
-    }
+    on a: S1 => S2,
     on a: _ => _ {
         state
     }
@@ -67,9 +65,7 @@ machine G {
     state Idle,
     state Running { count: i64, },
 
-    on Step: Idle => Running {
-        Running { count: 1 }
-    }
+    on Step: Idle => Running { count: 1 }
     on Step: _ => _ {
         state
     }
@@ -103,9 +99,7 @@ machine H {
     state Empty,
     state Named { label: string, },
 
-    on Set: Empty => Named {
-        Named { label: "x" }
-    }
+    on Set: Empty => Named { label: "x" }
     on Set: _ => _ {
         state
     }

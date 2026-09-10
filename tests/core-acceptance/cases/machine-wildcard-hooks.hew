@@ -10,7 +10,7 @@ machine Gate {
     },
     on Decide: Closed => _ {
         emit Trace { text: "body" };
-        if event.stay { .Closed } else { .Opened }
+        if event.stay { Closed } else { Opened }
     }
     default { state }
 }

@@ -6,9 +6,7 @@ pub machine FileLifecycle {
     state Running,
     state Completed,
 
-    on Finish: Running => Completed {
-        FileLifecycle.Completed
-    }
+    on Finish: Running => Completed,
     default {
         state
     }

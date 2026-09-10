@@ -2,12 +2,8 @@ machine Retry {
     events { Fail, Reset }
     state Idle,
     state Failing { attempts: i64 },
-    on Fail: Idle => Failing {
-        .Failing { attempts: 1 }
-    }
-    on Fail: Failing => Failing {
-        .Failing { attempts: self.attempts + 1 }
-    }
+    on Fail: Idle => Failing { attempts: 1 }
+    on Fail: Failing => Failing { attempts: state.attempts + 1 }
     on Reset: Failing => Failing {
         state
     }

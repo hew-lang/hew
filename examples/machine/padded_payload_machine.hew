@@ -17,16 +17,8 @@ machine PaddedPayload {
     state Idle,
     state Active { tag_byte: i8, value: i64, },
 
-    on Activate: Idle => Active {
-        Active { tag_byte: 0, value: 42 }
-    }
-    on Deactivate: Active => Idle {
-        PaddedPayload.Idle
-    }
-    on Deactivate: Idle => Idle reenter {
-        PaddedPayload.Idle
-    }
-    on Activate: Active => Active reenter {
-        Active { tag_byte: self.tag_byte, value: self.value }
-    }
+    on Activate: Idle => Active { tag_byte: 0, value: 42 }
+    on Deactivate: Active => Idle,
+    on Deactivate: Idle => Idle reenter,
+    on Activate: Active => Active reenter { tag_byte: state.tag_byte, value: state.value }
 }

@@ -28,33 +28,21 @@ pub machine Lifecycle<T> {
     state Stopped,
     state Faulted { error: Error, },
 
-    on Initialise: Created => Initialising {
-        Lifecycle.Initialising
-    }
+    on Initialise: Created => Initialising,
     on Initialise: _ => _ {
         state
     }
-    on Started: Initialising => Running {
-        Running { handle: event.handle }
-    }
+    on Started: Initialising => Running { handle: event.handle }
     on Started: _ => _ {
         state
     }
-    on Stop: Running => Stopping {
-        Lifecycle.Stopping
-    }
-    on Stop: Stopping => Stopped {
-        Lifecycle.Stopped
-    }
+    on Stop: Running => Stopping,
+    on Stop: Stopping => Stopped,
     on Stop: _ => _ {
         state
     }
-    on Crashed: Initialising => Faulted {
-        Lifecycle.Faulted { error: event.error }
-    }
-    on Crashed: Running => Faulted {
-        Lifecycle.Faulted { error: event.error }
-    }
+    on Crashed: Initialising => Faulted { error: event.error }
+    on Crashed: Running => Faulted { error: event.error }
     on Crashed: _ => _ {
         state
     }

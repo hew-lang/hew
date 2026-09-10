@@ -13,12 +13,8 @@ machine JobState {
     state Running,
     state Complete,
 
-    on Start: Idle => Running {
-        .Running
-    }
-    on Finish: Running => Complete {
-        .Complete
-    }
+    on Start: Idle => Running,
+    on Finish: Running => Complete,
     default {
         state
     }

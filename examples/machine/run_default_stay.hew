@@ -19,9 +19,7 @@ machine Tank {
     state Filling,
     state Draining,
 
-    on Drain: Filling => Draining {
-        Tank.Draining
-    }
+    on Drain: Filling => Draining,
 
     default { state }
 }

@@ -15,9 +15,7 @@ machine Latch {
     state Closed { code: i64, },
     state Open,
 
-    on Try: Closed => Open when self.code == 42 {
-        Latch.Open
-    }
+    on Try: Closed => Open when state.code == 42,
 
     default { state }
 }

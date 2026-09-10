@@ -10,15 +10,9 @@ machine TrafficLight {
     state Green,
     state Yellow,
 
-    on Tick: Red => Green {
-        .Green
-    }
-    on Tick: Green => Yellow {
-        .Yellow
-    }
-    on Tick: Yellow => Red {
-        .Red
-    }
+    on Tick: Red => Green,
+    on Tick: Green => Yellow,
+    on Tick: Yellow => Red,
 }
 
 fn main() {

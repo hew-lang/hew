@@ -32,9 +32,7 @@ machine OuterG {
     state HoldingG { w: WrapG, },
     state EmptyG,
 
-    on step: HoldingG => EmptyG {
-        OuterG.EmptyG
-    }
+    on step: HoldingG => EmptyG,
     on step: _ => _ {
         state
     }
@@ -52,9 +50,7 @@ machine InnerG {
     state ReadyG { payload: string, },
     state DoneG,
 
-    on go: ReadyG => DoneG {
-        InnerG.DoneG
-    }
+    on go: ReadyG => DoneG,
     on go: _ => _ {
         state
     }
@@ -85,9 +81,7 @@ machine InnerH {
     state ReadyH { payload: string, },
     state DoneH,
 
-    on go: ReadyH => DoneH {
-        InnerH.DoneH
-    }
+    on go: ReadyH => DoneH,
     on go: _ => _ {
         state
     }
@@ -105,9 +99,7 @@ machine OuterH {
     state HoldingH { w: WrapH, },
     state EmptyH,
 
-    on step: HoldingH => EmptyH {
-        OuterH.EmptyH
-    }
+    on step: HoldingH => EmptyH,
     on step: _ => _ {
         state
     }

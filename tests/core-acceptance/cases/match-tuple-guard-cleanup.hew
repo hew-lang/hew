@@ -1,0 +1,51 @@
+//! A tuple pattern whose guard fails after the candidate bound an owned
+//! string. The failing candidate releases what it probed and leaves the tuple
+//! whole, so the next candidate reads the same value: the string literal test
+//! and the final binding arm both see it intact. The repetition loop turns a
+//! missed release or a double release into a leak or abort signal.
+
+fn label(k: i64) -> (string, i64) {
+    (f"name{k}", k)
+}
+
+// The first candidate binds both elements and then fails its guard. Its bound
+// string must be released without touching the tuple, which the string
+// literal arm reads next.
+fn pick(pair: (string, i64)) -> string {
+    match pair {
+        (name, n) if name.len() + n > 12 => name + "/big",
+        ("name0", n) => f"zero/{n}",
+        (name, _) => name + "/small",
+    }
+}
+
+// A guard that builds its own owned value. The temporary the guard allocates
+// is released on both the selected and the failing path.
+fn shaped(pair: (string, i64)) -> string {
+    match pair {
+        (name, n) if (name + "-tail").len() > 14 => f"{n}/wide",
+        (name, n) => name + f"/{n}",
+    }
+}
+
+fn churn() -> i64 {
+    var i = 0;
+    var seen = 0;
+    while i < 5000 {
+        seen = seen + pick(label(0)).len();
+        seen = seen + pick(label(9)).len();
+        seen = seen + pick(label(3)).len();
+        seen = seen + shaped(label(i % 7)).len();
+        i = i + 1;
+    }
+    seen
+}
+
+fn main() {
+    println(pick(label(0)));
+    println(pick(label(9)));
+    println(pick(label(3)));
+    println(shaped(label(1)));
+    println(shaped(label(1234567)));
+    println(f"churn {churn()}");
+}

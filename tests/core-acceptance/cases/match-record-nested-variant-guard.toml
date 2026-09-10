@@ -1,0 +1,11 @@
+[[case]]
+id = "match-record-nested-variant-guard"
+intent = "A record pattern holding a nested variant pattern is selected by a guard. The first candidate probes the record's fields, tests the nested tag and binds the nested payload before its guard rejects it, so the record must be whole for the next candidate, which binds the same fields and moves them into its body. The repetition loop turns a missed or double release into a leak or abort signal."
+source = "cases/match-record-nested-variant-guard.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "entry0=load0\nentry1/empty\nload2@entry2\nentry3/none\nchurn 118333\n"
+exit = 0

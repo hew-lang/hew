@@ -1,0 +1,62 @@
+//! A record pattern holding a nested variant pattern, selected by a guard.
+//! The first candidate probes the record's fields, tests the nested tag and
+//! binds the nested payload before its guard rejects it; the record must be
+//! whole for the next candidate, which binds the same fields and moves them
+//! into the arm body. The repetition loop turns a missed release or a double
+//! release into a leak or abort signal.
+
+enum Slot {
+    Filled(string),
+    Empty,
+}
+
+type Entry {
+    name: string,
+    slot: Slot,
+}
+
+fn entry(k: i64) -> Entry {
+    Entry {
+        name: f"entry{k}",
+        slot: if k % 2 == 0 { .Filled(f"load{k}") } else { .Empty },
+    }
+}
+
+// A guard on the nested-variant candidate. Rejecting it releases the probed
+// name and the probed payload, and the next candidate reads them again.
+fn read(e: Entry) -> string {
+    match e {
+        Entry { name: name, slot: .Filled(load) } if load.len() > 100 => name + "/" + load,
+        Entry { name: name, slot: .Filled(load) } => name + "=" + load,
+        Entry { name: name, slot: .Empty } => name + "/empty",
+    }
+}
+
+// The same shape with a guard that reads only the record's own field, so the
+// nested payload is bound but never read on the failing path.
+fn wide(e: Entry) -> string {
+    match e {
+        Entry { name: name, slot: .Filled(_) } if name.len() > 40 => name + "/wide",
+        Entry { name: name, slot: .Filled(load) } => load + "@" + name,
+        Entry { name: name, slot: .Empty } => name + "/none",
+    }
+}
+
+fn churn() -> i64 {
+    var i = 0;
+    var seen = 0;
+    while i < 5000 {
+        seen = seen + read(entry(i % 4)).len();
+        seen = seen + wide(entry(i % 3)).len();
+        i = i + 1;
+    }
+    seen
+}
+
+fn main() {
+    println(read(entry(0)));
+    println(read(entry(1)));
+    println(wide(entry(2)));
+    println(wide(entry(3)));
+    println(f"churn {churn()}");
+}

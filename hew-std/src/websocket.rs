@@ -1516,7 +1516,7 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
     let message = unsafe { Box::from_raw(msg) };
     if !message.data.is_null() {
         // SAFETY: `data` was allocated with libc::malloc in malloc_bytes.
-        unsafe { libc::free(message.data.cast()) }; // CSTRING-FREE: libc-bytes (message.data = malloc_bytes payload)
+        unsafe { hew_cabi::mem::buf_free(message.data.cast()) }; // CSTRING-FREE: sized-block (message.data = malloc_bytes payload)
     }
     // Box is dropped here, freeing the HewWsMessage struct.
 }

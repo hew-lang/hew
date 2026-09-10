@@ -1642,7 +1642,7 @@ mod tests {
         // SAFETY: thunk contract — dst holds a writable memcpy of src.
         let d = unsafe { &mut *dst.cast::<ChOwnedElem>() };
         // SAFETY: plain allocation; freed by ch_owned_drop.
-        let dup = unsafe { libc::malloc(8).cast::<u8>() };
+        let dup = crate::mem::buf_alloc(8).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
         if !s.heap.is_null() {
             // SAFETY: both buffers are 8 bytes.
             unsafe { std::ptr::copy_nonoverlapping(s.heap, dup, 8) };
@@ -1657,7 +1657,7 @@ mod tests {
         let e = unsafe { &mut *slot.cast::<ChOwnedElem>() };
         if !e.heap.is_null() {
             // SAFETY: heap was malloc'd by ch_owned_clone / the test body.
-            unsafe { libc::free(e.heap.cast()) };
+            unsafe { crate::mem::buf_free(e.heap.cast()) };
             e.heap = ptr::null_mut();
         }
         CH_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
@@ -1693,7 +1693,7 @@ mod tests {
             hew_channel_pair_free(pair);
 
             let layout = ch_owned_layout();
-            let heap = libc::malloc(8).cast::<u8>();
+            let heap = crate::mem::buf_alloc(8).cast::<u8>();
             std::ptr::write_bytes(heap, 0x5A, 8);
             let value = ChOwnedElem { tag: 11, heap };
             hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
@@ -1703,7 +1703,7 @@ mod tests {
                 "send deep-copies the element in exactly once"
             );
             // The caller still owns its value; release it independently.
-            libc::free(value.heap.cast());
+            crate::mem::buf_free(value.heap.cast());
 
             let mut out = ChOwnedElem {
                 tag: 0,
@@ -1746,10 +1746,10 @@ mod tests {
 
             let layout = ch_owned_layout();
             for tag in 0..2u64 {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_alloc(8).cast::<u8>();
                 let value = ChOwnedElem { tag, heap };
                 hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
             }
 
             hew_channel_sender_close(tx);
@@ -1778,10 +1778,10 @@ mod tests {
             let tx = hew_channel_pair_sender(pair);
             let layout = ch_owned_layout();
             for tag in 0..2u64 {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_alloc(8).cast::<u8>();
                 let value = ChOwnedElem { tag, heap };
                 hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
             }
             hew_channel_sender_close(tx);
             hew_channel_pair_free(pair);

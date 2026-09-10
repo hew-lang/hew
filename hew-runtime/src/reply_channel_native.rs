@@ -120,7 +120,7 @@ pub unsafe extern "C" fn hew_actor_ask_submit_native(
         let envelope = crate::mailbox::hew_msg_envelope_new(payload, size, Some(drop_payload));
         if envelope.is_null() {
             drop_payload(payload);
-            libc::free(payload);
+            crate::mem::buf_free(payload);
             return AskError::SendFailed as i32;
         }
         hew_reply_channel_retain(channel);
@@ -294,7 +294,7 @@ mod tests {
         // SAFETY: the unpublished malloc wrapper holds one initialized Reply.
         unsafe {
             let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
-            let payload = libc::malloc(size_of::<Reply>()).cast::<Reply>();
+            let payload = crate::mem::buf_alloc(size_of::<Reply>()).cast::<Reply>();
             assert!(!payload.is_null());
             payload.write(reply(&drops));
             assert_eq!(
@@ -337,7 +337,7 @@ mod tests {
                 );
                 let channel = hew_reply_channel_new_native(waker.descriptor(), Some(drop_reply));
                 hew_reply_channel_retain(channel);
-                let payload = libc::malloc(size_of::<Reply>()).cast::<Reply>();
+                let payload = crate::mem::buf_alloc(size_of::<Reply>()).cast::<Reply>();
                 assert!(!payload.is_null());
                 payload.write(reply(&drops));
                 let envelope = mailbox::hew_msg_envelope_new(

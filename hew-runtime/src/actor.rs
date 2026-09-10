@@ -1262,7 +1262,7 @@ pub struct HewActor {
 
     /// Optional state-drop function that runs `impl Drop` callbacks on every
     /// owned field of the actor's live state immediately before
-    /// `libc::free(a.state)`. Generated unconditionally for every actor by
+    /// `crate::mem::buf_free(a.state)`. Generated unconditionally for every actor by
     /// codegen, even when the body is empty (no owned fields). Wired
     /// at spawn time via [`hew_actor_set_state_drop`]. Distinct from
     /// `terminate_fn`: terminate runs the user's `#[on(stop)]` hooks while
@@ -2640,7 +2640,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // 1. `state_drop_fn(a.state)` already releases each owned field via
     //    its `impl Drop`. Calling `state_drop_fn(a.init_state)` afterward
     //    would walk the same field pointers a second time and double-free.
-    //    The trailing `libc::free(a.init_state)` releases only the wrapper
+    //    The trailing `crate::mem::buf_free(a.init_state)` releases only the wrapper
     //    bytes; it does not dereference the embedded pointers.
     // 2. User code that overwrites a state field (`self.x = newHeap`) goes
     //    through drop-on-assign on `a.state`, which frees the original
@@ -2659,8 +2659,8 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
-        libc::free(a.state);
-        libc::free(a.init_state);
+        crate::mem::buf_free(a.state);
+        crate::mem::buf_free(a.init_state);
     }
 
     if !a.arena.is_null() {
@@ -2798,8 +2798,8 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
-        libc::free(a.state);
-        libc::free(a.init_state);
+        crate::mem::buf_free(a.state);
+        crate::mem::buf_free(a.init_state);
     }
 
     if !a.arena.is_null() {
@@ -3046,7 +3046,7 @@ fn actor_state_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_alloc(size)
 }
 
 /// Deep-copy `src` into a new malloc'd buffer.
@@ -3152,9 +3152,9 @@ unsafe fn cleanup_failed_spawn(config: &ActorSpawnConfig, init_state: *mut c_voi
                 drop(config.state);
             }
         }
-        libc::free(config.state);
+        crate::mem::buf_free(config.state);
         if !init_state.is_null() {
-            libc::free(init_state);
+            crate::mem::buf_free(init_state);
         }
         free_spawn_mailbox(config.mailbox);
     }
@@ -3679,7 +3679,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 /// failure path, so any owned heap fields inside the wrapper are leaked.
 /// This is a known Lane A1 limitation (proper failure-path drop is Lane A3
 /// work). Callers wanting safe failure cleanup should null-check the spawn
-/// result and call `state_drop_fn(cloned_state); libc::free(cloned_state);`
+/// result and call `state_drop_fn(cloned_state); crate::mem::buf_free(cloned_state);`
 /// themselves before returning — but they must NOT then call this function
 /// (i.e. they must pre-allocate via a probe). In practice the supervisor
 /// restart path tolerates the leak because spawn-failure here implies
@@ -5412,7 +5412,7 @@ fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
         return Err("hew_actor_drain_set: actor id list size overflow");
     };
     // SAFETY: malloc returns an allocation large enough for `ids.len()` ActorIds or null on failure.
-    let out = unsafe { libc::malloc(bytes) }.cast::<ActorId>();
+    let out = crate::mem::buf_alloc(bytes).cast::<ActorId>();
     if out.is_null() {
         return Err("hew_actor_drain_set: failed to allocate outcome buffer");
     }
@@ -5440,7 +5440,7 @@ fn write_drain_outcome_repr(
         Ok(ptr) => ptr,
         Err(err) => {
             // SAFETY: `still_live_ptr` came from `actor_ids_to_malloc` in this function.
-            unsafe { libc::free(still_live_ptr.cast()) };
+            unsafe { crate::mem::buf_free(still_live_ptr.cast()) };
             return Err(err);
         }
     };
@@ -5467,8 +5467,8 @@ pub unsafe extern "C" fn hew_actor_drain_outcome_free(out: *mut DrainOutcomeRepr
     let out = unsafe { &mut *out };
     // SAFETY: the buffers were allocated by `actor_ids_to_malloc`; null is allowed.
     unsafe {
-        libc::free(out.still_live_ptr.cast());
-        libc::free(out.crashed_ptr.cast());
+        crate::mem::buf_free(out.still_live_ptr.cast());
+        crate::mem::buf_free(out.crashed_ptr.cast());
     }
     *out = DrainOutcomeRepr::default();
 }
@@ -5754,7 +5754,7 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 /// Register a state-drop callback on an actor.
 ///
 /// The state-drop function is called with the actor's live state pointer
-/// (`a.state`) immediately before `libc::free(a.state)` in
+/// (`a.state`) immediately before `crate::mem::buf_free(a.state)` in
 /// `free_actor_resources`. Codegen emits one such function per actor that
 /// walks every owned field and invokes its `impl Drop`. Types that do not
 /// participate in RAII generate an empty body — calling state-drop is a
@@ -9653,7 +9653,7 @@ mod tests {
         let reply = unsafe { hew_local_pid_ask(token, 1, ptr::null_mut(), 0) };
         assert!(!reply.is_null());
         // SAFETY: successful replies are malloc-allocated.
-        unsafe { libc::free(reply) };
+        unsafe { crate::mem::buf_free(reply) };
         assert_eq!(hew_actor_ask_take_last_error(), AskError::None as i32);
 
         // SAFETY: ask completed and actor is idle.
@@ -13299,13 +13299,13 @@ mod tests {
         // callback only fires when finalize runs over a non-null, non-crashed
         // state — that is the "was freed" signal.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is released immediately after.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn copied the bytes; release the source allocation.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
@@ -13437,13 +13437,13 @@ mod tests {
 
         // Non-null state so the state-drop callback is the "was finalized" signal.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is released immediately after.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn copied the bytes; release the source allocation.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
@@ -13531,7 +13531,7 @@ mod tests {
                     // SAFETY: successful ask replies are malloc-allocated.
                     unsafe {
                         assert_eq!(*reply.cast::<i32>(), 7);
-                        libc::free(reply);
+                        crate::mem::buf_free(reply);
                     }
                 }
             }));
@@ -13688,7 +13688,7 @@ mod tests {
             let reply_is_null = reply.is_null();
             if !reply.is_null() {
                 // SAFETY: successful ask replies are malloc-allocated.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             tx.send(reply_is_null)
                 .expect("native ask waiter should report its result");
@@ -13779,7 +13779,7 @@ mod tests {
         // SAFETY: non-null asks return a malloc-allocated i32 payload here.
         assert_eq!(unsafe { *reply.cast::<i32>() }, 21);
         // SAFETY: successful ask replies are malloc-allocated.
-        unsafe { libc::free(reply) };
+        unsafe { crate::mem::buf_free(reply) };
 
         assert!(
             wait_for_condition(std::time::Duration::from_secs(1), || {
@@ -13861,7 +13861,7 @@ mod tests {
         // SAFETY: non-null asks return a malloc-allocated i32 payload here.
         assert_eq!(unsafe { *reply.cast::<i32>() }, 123);
         // SAFETY: successful ask replies are malloc-allocated.
-        unsafe { libc::free(reply) };
+        unsafe { crate::mem::buf_free(reply) };
 
         assert!(
             wait_for_condition(std::time::Duration::from_secs(1), || {
@@ -14168,7 +14168,7 @@ mod tests {
             let is_null = reply.is_null();
             if !reply.is_null() {
                 // SAFETY: reply was allocated by the runtime and ownership transfers to caller.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             let err = hew_actor_ask_take_last_error();
             tx.send((is_null, err)).expect("sender should be live");
@@ -14225,7 +14225,7 @@ mod tests {
         let reply = unsafe { hew_actor_ask(actor, 1, ptr::null_mut(), 0) };
         assert!(!reply.is_null(), "ask must succeed");
         // SAFETY: non-null reply is malloc-allocated.
-        unsafe { libc::free(reply) };
+        unsafe { crate::mem::buf_free(reply) };
         assert_eq!(
             hew_actor_ask_take_last_error(),
             AskError::None as i32,
@@ -14348,7 +14348,7 @@ mod tests {
             let is_null = reply.is_null();
             if !reply.is_null() {
                 // SAFETY: reply was allocated by the runtime and ownership transfers to caller.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             let err = hew_actor_ask_take_last_error();
             tx.send((is_null, err)).expect("sender should be live");
@@ -14487,7 +14487,7 @@ mod tests {
         // one refcount that transfers into the alias send.
         unsafe {
             let size = 5usize;
-            let payload = libc::malloc(size);
+            let payload = crate::mem::buf_alloc(size);
             assert!(!payload.is_null());
             libc::memcpy(payload, b"alive".as_ptr().cast(), size);
             let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
@@ -14552,7 +14552,7 @@ mod tests {
             crate::deterministic::hew_fault_inject_drop(fault_actor_id, 1);
 
             let size = 4usize;
-            let payload = libc::malloc(size);
+            let payload = crate::mem::buf_alloc(size);
             assert!(!payload.is_null());
             libc::memcpy(payload, b"drop".as_ptr().cast(), size);
             let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
@@ -14689,7 +14689,7 @@ mod tests {
                 );
 
                 let size = 5usize;
-                let payload = libc::malloc(size);
+                let payload = crate::mem::buf_alloc(size);
                 assert!(!payload.is_null());
                 libc::memcpy(payload, b"alias".as_ptr().cast(), size);
                 let env =
@@ -14764,7 +14764,7 @@ mod tests {
                 // the envelope carries one refcount transferred into the send.
                 unsafe {
                     let size = 5usize;
-                    let payload = libc::malloc(size);
+                    let payload = crate::mem::buf_alloc(size);
                     assert!(!payload.is_null());
                     libc::memcpy(payload, b"alias".as_ptr().cast(), size);
                     let env =
@@ -14871,7 +14871,7 @@ mod tests {
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'x'));
                 let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
-                let buf = libc::malloc(slot).cast::<*mut hew_cabi::string::HewString>();
+                let buf = crate::mem::buf_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(
@@ -14905,7 +14905,7 @@ mod tests {
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'y'));
                 let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
-                let buf = libc::malloc(slot).cast::<*mut hew_cabi::string::HewString>();
+                let buf = crate::mem::buf_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(
@@ -15598,7 +15598,7 @@ mod tests {
         let copied = unsafe { std::slice::from_raw_parts(dst.cast::<u8>(), 4) };
         assert_eq!(copied, &src);
         // SAFETY: dst was allocated with libc::malloc.
-        unsafe { libc::free(dst) };
+        unsafe { crate::mem::buf_free(dst) };
     }
 
     #[test]
@@ -15666,13 +15666,13 @@ mod tests {
         // non-null `state` field (deep-copied). This ensures the
         // state-drop call is not hidden by the inner is_null guard.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn copied the bytes; release the source allocation.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
@@ -15702,13 +15702,13 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies initialized bytes; src is released below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn completed its deep copy and retains no source pointer.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // Model the scheduler's post-drain authority transfer. The callback
         // count represents the escrow's exactly-once typed drop.
@@ -15836,13 +15836,13 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn copied the bytes; release the source allocation.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
@@ -15937,13 +15937,13 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!actor.is_null());
         // SAFETY: spawn copied the bytes; release the source allocation.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid and not being dispatched.
         unsafe {
@@ -16017,13 +16017,13 @@ mod tests {
 
         // --- normal-stop path: terminate_fn must fire ---
         // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the 8 bytes.
         let stopped_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!stopped_actor.is_null());
         // SAFETY: spawn copied the bytes; release the source.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid; terminate not yet called.
         unsafe {
@@ -16043,13 +16043,13 @@ mod tests {
         // --- crash path: terminate_fn must NOT fire ---
         TERMINATE_CALL_COUNT.store(0, Ordering::SeqCst);
         // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
-        let src = unsafe { libc::malloc(8) };
+        let src = crate::mem::buf_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes.
         let crashed_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
         assert!(!crashed_actor.is_null());
         // SAFETY: spawn copied the bytes; release the source.
-        unsafe { libc::free(src) };
+        unsafe { crate::mem::buf_free(src) };
 
         // SAFETY: actor is valid; terminate registered but must not run on crash.
         unsafe {
@@ -16374,7 +16374,7 @@ mod tests {
         crate::arena::LAST_FREED_ARENA_ADDR.with(|c| c.set(0));
 
         // SAFETY: actor is Box-allocated, tracked, in Stopped state, not dispatching.
-        // state / init_state are null (libc::free(null) is a no-op), mailbox is null.
+        // state / init_state are null (crate::mem::buf_free(null) is a no-op), mailbox is null.
         let rc = unsafe { actor_free_wasm_impl(actor) };
 
         // Primary assertion: hew_arena_free_all must have been called with exactly
@@ -17085,7 +17085,7 @@ mod wasm_tests {
             let reply = hew_actor_ask(actor, 1, ptr::null_mut(), 0);
             assert!(!reply.is_null(), "happy-path ask should return a reply");
             assert_eq!(*reply.cast::<i32>(), 21);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
 
             assert_eq!(
                 crate::reply_channel_wasm::active_channel_count(),
@@ -17209,7 +17209,7 @@ mod wasm_tests {
             let reply = actor_ask_wasm_impl(actor, 1, ptr::null_mut(), 0, None);
             assert!(!reply.is_null(), "WASM ask must succeed");
             // SAFETY: reply was allocated by the runtime; caller takes ownership.
-            unsafe { libc::free(reply) };
+            unsafe { crate::mem::buf_free(reply) };
             assert_eq!(
                 hew_actor_ask_take_last_error(),
                 AskError::None as i32,
@@ -17440,7 +17440,7 @@ mod wasm_tests {
             let reply = hew_local_pid_ask(token, 1, ptr::null_mut(), 0);
             assert!(!reply.is_null());
             assert_eq!(*reply.cast::<i32>(), 21);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
             assert_eq!(hew_actor_ask_take_last_error(), AskError::None as i32);
 
             assert_eq!(hew_actor_free(actor), 0);

@@ -32,7 +32,7 @@ fn stream_lines_empty_line_preserved() {
             // null, preserving the empty-line invariant on the sized accessor.
             let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), size);
             items.push(String::from_utf8_lossy(bytes).into_owned());
-            libc::free(ptr); // ALLOCATOR-PAIRING: libc
+            hew_runtime::mem::buf_free(ptr); // ALLOCATOR-PAIRING: GlobalAlloc
         }
 
         assert_eq!(items.len(), 3, "expected 3 lines, got {items:?}");

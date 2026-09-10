@@ -92,7 +92,7 @@ unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString 
     }
 
     // SAFETY: `total` is non-zero and fits pointer-offset arithmetic.
-    let allocation = unsafe { libc::malloc(total) }.cast::<HewStringHeader>();
+    let allocation = crate::mem::buf_alloc(total).cast::<HewStringHeader>();
     if allocation.is_null() {
         std::process::abort();
     }
@@ -223,7 +223,7 @@ pub unsafe fn cstring_from_string_copy(
         std::process::abort();
     };
     // SAFETY: `size` is positive and was checked for arithmetic overflow.
-    let out = unsafe { libc::malloc(size) }.cast::<c_char>();
+    let out = crate::mem::buf_alloc(size).cast::<c_char>();
     if out.is_null() {
         std::process::abort();
     }
@@ -243,7 +243,7 @@ pub unsafe fn cstring_from_string_copy(
 /// [`cstring_from_string_copy`].
 pub unsafe fn cstring_copy_release(value: *mut c_char) {
     // SAFETY: this is the documented allocator pair for the copied C string.
-    unsafe { libc::free(value.cast()) };
+    unsafe { crate::mem::buf_free(value.cast()) };
 }
 
 /// Borrow the complete UTF-8 byte contents of a managed string.
@@ -316,7 +316,7 @@ pub unsafe fn string_release(value: *mut HewString) {
         1 => {
             fence(Ordering::Acquire);
             // SAFETY: this was the final owner and the handle is the allocation base.
-            unsafe { libc::free(value.cast()) };
+            unsafe { crate::mem::buf_free(value.cast()) };
         }
         0 => std::process::abort(),
         _ => {}

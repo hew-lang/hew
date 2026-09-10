@@ -511,7 +511,7 @@ unsafe extern "C" fn wasm_parity_drop_glue(_payload: *mut c_void) {
 fn alloc_bytes(bytes: &[u8]) -> *mut c_void {
     // SAFETY: standard malloc + memcpy.
     unsafe {
-        let buf = libc::malloc(bytes.len()); // ALLOCATOR-PAIRING: libc
+        let buf = crate::mem::buf_alloc(bytes.len()); // ALLOCATOR-PAIRING: GlobalAlloc
         assert!(!buf.is_null(), "alloc_bytes: OOM");
         libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
         buf

@@ -734,7 +734,7 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
             }
         }
         // SAFETY: result was malloc'd by hew_task_set_result.
-        unsafe { libc::free(t.result) };
+        unsafe { crate::mem::buf_free(t.result) };
     }
     if !t.env_ptr.is_null() {
         // SAFETY: env_ptr was set by hew_task_set_env from a valid Rc allocation.
@@ -1356,7 +1356,7 @@ pub unsafe extern "C" fn hew_task_set_result(task: *mut HewTask, result: *mut c_
     let t = unsafe { &mut *task };
     if size > 0 && !result.is_null() {
         // SAFETY: malloc for deep copy.
-        let buf = unsafe { libc::malloc(size) };
+        let buf = crate::mem::buf_alloc(size);
         assert!(!buf.is_null(), "OOM allocating task result ({size} bytes)");
         // SAFETY: result points to `size` readable bytes.
         unsafe { ptr::copy_nonoverlapping(result.cast::<u8>(), buf.cast::<u8>(), size) };

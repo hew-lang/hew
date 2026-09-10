@@ -424,7 +424,7 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
         return;
     }
     // SAFETY: ptr was allocated with libc::malloc in read_to_malloc.
-    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (read_to_malloc = malloc_bytes byte buffer)
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) }; // CSTRING-FREE: sized-block (read_to_malloc = malloc_bytes byte buffer)
 }
 
 // ---------------------------------------------------------------------------

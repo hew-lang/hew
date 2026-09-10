@@ -953,7 +953,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
         return core::ptr::null_mut();
     }
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = unsafe { libc::malloc(encoded.len()) }.cast::<u8>();
+    let dst = crate::mem::buf_alloc(encoded.len()).cast::<u8>();
     if dst.is_null() {
         write_err(out_err, "out of memory encoding CBOR");
         return core::ptr::null_mut();
@@ -1077,7 +1077,7 @@ mod tests {
             // SAFETY: ptr points to out_len bytes from libc::malloc.
             let bytes = unsafe { core::slice::from_raw_parts(ptr, out_len) }.to_vec();
             // SAFETY: ptr is a libc::malloc buffer (the CBOR bytes), freed once.
-            unsafe { libc::free(ptr.cast()) };
+            unsafe { crate::mem::buf_free(ptr.cast()) };
             TextToCbor::Ok(bytes)
         }
     }

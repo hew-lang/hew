@@ -19,8 +19,8 @@ impl Drop for HewNativeSend {
             // SAFETY: an unpublished wrapper owns no fields independently of the
             // source message. Admission clears this slot before relinquishing it.
             unsafe {
-                libc::free((*self.envelope).payload);
-                libc::free(self.envelope.cast());
+                crate::mem::buf_free((*self.envelope).payload);
+                crate::mem::buf_free(self.envelope.cast());
             }
         }
     }
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     };
     if envelope.is_null() {
         // SAFETY: allocation failed before any field ownership transferred.
-        unsafe { libc::free(payload) };
+        unsafe { crate::mem::buf_free(payload) };
         return std::ptr::null_mut();
     }
     crate::actor::register_native_capacity(token, &waker);
@@ -109,7 +109,7 @@ pub unsafe extern "C" fn hew_actor_ask_wait_new(
         // SAFETY: allocation failed; the wrapper still owns the typed fields.
         unsafe {
             drop_payload(payload);
-            libc::free(payload);
+            crate::mem::buf_free(payload);
         }
         return std::ptr::null_mut();
     }
@@ -329,7 +329,8 @@ mod tests {
             // SAFETY: each operation receives the unique request envelope;
             // channel references remain live until their owners release them.
             unsafe {
-                let payload = libc::malloc(size_of_val(&source)).cast::<*const AtomicUsize>();
+                let payload =
+                    crate::mem::buf_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
                 payload.write(source);
                 let channel = crate::reply_channel::native::hew_reply_channel_new_native(
                     waker.descriptor(),
@@ -391,7 +392,8 @@ mod tests {
             let mut source = Arc::into_raw(drops.clone());
             // SAFETY: the unpublished wrapper shallowly aliases the source's Arc.
             unsafe {
-                let payload = libc::malloc(size_of_val(&source)).cast::<*const AtomicUsize>();
+                let payload =
+                    crate::mem::buf_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
                 payload.write(source);
                 let wait = hew_actor_send_wait_new(
                     crate::lifetime::local_handles::HewLocalPidId::INVALID,

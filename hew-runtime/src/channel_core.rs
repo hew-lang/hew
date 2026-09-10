@@ -1593,7 +1593,7 @@ mod tests {
     ) -> i32 {
         let s = &*src.cast::<OwnedElem>();
         let d = &mut *dst.cast::<OwnedElem>();
-        let dup = libc::malloc(8).cast::<u8>();
+        let dup = crate::mem::buf_alloc(8).cast::<u8>();
         if !s.heap.is_null() {
             std::ptr::copy_nonoverlapping(s.heap, dup, 8);
         }
@@ -1605,7 +1605,7 @@ mod tests {
     unsafe extern "C" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
         let e = &mut *slot.cast::<OwnedElem>();
         if !e.heap.is_null() {
-            libc::free(e.heap.cast());
+            crate::mem::buf_free(e.heap.cast());
             e.heap = std::ptr::null_mut();
         }
         OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
@@ -1627,7 +1627,7 @@ mod tests {
     /// (the caller keeps its value; the envelope owns an independent copy).
     fn owned_envelope(tag: u64) -> Vec<u8> {
         unsafe {
-            let heap = libc::malloc(8).cast::<u8>();
+            let heap = crate::mem::buf_alloc(8).cast::<u8>();
             std::ptr::write_bytes(heap, 0xA5, 8);
             let src = OwnedElem { tag, heap };
             let mut env = vec![0u8; size_of::<OwnedElem>()];
@@ -1640,7 +1640,7 @@ mod tests {
                 owned_elem_clone((&raw const src).cast(), env.as_mut_ptr().cast()),
                 0
             );
-            libc::free(heap.cast());
+            crate::mem::buf_free(heap.cast());
             env
         }
     }

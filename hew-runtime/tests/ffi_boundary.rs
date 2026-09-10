@@ -1268,7 +1268,7 @@ mod coalesce_tests {
                 let reply = hew_reply_wait(waiter_ch2 as *mut HewReplyChannel);
                 let is_null = reply.is_null();
                 if !reply.is_null() {
-                    libc::free(reply);
+                    hew_runtime::mem::buf_free(reply);
                 }
                 tx.send(is_null)
                     .expect("superseded waiter result should send");

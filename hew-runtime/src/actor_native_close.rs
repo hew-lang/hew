@@ -276,8 +276,8 @@ mod tests {
         let drops = Arc::new(AtomicUsize::new(0));
         // SAFETY: the fixture creates and transfers one correctly sized config allocation.
         let token = unsafe {
-            let config =
-                libc::malloc(std::mem::size_of::<PausedConfigDrop>()).cast::<PausedConfigDrop>();
+            let config = crate::mem::buf_alloc(std::mem::size_of::<PausedConfigDrop>())
+                .cast::<PausedConfigDrop>();
             assert!(!config.is_null());
             config.write(PausedConfigDrop {
                 entered: entered.clone(),
@@ -382,7 +382,7 @@ mod tests {
         // SAFETY: each config is initialized, then uniquely adopted by its supervisor.
         let (child, parent) = unsafe {
             let child_config =
-                libc::malloc(std::mem::size_of::<ChildConfig>()).cast::<ChildConfig>();
+                crate::mem::buf_alloc(std::mem::size_of::<ChildConfig>()).cast::<ChildConfig>();
             assert!(!child_config.is_null());
             child_config.write(ChildConfig {
                 entered: entered.clone(),
@@ -401,7 +401,7 @@ mod tests {
             );
             assert!(fault.is_null());
             let parent_config =
-                libc::malloc(std::mem::size_of::<ParentConfig>()).cast::<ParentConfig>();
+                crate::mem::buf_alloc(std::mem::size_of::<ParentConfig>()).cast::<ParentConfig>();
             assert!(!parent_config.is_null());
             parent_config.write(ParentConfig {
                 child,

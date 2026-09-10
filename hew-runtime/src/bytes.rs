@@ -154,7 +154,7 @@ fn buffer_allocation_size(capacity: usize) -> Option<usize> {
 unsafe fn alloc_buf(cap: u32) -> *mut u8 {
     let alloc_size = buffer_allocation_size(cap as usize).unwrap_or_else(|| std::process::abort());
     // SAFETY: alloc_size > 0 (cap > 0 plus header).
-    let base = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    let base = crate::mem::buf_alloc(alloc_size).cast::<u8>();
     if base.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
@@ -236,7 +236,7 @@ unsafe fn realloc_buf(ptr: *mut u8, _used: u32, new_cap: u32) -> *mut u8 {
     let alloc_size =
         buffer_allocation_size(new_cap as usize).unwrap_or_else(|| std::process::abort());
     // SAFETY: base was allocated by alloc_buf (via libc::malloc). alloc_size > 0.
-    let new_base = unsafe { libc::realloc(base.cast(), alloc_size) }.cast::<u8>();
+    let new_base = unsafe { crate::mem::buf_realloc(base.cast(), alloc_size) }.cast::<u8>();
     if new_base.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
@@ -334,7 +334,7 @@ pub unsafe extern "C" fn hew_bytes_drop(data_ptr: *mut u8) {
         // SAFETY: Refcount reached zero; we have exclusive access.
         let base = unsafe { data_ptr.sub(HEADER_SIZE) };
         // SAFETY: base was allocated by libc::malloc in alloc_buf.
-        unsafe { libc::free(base.cast()) };
+        unsafe { crate::mem::buf_free(base.cast()) };
     }
 }
 

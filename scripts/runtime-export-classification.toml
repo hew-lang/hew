@@ -1320,6 +1320,7 @@ non-declarable = [
   "hew_actor_coro_state_new",
   "hew_actor_dispatch_set_fault",
   "hew_actor_payload_alloc",
+  "hew_actor_payload_free",
   "hew_actor_payload_try_alloc",
   "hew_actor_reply_native",
   "hew_actor_send_wait_free",

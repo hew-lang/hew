@@ -644,7 +644,7 @@ pub unsafe extern "C" fn hew_http_request_body_string(
         std::ptr::null_mut()
     };
     // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
-    unsafe { libc::free(ptr.cast()) };
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) };
     result
 }
 
@@ -1831,7 +1831,7 @@ mod tests {
         let received_str = std::str::from_utf8(received).unwrap();
         assert_eq!(received_str, "{\"key\":\"value\"}");
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = hew_http_request_body malloc_bytes)
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = hew_http_request_body malloc_bytes)
 
         let ct_name = ManagedString::new("Content-Type");
         // SAFETY: req and ct_name are valid.
@@ -2276,7 +2276,7 @@ mod tests {
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 0);
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
         let text = ManagedString::new("ok");
         // SAFETY: req is valid; text is a live managed string.
@@ -2369,7 +2369,7 @@ mod tests {
         let elapsed = start.elapsed();
         if !body_ptr.is_null() {
             // SAFETY: body_ptr was malloc'd.
-            unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
+            unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
             let text = ManagedString::new("late");
             // SAFETY: req is valid; text is a live managed string.
             let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
@@ -2424,7 +2424,7 @@ mod tests {
         let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         assert_eq!(body, vec![b'a'; 2048].as_slice());
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
         let text = ManagedString::new("ok");
         // SAFETY: req is valid; text is a live managed string.

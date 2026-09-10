@@ -148,7 +148,7 @@ pub unsafe extern "C" fn hew_actor_call_new(
             // SAFETY: no envelope accepted the transferred fields.
             unsafe {
                 drop_payload(payload);
-                libc::free(payload);
+                crate::mem::buf_free(payload);
             }
         }
         envelope
@@ -342,8 +342,8 @@ mod tests {
                     state: CallState::Waiting,
                     target: None,
                 }));
-                let payload =
-                    libc::malloc(size_of::<*const AtomicUsize>()).cast::<*const AtomicUsize>();
+                let payload = crate::mem::buf_alloc(size_of::<*const AtomicUsize>())
+                    .cast::<*const AtomicUsize>();
                 payload.write(Arc::into_raw(request_drops.clone()));
                 let envelope = hew_msg_envelope_new(
                     payload.cast(),

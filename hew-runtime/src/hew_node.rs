@@ -1193,7 +1193,7 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
     }
 
     // SAFETY: malloc for reply buffer.
-    let result = unsafe { libc::malloc(reply_data.len()) };
+    let result = crate::mem::buf_alloc(reply_data.len());
     if result.is_null() {
         return ptr::null_mut();
     }
@@ -1606,7 +1606,7 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
         )
     };
     // SAFETY: value came from decode_payload (libc::malloc).
-    unsafe { libc::free(value) };
+    unsafe { crate::mem::buf_free(value) };
 }
 
 /// Handle an inbound remote ask by performing a local blocking ask and
@@ -1728,7 +1728,7 @@ fn handle_inbound_ask(
     // (owned fields moved into the mailbox copy, matching local-send semantics).
     if let Some((value, _)) = decoded_request {
         // SAFETY: value came from decode_payload (libc::malloc).
-        unsafe { libc::free(value) };
+        unsafe { crate::mem::buf_free(value) };
     }
 
     // Build the reply payload from the returned data.
@@ -1776,12 +1776,12 @@ fn handle_inbound_ask(
             // reply value.  If the reply type has owned string/bytes fields, their
             // heap allocations are bit-copied into this buffer.  `encode_reply`
             // serialises the contents but does not drop the field pointers, so
-            // `libc::free(reply_ptr)` frees the flat shell only — a bounded leak
+            // `crate::mem::buf_free(reply_ptr)` frees the flat shell only — a bounded leak
             // per reply with owned fields.  Fixing this requires a drop-thunk
             // registry entry (parallel to the serialize thunk).  Tracked for the
             // drop-thunk registry lane; not fixed here because the actor's own
             // lifecycle already holds references to the same heap objects.
-            unsafe { libc::free(reply_ptr) };
+            unsafe { crate::mem::buf_free(reply_ptr) };
             if bytes.is_null() {
                 // No reply codec registered — fail closed: send a rejection so
                 // the originating ask fails with a typed error instead of timing
@@ -1806,7 +1806,7 @@ fn handle_inbound_ask(
             v
         } else {
             // SAFETY: reply_ptr was malloc'd by hew_reply.
-            unsafe { libc::free(reply_ptr) };
+            unsafe { crate::mem::buf_free(reply_ptr) };
             Vec::new()
         }
     };
@@ -2645,7 +2645,7 @@ pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
 
     if !node.bind_addr_owned.is_null() {
         // SAFETY: bind_addr_owned was allocated via cstr_strdup (libc::malloc).
-        unsafe { libc::free(node.bind_addr_owned.cast::<c_void>()) };
+        unsafe { crate::mem::buf_free(node.bind_addr_owned.cast::<c_void>()) };
         node.bind_addr_owned = ptr::null_mut();
         node.bind_addr = ptr::null();
     }
@@ -6382,7 +6382,7 @@ fn finish_remote_ask_outcome(
         // mismatch is a codec/layout drift — fail closed rather than hand the
         // caller a wrong-sized buffer.
         // SAFETY: value came from decode_reply (libc::malloc).
-        unsafe { libc::free(value) };
+        unsafe { crate::mem::buf_free(value) };
         return ask_null(AskError::PayloadSizeMismatch);
     }
     LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
@@ -7063,7 +7063,7 @@ mod tests {
             return std::ptr::null_mut();
         }
         // SAFETY: malloc a u32-sized value the caller owns via libc::free.
-        let dst = unsafe { libc::malloc(std::mem::size_of::<u32>()) }.cast::<u32>();
+        let dst = crate::mem::buf_alloc(std::mem::size_of::<u32>()).cast::<u32>();
         if dst.is_null() {
             return std::ptr::null_mut();
         }
@@ -7879,7 +7879,7 @@ mod tests {
         // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
         // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
-        unsafe { libc::free(reply_ptr) };
+        unsafe { crate::mem::buf_free(reply_ptr) };
         assert_eq!(
             reply_value, 42,
             "two-process echo-double ask must return 42"
@@ -10265,7 +10265,7 @@ mod tests {
         let ok = remote_reply_data_to_ptr(&[1u8, 2, 3, 4], 4);
         assert!(!ok.is_null(), "exact-size reply payload must succeed");
         // SAFETY: ok was malloc'd by remote_reply_data_to_ptr; free it once.
-        unsafe { libc::free(ok) };
+        unsafe { crate::mem::buf_free(ok) };
     }
 
     #[test]
@@ -11205,7 +11205,7 @@ mod tests {
             "echo-double should return 21 * 2 = 42"
         );
         // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
-        unsafe { libc::free(reply_ptr) };
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
@@ -11320,7 +11320,7 @@ mod tests {
             "echo-double should return 21 * 2 = 42"
         );
         // SAFETY: reply_ptr was malloc'd and is ours to free.
-        unsafe { libc::free(reply_ptr) };
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actors and nodes were allocated in this test and are valid.
         unsafe {
@@ -12490,7 +12490,7 @@ mod tests {
         };
         assert!(!reply_ptr.is_null(), "remote ask must succeed");
         // SAFETY: reply was malloc'd by hew_reply; we own it after the ask.
-        unsafe { libc::free(reply_ptr) };
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // After the ask completes the handler thread exits, dropping InboundAskGuard.
         // Give it a brief moment to drain.

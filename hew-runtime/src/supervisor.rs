@@ -438,7 +438,7 @@ impl Drop for InternalPoolSpec {
     fn drop(&mut self) {
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup.
-            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+            unsafe { crate::mem::buf_free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
             self.name = ptr::null_mut();
         }
     }
@@ -1492,7 +1492,7 @@ impl Drop for ChildStateTemplateAllocation {
         }
         // SAFETY: every template wrapper is allocated by libc::malloc or a
         // clone callback whose contract requires malloc-compatible output.
-        unsafe { libc::free(self.state) }; // ALLOCATOR-PAIRING: libc
+        unsafe { crate::mem::buf_free(self.state) }; // ALLOCATOR-PAIRING: GlobalAlloc
         self.state = ptr::null_mut();
     }
 }
@@ -1513,7 +1513,7 @@ impl Drop for InternalChildSpec {
         if !self.name.is_null() {
             // SAFETY: name was allocated with libc::strdup in
             // hew_supervisor_add_child_spec.
-            unsafe { libc::free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+            unsafe { crate::mem::buf_free(self.name.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
             self.name = ptr::null_mut();
         }
     }
@@ -2665,7 +2665,7 @@ unsafe fn stop_supervisor_owned(
         // transferred) from codegen via hew_supervisor_add_child_spec /
         // hew_supervisor_set_child_init_fn. Inner owned fields were released by
         // config_drop_fn above; this free reclaims the config wrapper itself.
-        unsafe { libc::free(config_buf) }; // ALLOCATOR-PAIRING: libc
+        unsafe { crate::mem::buf_free(config_buf) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
     drop(s);
     finish_supervisor_reclamation(&access);
@@ -4286,7 +4286,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     // produces state directly, leaving init_state null).
     let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
+        let buf = crate::mem::buf_alloc(sp.init_state_size); // ALLOCATOR-PAIRING: GlobalAlloc
         if buf.is_null() {
             return -1;
         }
@@ -4376,7 +4376,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
                 set_last_error("hew_supervisor_add_child_spec: conflicting config buffer");
                 // SAFETY: `sp.config` is a libc-allocated orphan distinct from
                 // the already-adopted buffer (ALLOCATOR-PAIRING: libc).
-                unsafe { libc::free(sp.config) };
+                unsafe { crate::mem::buf_free(sp.config) };
                 return -1;
             }
             internal_spec.config = s.config_buf;
@@ -4442,7 +4442,7 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: self_actor is valid; free the deep copy.
     unsafe {
         if !(*self_actor).state.is_null() {
-            libc::free((*self_actor).state); // ALLOCATOR-PAIRING: libc
+            crate::mem::buf_free((*self_actor).state); // ALLOCATOR-PAIRING: GlobalAlloc
         }
         (*self_actor).state = sup.cast::<c_void>();
         (*self_actor).state_size = 0; // mark as non-owned
@@ -5637,7 +5637,7 @@ mod tests {
         _config: *const c_void,
     ) -> HewChildInitResult {
         // SAFETY: the runtime owns and later libc-frees this wrapper.
-        let state = unsafe { libc::malloc(std::mem::size_of::<u64>()) }.cast::<u64>();
+        let state = crate::mem::buf_alloc(std::mem::size_of::<u64>()).cast::<u64>();
         if state.is_null() {
             return HewChildInitResult {
                 state: ptr::null_mut(),
@@ -7863,16 +7863,16 @@ mod tests {
         // SAFETY: caller (runtime) guarantees src is a HeapState wrapper.
         let src = unsafe { &*src.cast::<HeapState>() };
         // SAFETY: malloc on the C heap to pair with libc::free in drop/teardown.
-        let dst = unsafe { libc::malloc(std::mem::size_of::<HeapState>()) }.cast::<HeapState>();
+        let dst = crate::mem::buf_alloc(std::mem::size_of::<HeapState>()).cast::<HeapState>();
         if dst.is_null() {
             return ptr::null_mut();
         }
         let new_payload = if src.payload_len > 0 {
             // SAFETY: payload_len is in-bounds malloc size.
-            let buf = unsafe { libc::malloc(src.payload_len) }.cast::<u8>();
+            let buf = crate::mem::buf_alloc(src.payload_len).cast::<u8>();
             if buf.is_null() {
                 // SAFETY: dst was just allocated.
-                unsafe { libc::free(dst.cast::<c_void>()) };
+                unsafe { crate::mem::buf_free(dst.cast::<c_void>()) };
                 return ptr::null_mut();
             }
             // SAFETY: src.payload is valid for src.payload_len bytes.
@@ -7900,7 +7900,7 @@ mod tests {
         let s = unsafe { &mut *state.cast::<HeapState>() };
         if !s.payload.is_null() {
             // SAFETY: payload was malloc'd by the clone callback.
-            unsafe { libc::free(s.payload.cast::<c_void>()) };
+            unsafe { crate::mem::buf_free(s.payload.cast::<c_void>()) };
             s.payload = ptr::null_mut();
         }
     }
@@ -7914,7 +7914,7 @@ mod tests {
         // it into a libc::malloc buffer inside add_child_spec.
         let payload_bytes: &[u8] = b"original";
         // SAFETY: malloc payload buffer to match clone-fn's allocator.
-        let payload = unsafe { libc::malloc(payload_bytes.len()) }.cast::<u8>();
+        let payload = crate::mem::buf_alloc(payload_bytes.len()).cast::<u8>();
         // SAFETY: payload buffer is malloc'd.
         unsafe { ptr::copy_nonoverlapping(payload_bytes.as_ptr(), payload, payload_bytes.len()) };
         Box::new(HeapState {
@@ -8410,7 +8410,7 @@ mod tests {
                 std::slice::from_raw_parts(source.payload, source.payload_len),
                 b"original"
             );
-            libc::free(source.payload.cast());
+            crate::mem::buf_free(source.payload.cast());
         }
     }
 
@@ -8493,7 +8493,7 @@ mod tests {
                 std::slice::from_raw_parts(source.payload, source.payload_len),
                 b"original"
             );
-            libc::free(source.payload.cast());
+            crate::mem::buf_free(source.payload.cast());
         }
     }
 
@@ -8538,7 +8538,7 @@ mod tests {
         drop(runtime);
         assert_eq!(DROP_CALL_COUNT.load(Ordering::SeqCst), 0);
         // SAFETY: all aliases are reclaimed and the source still owns its payload.
-        unsafe { libc::free(source.payload.cast()) };
+        unsafe { crate::mem::buf_free(source.payload.cast()) };
     }
 
     #[test]
@@ -8625,8 +8625,8 @@ mod tests {
             // actor.state. After this, if spec.init_state still aliased the
             // old payload pointer, a clone read would UAF.
             let actor_state = &mut *(*child).state.cast::<HeapState>();
-            libc::free(actor_state.payload.cast::<c_void>());
-            let new_payload = libc::malloc(64).cast::<u8>();
+            crate::mem::buf_free(actor_state.payload.cast::<c_void>());
+            let new_payload = crate::mem::buf_alloc(64).cast::<u8>();
             assert!(!new_payload.is_null());
             libc::memset(new_payload.cast::<c_void>(), 0xAB, 64);
             actor_state.payload = new_payload;
@@ -8686,7 +8686,7 @@ mod tests {
         assert!(!spec_template.is_null());
         let payload = (*spec_template).payload;
         assert!(!payload.is_null());
-        libc::free(payload.cast::<c_void>());
+        crate::mem::buf_free(payload.cast::<c_void>());
         payload
     }
 
@@ -10128,7 +10128,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     // Deep-copy init state — only on the template (non-init_fn) path.
     let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
-        let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
+        let buf = crate::mem::buf_alloc(sp.init_state_size); // ALLOCATOR-PAIRING: GlobalAlloc
         if buf.is_null() {
             return -1;
         }
@@ -10215,7 +10215,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
                 );
                 // SAFETY: `sp.config` is a libc-allocated orphan distinct from
                 // the already-adopted buffer (ALLOCATOR-PAIRING: libc).
-                unsafe { libc::free(sp.config) };
+                unsafe { crate::mem::buf_free(sp.config) };
                 return -1;
             }
             internal_spec.config = s.config_buf;
@@ -10773,7 +10773,7 @@ pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
             );
             // SAFETY: config is a libc::malloc'd orphan distinct from the
             // adopted buffer (ALLOCATOR-PAIRING: libc).
-            unsafe { libc::free(config) };
+            unsafe { crate::mem::buf_free(config) };
         }
     }
 
@@ -11190,7 +11190,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         // Free the duplicated name on allocation failure.
         if !name_copy.is_null() {
             // SAFETY: name_copy was allocated with libc::strdup.
-            unsafe { libc::free(name_copy.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+            unsafe { crate::mem::buf_free(name_copy.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
         return -1;
     }
@@ -11653,7 +11653,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn(
         }
         if !config.is_null() {
             // SAFETY: the buffer came from the generated caller's allocator.
-            unsafe { libc::free(config) }; // ALLOCATOR-PAIRING: libc
+            unsafe { crate::mem::buf_free(config) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
         return refuse(crate::internal::types::HewError::ErrOom as i32);
     }
@@ -12282,7 +12282,7 @@ mod pool_slot_tests {
         };
         // Fresh owned allocation — a NEW heap each incarnation, never aliased.
         // SAFETY: 8-byte alloc; null-checked by the caller's fail-closed path.
-        let owned = unsafe { libc::malloc(8) }.cast::<u8>();
+        let owned = crate::mem::buf_alloc(8).cast::<u8>();
         if owned.is_null() {
             return HewChildInitResult {
                 state: ptr::null_mut(),
@@ -12291,12 +12291,12 @@ mod pool_slot_tests {
         }
         INIT_CLOSURE_LIVE_OWNED.fetch_add(1, Ordering::SeqCst);
         // SAFETY: state wrapper alloc; null-checked below.
-        let state = unsafe { libc::malloc(std::mem::size_of::<InitClosureState>()) }
+        let state = crate::mem::buf_alloc(std::mem::size_of::<InitClosureState>())
             .cast::<InitClosureState>();
         if state.is_null() {
             // Free the owned alloc we just took before failing closed (no leak).
             // SAFETY: owned was just malloc'd.
-            unsafe { libc::free(owned.cast::<c_void>()) };
+            unsafe { crate::mem::buf_free(owned.cast::<c_void>()) };
             INIT_CLOSURE_LIVE_OWNED.fetch_sub(1, Ordering::SeqCst);
             return HewChildInitResult {
                 state: ptr::null_mut(),
@@ -12324,7 +12324,7 @@ mod pool_slot_tests {
         // SAFETY: s is a valid InitClosureState produced by the thunk.
         unsafe {
             if !(*s).owned.is_null() {
-                libc::free((*s).owned.cast::<c_void>());
+                crate::mem::buf_free((*s).owned.cast::<c_void>());
                 (*s).owned = ptr::null_mut();
                 INIT_CLOSURE_LIVE_OWNED.fetch_sub(1, Ordering::SeqCst);
             }
@@ -12335,7 +12335,7 @@ mod pool_slot_tests {
     fn make_config_buf(seed: u64) -> (*mut c_void, usize) {
         let size = std::mem::size_of::<InitClosureConfig>();
         // SAFETY: alloc + init; ownership transfers to the supervisor.
-        let buf = unsafe { libc::malloc(size) }.cast::<InitClosureConfig>();
+        let buf = crate::mem::buf_alloc(size).cast::<InitClosureConfig>();
         assert!(!buf.is_null());
         // SAFETY: buf is valid.
         unsafe { (*buf).seed = seed };

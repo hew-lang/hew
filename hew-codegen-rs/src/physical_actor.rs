@@ -1462,7 +1462,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 self.builder.position_at_end(initialized);
             }
             let initialized = self.builder.get_insert_block().unwrap();
-            let free = external_drop(self.ctx, self.llvm, "free")?;
+            // Pairs with `hew_actor_payload_alloc` above: the wrapper carries a
+            // size header, so releasing it through libc `free` would corrupt
+            // the heap.
+            let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
             for SpawnFailure {
                 block: failed,
                 status,

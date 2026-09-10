@@ -5445,7 +5445,7 @@ mod tests {
         // SAFETY: reply is an i32 payload allocated by hew_reply above.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), ask_value);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
 
         assert_eq!(NOISY_DISPATCHES.load(Ordering::Relaxed), 1);
@@ -5771,7 +5771,7 @@ mod tests {
         // SAFETY: reply points to an i32 allocated by hew_reply above.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), value * 2);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
             crate::reply_channel_wasm::hew_reply_channel_free(ch);
             crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
             reset_globals();
@@ -7249,7 +7249,7 @@ mod tests {
                 ask_value,
                 "reply payload must match the sent value"
             );
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
         assert_eq!(
             REPLY_DISPATCHES.load(Ordering::Relaxed),
@@ -7735,7 +7735,7 @@ mod tests {
         //      compile-time offset assertions above the struct definition —
         //      so the cast is valid.
         // SAFETY: actor is Box-allocated, not being dispatched, and the arena +
-        // mailbox are both valid.  state / init_state are null so libc::free(null)
+        // mailbox are both valid.  state / init_state are null so crate::mem::buf_free(null)
         // is a no-op.
         unsafe { crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>()) };
 
@@ -9279,7 +9279,7 @@ mod tests {
         // SAFETY: reply was malloc'd by hew_reply; caller takes ownership.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), 7, "reply value must match");
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
         // All reply-channel references must be balanced.
         assert_eq!(

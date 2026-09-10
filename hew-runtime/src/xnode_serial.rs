@@ -51,7 +51,7 @@ use std::sync::Mutex;
 pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
     if !ptr.is_null() {
         // SAFETY: ptr came from libc::malloc in hew_cbor_ser_finish.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) };
     }
 }
 
@@ -474,7 +474,7 @@ mod tests {
             return std::ptr::null_mut();
         }
         // SAFETY: malloc for an i64 slot.
-        let slot = unsafe { libc::malloc(std::mem::size_of::<i64>()) }.cast::<i64>();
+        let slot = crate::mem::buf_alloc(std::mem::size_of::<i64>()).cast::<i64>();
         if slot.is_null() {
             return std::ptr::null_mut();
         }
@@ -519,8 +519,7 @@ mod tests {
             return std::ptr::null_mut();
         }
         // SAFETY: malloc for a `*mut c_char` slot.
-        let slot =
-            unsafe { libc::malloc(std::mem::size_of::<*mut c_char>()) }.cast::<*mut c_char>();
+        let slot = crate::mem::buf_alloc(std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
         if slot.is_null() {
             // SAFETY: reclaim the owned string on alloc failure.
             unsafe { crate::cabi::free_cstring(s) };
@@ -607,7 +606,7 @@ mod tests {
             "actor A's i64 must decode correctly under A's codec"
         );
         // SAFETY: a_val came from de_a (libc::malloc of an i64 slot).
-        unsafe { libc::free(a_val) };
+        unsafe { crate::mem::buf_free(a_val) };
 
         // Actor B's frame (a string) must decode under B's codec to the string.
         let b_bytes = encode_with_b("collision-payload");
@@ -640,7 +639,7 @@ mod tests {
         // SAFETY: b_str_ptr is an owned string; b_val is its malloc'd slot.
         unsafe {
             crate::cabi::free_cstring(b_str_ptr);
-            libc::free(b_val);
+            crate::mem::buf_free(b_val);
         }
 
         // Clean the registry so the serial test ordering is hermetic.

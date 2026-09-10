@@ -476,7 +476,7 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
         return;
     }
     // SAFETY: ptr is a malloc_bytes buffer and has not been freed.
-    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (hew_msgpack_free: opaque *mut u8 encode buffers = malloc_bytes; to_json strings drop via hew_string_drop, NOT here)
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) }; // CSTRING-FREE: sized-block (hew_msgpack_free: opaque *mut u8 encode buffers = malloc_bytes; to_json strings drop via hew_string_drop, NOT here)
 }
 
 // ---------------------------------------------------------------------------

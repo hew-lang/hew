@@ -265,7 +265,7 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
     }
     // SAFETY: allocating with libc::malloc for the outer HewLayoutHashSet struct.
     let set: *mut HewLayoutHashSet =
-        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashSet>()).cast() };
+        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if set.is_null() {
         // Free the successfully-allocated inner map before aborting.
         // SAFETY: map was returned by hew_hashmap_new_with_layout.
@@ -547,7 +547,7 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
     // SAFETY: allocating with libc::malloc for the outer HewLayoutHashSet struct,
     // matching the allocator used by hew_hashset_new_with_layout.
     let cloned: *mut HewLayoutHashSet =
-        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashSet>()).cast() };
+        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if cloned.is_null() {
         // Free the successfully-cloned inner map before aborting.
         // SAFETY: cloned_map was returned by hew_hashmap_clone_layout.
@@ -608,7 +608,7 @@ unsafe fn release_set(set: *mut HewLayoutHashSet, deferred: bool) {
     // SAFETY: set non-null; map was constructed via hew_hashmap_new_with_layout.
     let map = unsafe { (*set).map };
     // SAFETY: set was allocated with libc::malloc in hew_hashset_new_with_layout.
-    unsafe { libc::free(set.cast()) };
+    unsafe { crate::mem::buf_free(set.cast()) };
     // SAFETY: the set uniquely owned its backing map.
     unsafe { release_map(map, deferred) };
 }

@@ -13,7 +13,7 @@ struct RawBytes(*mut u8);
 impl Drop for RawBytes {
     fn drop(&mut self) {
         // SAFETY: this guard owns a single allocation from the CBOR engine.
-        unsafe { libc::free(self.0.cast()) };
+        unsafe { crate::mem::buf_free(self.0.cast()) };
     }
 }
 

@@ -476,7 +476,7 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_alloc(size)
 }
 
 // ── Message node ────────────────────────────────────────────────────────
@@ -714,7 +714,7 @@ unsafe fn msg_node_alloc_with_trace(
         if data_size > 0 && !data.is_null() {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                libc::free(node.cast());
+                crate::mem::buf_free(node.cast());
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
@@ -1108,12 +1108,12 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
         // nodes drop one refcount on the shared envelope and let the
         // envelope's release path run drop glue + free the payload.
         if (*node).envelope.is_null() {
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
         }
-        libc::free(node.cast());
+        crate::mem::buf_free(node.cast());
     }
 }
 
@@ -1871,7 +1871,7 @@ unsafe fn replace_node_payload(
             if let Some(drop_fn) = message_drop_fn {
                 drop_fn((*node).msg_type, (*node).data, (*node).data_size);
             }
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
@@ -2425,7 +2425,7 @@ unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode
 /// - `mb` must reference a valid, live [`HewMailbox`].
 /// - `envelope` carries exactly one caller-transferred refcount (it may
 ///   be null, in which case the node delivers an empty payload and the
-///   node free path is a no-op `libc::free(null)`).
+///   node free path is a no-op `crate::mem::buf_free(null)`).
 #[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::too_many_lines,
@@ -4750,7 +4750,7 @@ mod tests {
                 symbol: 42,
                 price: 99,
             };
-            let payload = libc::malloc(size_of::<PriceUpdate>());
+            let payload = crate::mem::buf_alloc(size_of::<PriceUpdate>());
             assert!(!payload.is_null());
             ptr::write(payload.cast::<PriceUpdate>(), update);
             let envelope = hew_msg_envelope_new(payload, size_of::<PriceUpdate>(), None);
@@ -6254,7 +6254,7 @@ mod tests {
     fn alloc_test_payload(bytes: &[u8]) -> *mut c_void {
         // SAFETY: malloc + memcpy under the standard contract.
         unsafe {
-            let buf = libc::malloc(bytes.len());
+            let buf = crate::mem::buf_alloc(bytes.len());
             assert!(!buf.is_null());
             libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
             buf
@@ -6837,7 +6837,7 @@ mod tests {
         // free's the buffer afterwards.
         unsafe {
             let arc_size = std::mem::size_of::<Arc<()>>();
-            let buf = libc::malloc(arc_size).cast::<Arc<()>>();
+            let buf = crate::mem::buf_alloc(arc_size).cast::<Arc<()>>();
             assert!(!buf.is_null());
             std::ptr::write(buf, Arc::clone(&observed));
             // The clone is now owned by `buf`; observed strong = 2.

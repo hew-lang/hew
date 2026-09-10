@@ -166,7 +166,7 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
         return ptr::null_mut();
     }
     // SAFETY: delegates to libc allocator for the requested reply payload size.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_alloc(size)
 }
 
 /// Retain an additional reference to a WASM reply channel.
@@ -516,7 +516,7 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
             if let Some(drop_fn) = (*ch).reply_drop_fn {
                 drop_fn((*ch).value);
             }
-            libc::free((*ch).value);
+            crate::mem::buf_free((*ch).value);
         }
         #[cfg(test)]
         ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
@@ -811,7 +811,7 @@ mod tests {
             let reply = reply_take(ch).cast::<i32>();
             assert!(!reply.is_null());
             assert_eq!(*reply, 42);
-            libc::free(reply.cast());
+            crate::mem::buf_free(reply.cast());
             assert!(reply_take(ch).is_null());
 
             hew_reply_channel_free(ch);
@@ -892,7 +892,7 @@ mod tests {
             let result = hew_reply_wait(ch).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, 99);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
         }
     }
@@ -948,7 +948,7 @@ mod tests {
             let result = hew_reply_wait_timeout(ch, 1000).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, 77);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
         }
     }
@@ -986,7 +986,7 @@ mod tests {
             let result = hew_reply_wait_timeout(ch, 1).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, 42);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
         }
     }
@@ -1039,7 +1039,7 @@ mod tests {
         unsafe {
             let result = reply_take(ch);
             assert!(!result.is_null());
-            libc::free(result);
+            crate::mem::buf_free(result);
             hew_reply_channel_free(ch);
         }
     }
@@ -1089,7 +1089,7 @@ mod tests {
         unsafe {
             let val = reply_take(ch);
             if !val.is_null() {
-                libc::free(val);
+                crate::mem::buf_free(val);
             }
             hew_reply_channel_free(ch);
         }
@@ -1130,14 +1130,14 @@ mod tests {
         unsafe {
             let val0 = reply_take(ch0);
             if !val0.is_null() {
-                libc::free(val0);
+                crate::mem::buf_free(val0);
             }
             hew_reply_channel_free(ch0);
             hew_reply_channel_cancel(ch1);
             hew_reply_channel_free(ch1);
             let val2 = reply_take(ch2);
             if !val2.is_null() {
-                libc::free(val2);
+                crate::mem::buf_free(val2);
             }
             hew_reply_channel_free(ch2);
         }
@@ -1187,7 +1187,7 @@ mod tests {
         unsafe {
             let embedded = *(buf.cast::<*mut libc::c_char>());
             if !embedded.is_null() {
-                libc::free(embedded.cast());
+                crate::mem::buf_free(embedded.cast());
             }
         }
     }
@@ -1262,8 +1262,8 @@ mod tests {
             assert!(!buf.is_null());
             let embedded_back = *(buf.cast::<*mut libc::c_char>());
             assert!(!embedded_back.is_null());
-            libc::free(embedded_back.cast()); // ask-loop scope-exit drop of `R`
-            libc::free(buf); // free the copied buffer (WASM uses plain libc)
+            crate::mem::buf_free(embedded_back.cast()); // ask-loop scope-exit drop of `R`
+            crate::mem::buf_free(buf); // free the copied buffer (WASM uses plain libc)
 
             hew_reply_channel_free(ch);
 

@@ -104,7 +104,7 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
         // Keep a non-null, aligned backing address even for logical zero-sized
         // values. Allocation and release use capacity, never the live length.
         let new_data = if vec.layout.is_null() {
-            libc::realloc(vec.data.cast(), alloc_size.max(1)).cast::<u8>()
+            crate::mem::buf_realloc(vec.data.cast(), alloc_size.max(1)).cast::<u8>()
         } else {
             let layout = buffer_layout(alloc_size, (*vec.layout).align);
             if vec.data.is_null() {
@@ -336,7 +336,7 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
     // SAFETY: allocating a zeroed struct with libc::malloc is safe.
     unsafe {
-        let v: *mut HewVec = libc::malloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: libc
+        let v: *mut HewVec = crate::mem::buf_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
         if v.is_null() {
             libc::abort();
         }
@@ -1616,13 +1616,13 @@ pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
     unsafe {
         if !(*v).data.is_null() {
             if (*v).layout.is_null() {
-                libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+                crate::mem::buf_free((*v).data.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
             } else {
                 let layout = buffer_layout((*v).cap * (*v).elem_size, (*(*v).layout).align);
                 dealloc((*v).data, layout); // ALLOCATOR-PAIRING: std::alloc
             }
         }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+        crate::mem::buf_free(v.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -2798,7 +2798,7 @@ unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
             .checked_mul((*value).elem_size)
             .unwrap_or_else(|| libc::abort());
         let data = if (*value).layout.is_null() {
-            libc::malloc(bytes.max(1)).cast::<u8>()
+            crate::mem::buf_alloc(bytes.max(1)).cast::<u8>()
         } else {
             alloc(buffer_layout(bytes, (*(*value).layout).align))
         };

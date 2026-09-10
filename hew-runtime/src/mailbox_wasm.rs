@@ -148,7 +148,7 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_alloc(size)
 }
 
 fn reserve_queue_capacity<T>(queue: &mut VecDeque<T>, additional: usize) -> bool {
@@ -367,7 +367,7 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         if data_size > 0 && !data.is_null() {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                libc::free(node.cast());
+                crate::mem::buf_free(node.cast());
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
@@ -405,12 +405,12 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
         }
         // Phase-α: branch on the envelope discriminator.
         if (*node).envelope.is_null() {
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
         }
-        libc::free(node.cast());
+        crate::mem::buf_free(node.cast());
     }
 }
 
@@ -514,7 +514,7 @@ unsafe fn replace_node_payload(
             if let Some(drop_fn) = message_drop_fn {
                 drop_fn((*node).msg_type, (*node).data, (*node).data_size);
             }
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();

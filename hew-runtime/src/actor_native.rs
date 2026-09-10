@@ -137,20 +137,29 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
 #[no_mangle]
 #[must_use]
 pub extern "C" fn hew_actor_payload_alloc(size: usize) -> *mut std::ffi::c_void {
-    // SAFETY: malloc accepts every size; zero-sized wrappers get one byte.
-    let allocation = unsafe { libc::malloc(size.max(1)) };
-    if allocation.is_null() {
-        std::process::abort();
-    }
-    allocation
+    crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Allocate an unpublished message wrapper, preserving the source on failure.
 #[no_mangle]
 #[must_use]
 pub extern "C" fn hew_actor_payload_try_alloc(size: usize) -> *mut std::ffi::c_void {
-    // SAFETY: malloc accepts every size; zero-sized wrappers still need an address.
-    unsafe { libc::malloc(size.max(1)) }
+    crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
+}
+
+/// Release a wrapper handed out by [`hew_actor_payload_alloc`] or
+/// [`hew_actor_payload_try_alloc`].
+///
+/// Generated code calls this to discard an actor's state wrapper when `init`
+/// or `start` faults before the actor is published.
+///
+/// # Safety
+///
+/// `payload` must be null, or a live wrapper from the two allocators above.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_payload_free(payload: *mut std::ffi::c_void) {
+    // SAFETY: caller guarantees the wrapper came from the payload allocator.
+    unsafe { crate::mem::buf_free(payload) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Try to transfer a generated message wrapper into its exact destination.
@@ -179,7 +188,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     if envelope.is_null() {
         // SAFETY: the source still owns all typed fields in the unpublished wrapper.
         unsafe {
-            libc::free(payload);
+            crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
         }
         return 3;
     }
@@ -202,8 +211,8 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     // SAFETY: admission failed without publishing or aliasing. The source retains
     // the typed fields; these two allocations contain no other owning resources.
     unsafe {
-        libc::free(payload);
-        libc::free(envelope.cast());
+        crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::mem::buf_free(envelope.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
     }
     status
 }
@@ -644,8 +653,8 @@ mod tests {
     unsafe extern "C-unwind" fn external_trap_state_clone(state: *const c_void) -> *mut c_void {
         // SAFETY: the fixture lends an initialized scalar state record.
         let copy = unsafe { *state.cast::<ExternalTrapHooks>() };
-        // SAFETY: this allocation matches the runtime state wrapper convention.
-        let allocation = unsafe { libc::malloc(std::mem::size_of::<ExternalTrapHooks>()) }
+        // This allocation matches the runtime state wrapper convention.
+        let allocation = crate::mem::buf_alloc(std::mem::size_of::<ExternalTrapHooks>()) // ALLOCATOR-PAIRING: GlobalAlloc
             .cast::<ExternalTrapHooks>();
         assert!(!allocation.is_null());
         // SAFETY: the allocation has the exact state size and alignment.

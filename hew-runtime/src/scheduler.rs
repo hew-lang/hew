@@ -5363,7 +5363,7 @@ mod tests {
         unsafe {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null());
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -5715,7 +5715,7 @@ mod tests {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null(), "the reply value must be readable on resume");
             assert_eq!(*v, 42, "the resumed caller binds the CORRECT reply value");
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -5828,7 +5828,7 @@ mod tests {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null());
             assert_eq!(*v, 7);
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -6876,7 +6876,7 @@ mod tests {
         assert!(!mailbox.is_null());
         // `call_terminate_fn` skips a null-state actor, so give it real state.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let state = unsafe { libc::malloc(8) };
+        let state = crate::mem::buf_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();
@@ -6940,7 +6940,7 @@ mod tests {
         drop(frame);
         // SAFETY: single-threaded test; both allocations unused afterwards.
         unsafe {
-            libc::free(state);
+            crate::mem::buf_free(state);
             mailbox::hew_mailbox_free(mailbox);
         }
     }
@@ -7004,7 +7004,7 @@ mod tests {
             let reply = unsafe { crate::actor::hew_actor_ask(target.0, 1, ptr::null_mut(), 0) };
             if !reply.is_null() {
                 // SAFETY: a deposited reply value is caller-owned.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             // Sending AFTER the ask returns means the caller-side
             // `hew_reply_channel_free` has already run, so the count read on the
@@ -7272,7 +7272,7 @@ mod tests {
         assert!(!mailbox.is_null());
         // SAFETY: malloc returns a valid 8-byte allocation or null. The free
         // path reclaims this with `libc::free`.
-        let state = unsafe { libc::malloc(8) };
+        let state = crate::mem::buf_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();
@@ -7318,7 +7318,7 @@ mod tests {
             };
             if !reply.is_null() {
                 // SAFETY: a deposited reply value is caller-owned.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             // SAFETY: release this thread's creator reference after the wait.
             unsafe { crate::reply_channel::hew_reply_channel_free(channel.0) };

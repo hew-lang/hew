@@ -578,7 +578,7 @@ mod tests {
         // SAFETY: as above.
         let dst = unsafe { &mut *dst.cast::<WasmOwnedElem>() };
         // SAFETY: allocation is released by wasm_owned_drop.
-        let heap = unsafe { libc::malloc(8).cast::<u8>() };
+        let heap = crate::mem::buf_alloc(8).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
         if !src.heap.is_null() {
             // SAFETY: source and destination buffers are both 8 bytes.
             unsafe { ptr::copy_nonoverlapping(src.heap, heap, 8) };
@@ -592,7 +592,7 @@ mod tests {
         let elem = unsafe { &mut *slot.cast::<WasmOwnedElem>() };
         if !elem.heap.is_null() {
             // SAFETY: heap was allocated by wasm_owned_clone.
-            unsafe { libc::free(elem.heap.cast()) };
+            unsafe { crate::mem::buf_free(elem.heap.cast()) };
             elem.heap = ptr::null_mut();
         }
         WASM_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
@@ -978,10 +978,10 @@ mod tests {
             let tx = hew_channel_pair_sender(pair);
             let layout = wasm_owned_layout();
             for tag in 0..2u64 {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_alloc(8).cast::<u8>();
                 let value = WasmOwnedElem { tag, heap };
                 hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
             }
             hew_channel_sender_close(tx);
             hew_channel_pair_free(pair);
@@ -1008,14 +1008,14 @@ mod tests {
             // SAFETY: allocation is copied into the returned envelope by the
             // witness clone and released immediately afterward.
             unsafe {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_alloc(8).cast::<u8>();
                 let value = WasmOwnedElem { tag, heap };
                 let envelope = encode_elem_envelope(
                     std::ptr::addr_of!(value).cast(),
                     &layout,
                     "wasm owned error-path test",
                 );
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
                 envelope
             }
         };

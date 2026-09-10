@@ -947,7 +947,7 @@ pub unsafe extern "C" fn hew_hashmap_new_with_layout(
     // Keep the handle on the same libc allocator family as Vec and HashSet.
     // SAFETY: malloc returns storage suitably aligned for HewLayoutHashMap.
     let raw: *mut HewLayoutHashMap =
-        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashMap>()).cast() };
+        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashMap>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if raw.is_null() {
         // SAFETY: entries just allocated with these params.
         unsafe { dealloc_layout_entries(entries, cap, stride, entries_align) };
@@ -1029,7 +1029,7 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
     let cloned_entries = unsafe { alloc_layout_entries(src.cap, src.stride, entries_align) };
     // SAFETY: malloc returns storage suitably aligned for HewLayoutHashMap.
     let cloned: *mut HewLayoutHashMap =
-        unsafe { libc::malloc(core::mem::size_of::<HewLayoutHashMap>()).cast() };
+        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashMap>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if cloned.is_null() {
         // SAFETY: entries just allocated with these params.
         unsafe { dealloc_layout_entries(cloned_entries, src.cap, src.stride, entries_align) };
@@ -2103,7 +2103,7 @@ pub(crate) unsafe fn free_map_storage(m: *mut HewLayoutHashMap) {
     // SAFETY: m allocated by libc::malloc in hew_hashmap_new_with_layout or clone.
     unsafe {
         ptr::drop_in_place(m);
-        libc::free(m.cast());
+        crate::mem::buf_free(m.cast());
     }
 }
 

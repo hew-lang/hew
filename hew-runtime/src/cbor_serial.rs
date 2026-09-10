@@ -476,7 +476,7 @@ pub unsafe extern "C" fn hew_cbor_ser_finish(buf: *mut c_void, out_len: *mut usi
         return std::ptr::null_mut();
     }
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = unsafe { libc::malloc(encoded.len()) }.cast::<u8>();
+    let dst = crate::mem::buf_alloc(encoded.len()).cast::<u8>();
     if dst.is_null() {
         return std::ptr::null_mut();
     }
@@ -1287,7 +1287,7 @@ pub unsafe extern "C" fn hew_cbor_de_bytes(reader: *mut c_void, out_len: *mut u3
         return std::ptr::null_mut();
     };
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = unsafe { libc::malloc(bytes.len()) }.cast::<u8>();
+    let dst = crate::mem::buf_alloc(bytes.len()).cast::<u8>();
     if dst.is_null() {
         r.failed = true;
         return std::ptr::null_mut();
@@ -1315,7 +1315,7 @@ mod tests {
         let ptr = unsafe { hew_cbor_ser_finish(buf, &raw mut len) };
         assert!(!ptr.is_null());
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { crate::mem::buf_free(ptr.cast()) };
         bytes
     }
 
@@ -1395,7 +1395,7 @@ mod tests {
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             assert!(!ptr.is_null());
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         // SAFETY: test-controlled reader.
@@ -1429,7 +1429,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         bytes.pop(); // chop the last byte
@@ -1454,7 +1454,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         bytes.push(0xff); // append a trailing byte
@@ -1481,7 +1481,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         // SAFETY: test-controlled reader.
@@ -1510,7 +1510,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             hew_cbor_de_enter_map(r);
@@ -1540,7 +1540,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             hew_cbor_de_enter_map(r);
@@ -1570,7 +1570,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             hew_cbor_de_enter_map(r);
@@ -1603,7 +1603,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         // SAFETY: test-controlled reader.
@@ -1646,7 +1646,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         // SAFETY: test-controlled reader.
@@ -1665,7 +1665,7 @@ mod tests {
             assert_eq!(blen, 4);
             let got = std::slice::from_raw_parts(bptr, blen as usize).to_vec();
             assert_eq!(got, payload);
-            libc::free(bptr.cast());
+            crate::mem::buf_free(bptr.cast());
             hew_cbor_de_free(r);
         }
     }
@@ -1692,7 +1692,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         assert_eq!(bytes, vec![0xA1, 0x01, 0x18, 0x2A], "canonical CBOR map(1)");
@@ -1725,7 +1725,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         assert_eq!(
@@ -1760,7 +1760,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             assert_eq!(bytes, vec![0x02], "bare unit tag");
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
@@ -1787,7 +1787,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             assert_eq!(hew_cbor_de_enum_begin(r), 1, "payload tag");
@@ -1812,7 +1812,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             assert_eq!(hew_cbor_de_enum_begin(r), 0, "malformed → 0");
@@ -1834,7 +1834,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             assert_eq!(
@@ -1864,7 +1864,7 @@ mod tests {
                 let mut len = 0usize;
                 let ptr = hew_cbor_ser_finish(buf, &raw mut len);
                 let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                libc::free(ptr.cast());
+                crate::mem::buf_free(ptr.cast());
 
                 let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
                 let got = hew_cbor_de_i64(r);
@@ -1878,7 +1878,7 @@ mod tests {
                 let mut len = 0usize;
                 let ptr = hew_cbor_ser_finish(buf, &raw mut len);
                 let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                libc::free(ptr.cast());
+                crate::mem::buf_free(ptr.cast());
 
                 let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
                 let got = hew_cbor_de_u64(r);
@@ -1945,7 +1945,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let cp = hew_cbor_de_char(r);
             assert_eq!(
@@ -1964,7 +1964,7 @@ mod tests {
                 let mut len = 0usize;
                 let ptr = hew_cbor_ser_finish(buf, &raw mut len);
                 let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                libc::free(ptr.cast());
+                crate::mem::buf_free(ptr.cast());
                 let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
                 let cp = hew_cbor_de_char(r);
                 assert_eq!(
@@ -1982,7 +1982,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let _ = hew_cbor_de_char(r);
             assert_eq!(
@@ -1999,7 +1999,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let _ = hew_cbor_de_char(r);
             assert_eq!(
@@ -2023,7 +2023,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
 
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             assert_eq!(hew_cbor_de_failed(r), 0, "fresh reader is not failed");
@@ -2085,7 +2085,7 @@ mod tests {
                 let mut len = 0usize;
                 let ptr = hew_cbor_ser_finish(buf, &raw mut len);
                 let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                libc::free(ptr.cast());
+                crate::mem::buf_free(ptr.cast());
 
                 let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
                 let got = hew_cbor_de_int_checked(r, bits, i32::from(signed));
@@ -2122,7 +2122,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let got = hew_cbor_de_int_checked(r, 64, 0);
             assert_eq!(hew_cbor_de_failed(r), 0, "u64::MAX is in unsigned-64 range");
@@ -2139,7 +2139,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let got = hew_cbor_de_int_checked(r, 64, 1);
             assert_eq!(hew_cbor_de_failed(r), 0, "i64::MIN is in signed-64 range");
@@ -2152,7 +2152,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let _ = hew_cbor_de_int_checked(r, 64, 0);
             assert_eq!(
@@ -2168,7 +2168,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
             let _ = hew_cbor_de_int_checked(r, 64, 1);
             assert_eq!(
@@ -2203,7 +2203,7 @@ mod tests {
                 let mut len = 0usize;
                 let ptr = hew_cbor_ser_finish(buf, &raw mut len);
                 let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                libc::free(ptr.cast());
+                crate::mem::buf_free(ptr.cast());
                 bytes
             }
         };
@@ -2290,7 +2290,7 @@ mod tests {
             let mut len = 0usize;
             let ptr = hew_cbor_ser_finish(buf, &raw mut len);
             let v = std::slice::from_raw_parts(ptr, len).to_vec();
-            libc::free(ptr.cast());
+            crate::mem::buf_free(ptr.cast());
             v
         };
         // Canonical CBOR: map(3){ 1: 10, 2: 20, 3: 30 } (30 needs a 1-byte tail).

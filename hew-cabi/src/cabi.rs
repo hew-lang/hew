@@ -53,7 +53,7 @@ pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
     // is avoided and the sentinel pointer can always be freed by the caller.
     // SAFETY: We request len.max(1) bytes from malloc; it returns a valid
     // pointer or null.
-    let ptr = unsafe { libc::malloc(len.max(1)) }.cast::<u8>(); // ALLOCATOR-PAIRING: libc
+    let ptr = crate::mem::buf_alloc(len.max(1)).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
     if ptr.is_null() {
         return ptr;
     }
@@ -93,7 +93,7 @@ pub unsafe fn cstr_strdup(src: *const c_char) -> *mut c_char {
     // and the pointer is always freeable by libc::free.
     // SAFETY: We request len + 1 bytes from malloc; it returns a valid pointer
     // or null.
-    let dst = unsafe { libc::malloc(len + 1) }.cast::<c_char>(); // ALLOCATOR-PAIRING: libc
+    let dst = crate::mem::buf_alloc(len + 1).cast::<c_char>(); // ALLOCATOR-PAIRING: GlobalAlloc
     if dst.is_null() {
         return dst;
     }
@@ -111,7 +111,7 @@ pub unsafe fn cstr_strdup(src: *const c_char) -> *mut c_char {
 #[must_use]
 pub fn malloc_empty() -> *mut u8 {
     // SAFETY: We request 1 byte from malloc; it returns a valid pointer or null.
-    unsafe { libc::malloc(1) }.cast::<u8>() // ALLOCATOR-PAIRING: libc
+    crate::mem::buf_alloc(1).cast::<u8>() // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Extract a NUL-terminated C string pointer into a `&str`, returning `None`
@@ -328,7 +328,7 @@ pub unsafe fn alloc_cstring(src: *const u8, len: usize) -> *mut c_char {
 /// exceed `isize::MAX` (fail-closed). The result must be released through
 /// [`free_cstring`] — never bare `libc::free`.
 ///
-/// This is the header-aware replacement for a bare `libc::malloc(data_len)` in
+/// This is the header-aware replacement for a bare `crate::mem::buf_alloc(data_len)` in
 /// a string producer that fills its buffer incrementally (e.g. `hew_string_concat`,
 /// `hew_string_replace`), where the copy cannot be expressed as a single
 /// [`alloc_cstring`] call.
@@ -344,7 +344,7 @@ pub fn alloc_cstring_data(data_len: usize) -> *mut c_char {
         _ => return std::ptr::null_mut(),
     };
     // SAFETY: total >= CSTRING_HEADER_SIZE > 0; malloc returns a valid pointer or null.
-    let base = unsafe { libc::malloc(total) }.cast::<u8>(); // ALLOCATOR-PAIRING: cstring
+    let base = crate::mem::buf_alloc(total).cast::<u8>(); // ALLOCATOR-PAIRING: cstring
     if base.is_null() {
         return std::ptr::null_mut();
     }
@@ -605,7 +605,7 @@ pub unsafe fn free_cstring(data: *mut c_char) {
     // only reference.
     unsafe { (*header).magic = CSTRING_POISON };
     // SAFETY: base was allocated by alloc_cstring via libc::malloc.
-    unsafe { libc::free(base.cast()) }; // ALLOCATOR-PAIRING: cstring
+    unsafe { crate::mem::buf_free(base.cast()) }; // ALLOCATOR-PAIRING: cstring
 }
 
 #[cfg(test)]
@@ -747,7 +747,7 @@ mod tests {
         let ptr = malloc_bytes(&[]);
         assert!(!ptr.is_null(), "empty slice must yield a non-null sentinel");
         // SAFETY: ptr was allocated by malloc_bytes via libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+        unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     #[test]
@@ -761,7 +761,7 @@ mod tests {
             for (i, &expected) in src.iter().enumerate() {
                 assert_eq!(*ptr.add(i), expected, "byte mismatch at index {i}");
             }
-            libc::free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
+            crate::mem::buf_free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -773,7 +773,7 @@ mod tests {
         // SAFETY: ptr points to 1 byte allocated by malloc_bytes.
         unsafe {
             assert_eq!(*ptr, 0x42);
-            libc::free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
+            crate::mem::buf_free(ptr.cast::<c_void>()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -787,7 +787,7 @@ mod tests {
             "malloc_empty must return a non-null sentinel"
         );
         // SAFETY: ptr was allocated by malloc_empty via libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+        unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     // ── cstr_to_str ──────────────────────────────────────────────────────
@@ -1017,7 +1017,7 @@ mod tests {
             // Free the real base directly (free_cstring would abort on the bad
             // magic, which is the point — see the subprocess abort test).
             assert!(unregister_cstring_allocation(data, base));
-            libc::free(base.cast()); // ALLOCATOR-PAIRING: libc
+            crate::mem::buf_free(base.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -1290,7 +1290,7 @@ mod tests {
             "the duplicate must be a distinct allocation"
         );
         // SAFETY: dup was allocated via libc::malloc, so libc::free owns it.
-        unsafe { libc::free(dup.cast::<std::os::raw::c_void>()) };
+        unsafe { crate::mem::buf_free(dup.cast::<std::os::raw::c_void>()) };
     }
 
     #[test]
@@ -1306,7 +1306,7 @@ mod tests {
         // SAFETY: dup is a valid NUL-terminated C string.
         assert_eq!(unsafe { CStr::from_ptr(dup) }.to_bytes().len(), 0);
         // SAFETY: dup was allocated via libc::malloc.
-        unsafe { libc::free(dup.cast::<std::os::raw::c_void>()) };
+        unsafe { crate::mem::buf_free(dup.cast::<std::os::raw::c_void>()) };
 
         // Null in -> null out, matching the strdup contract.
         // SAFETY: null is an accepted input.

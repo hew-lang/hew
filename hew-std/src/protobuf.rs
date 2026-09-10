@@ -713,7 +713,7 @@ mod tests {
             let rs = read_and_free_string(hew_proto_msg_get_string(decoded, 5));
             assert_eq!(rs, "hello");
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -745,7 +745,7 @@ mod tests {
             // Missing field returns default.
             assert_eq!(hew_proto_msg_get_varint(decoded, 99, 777), 777);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -779,7 +779,7 @@ mod tests {
             // Missing string returns null.
             assert!(hew_proto_msg_get_string(decoded, 99).is_null());
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -811,7 +811,7 @@ mod tests {
             assert!(hew_proto_msg_get_bytes(decoded, 99, &raw mut missing_len).is_null());
             assert_eq!(missing_len, 0);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -861,9 +861,9 @@ mod tests {
 
             hew_proto_msg_free(decoded_inner);
             hew_proto_msg_free(decoded_outer);
-            libc::free(outer_buf.cast()); // CSTRING-FREE: libc-bytes (outer_buf)
+            hew_cabi::mem::buf_free(outer_buf.cast()); // CSTRING-FREE: sized-block (outer_buf)
             hew_proto_msg_free(outer);
-            libc::free(inner_buf.cast()); // CSTRING-FREE: libc-bytes (inner_buf)
+            hew_cabi::mem::buf_free(inner_buf.cast()); // CSTRING-FREE: sized-block (inner_buf)
             hew_proto_msg_free(inner);
         }
     }
@@ -1288,7 +1288,7 @@ mod tests {
             // Decoding zero-length data returns null (no fields to parse).
             assert!(hew_proto_msg_decode(encoded, 0).is_null());
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(msg);
         }
     }
@@ -1346,7 +1346,7 @@ mod tests {
             assert!(!decoded.is_null());
             assert_eq!(hew_proto_msg_get_varint(decoded, big_field, 0), 12345);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1369,7 +1369,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_fixed64(decoded, 1, 99), 0);
             assert_eq!(hew_proto_msg_get_fixed64(decoded, 2, 0), u64::MAX);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1392,7 +1392,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 1, 99), 0);
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 2, 0), u32::MAX);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1416,7 +1416,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_varint(decoded, 2, 0), 200);
             assert_eq!(hew_proto_msg_get_varint(decoded, 3, 0), 300);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1454,7 +1454,7 @@ mod tests {
                 &[0xAA, 0xBB, 0xCC]
             );
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }

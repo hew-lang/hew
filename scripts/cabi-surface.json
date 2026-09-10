@@ -696,6 +696,19 @@
         "native"
       ],
       "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_payload_free( *mut c_void)"
+      },
+      "symbol": "hew_actor_payload_free"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
       "extent": "length-or-count",
       "nul": "not-applicable",
       "ownership": "unmeasured",

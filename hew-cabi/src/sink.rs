@@ -477,7 +477,7 @@ mod tests {
             // result with no header sentinel, as free_cstring expects.
             let msg = b"simulated old-path error\0";
             // SAFETY: allocating len bytes via raw malloc, exactly as the old code did.
-            let ptr = unsafe { libc::malloc(msg.len()) }.cast::<std::ffi::c_char>();
+            let ptr = crate::mem::buf_alloc(msg.len()).cast::<std::ffi::c_char>();
             assert!(!ptr.is_null());
             // SAFETY: ptr is freshly allocated with msg.len() bytes.
             unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), ptr.cast::<u8>(), msg.len()) };

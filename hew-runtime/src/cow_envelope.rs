@@ -120,9 +120,9 @@ pub unsafe fn release(env: *mut HewMsgEnvelope) {
                 }
             }
             if !(*env).payload.is_null() {
-                libc::free((*env).payload);
+                crate::mem::buf_free((*env).payload); // ALLOCATOR-PAIRING: GlobalAlloc
             }
-            libc::free(env.cast());
+            crate::mem::buf_free(env.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -178,7 +178,7 @@ pub unsafe fn fork_for_write(
     if forked.is_null() {
         if !new_payload.is_null() {
             // SAFETY: this unpublished allocation belongs to this function.
-            unsafe { libc::free(new_payload) };
+            unsafe { crate::mem::buf_free(new_payload) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
         return ptr::null_mut();
     }
@@ -214,8 +214,7 @@ mod tests {
     }
 
     fn alloc(size: usize) -> *mut c_void {
-        // SAFETY: the shared lifecycle requires a malloc-compatible allocator.
-        unsafe { libc::malloc(size) }
+        crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     fn fail_on_selected_call(size: usize) -> *mut c_void {
@@ -223,15 +222,14 @@ mod tests {
         if call == FAIL_ALLOC_ON_CALL.load(Ordering::SeqCst) {
             return ptr::null_mut();
         }
-        // SAFETY: the shared lifecycle requires a malloc-compatible allocator.
-        unsafe { libc::malloc(size) }
+        crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     fn payload(bytes: &[u8]) -> *mut c_void {
-        // SAFETY: malloc returns a buffer of `bytes.len()` bytes or null; tests
-        // refuse OOM before copying the known-valid input bytes.
+        // SAFETY: the block owns `bytes.len()` writable bytes; the input is a
+        // valid slice of that length.
         unsafe {
-            let allocation = libc::malloc(bytes.len());
+            let allocation = crate::mem::buf_alloc(bytes.len()); // ALLOCATOR-PAIRING: GlobalAlloc
             assert!(!allocation.is_null());
             ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.cast::<u8>(), bytes.len());
             allocation

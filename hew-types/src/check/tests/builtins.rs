@@ -564,17 +564,26 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
     );
 }
 
+/// A qualified builtin keeps its builtin identity and its element through an
+/// import, aliased or not.
+///
+/// The nominal spelling differs by family, and that difference is the design.
+/// `std.stream.Stream` carries its owner, because a substrate handle's identity
+/// is the module that declared it. A channel endpoint canonicalizes to the
+/// builtin's own name so one nominal identity carries `Sender`/`Receiver`
+/// however the endpoint was spelled; a source type of the same leaf keeps its
+/// own owner and never unifies with it.
 #[test]
-fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() {
+fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     let source = concat!(
         "import std.stream;\n",
         "import std.channel as channel_api;\n",
         "\n",
         "fn stream_id(s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
-        "fn close_sender(tx: channel_api.Sender) {\n",
+        "fn close_sender(tx: channel_api.Sender<string>) {\n",
         "    tx.close();\n",
         "}\n",
-        "fn close_receiver(rx: channel_api.Receiver) {\n",
+        "fn close_receiver(rx: channel_api.Receiver<string>) {\n",
         "    rx.close();\n",
         "}\n",
     );
@@ -601,22 +610,30 @@ fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() 
             } if name == "std.stream.Stream" && args == &[Ty::I64]
         ));
     }
-    assert!(matches!(
-        &output.fn_sigs["close_sender"].params[0],
-        Ty::Named {
-            name,
-            builtin: Some(crate::BuiltinType::Sender),
-            args,
-        } if name == "std.channel.Sender" && args.len() == 1
-    ));
-    assert!(matches!(
-        &output.fn_sigs["close_receiver"].params[0],
-        Ty::Named {
-            name,
-            builtin: Some(crate::BuiltinType::Receiver),
-            args,
-        } if name == "std.channel.Receiver" && args.len() == 1
-    ));
+    let sender = &output.fn_sigs["close_sender"].params[0];
+    assert!(
+        matches!(
+            sender,
+            Ty::Named {
+                name,
+                builtin: Some(crate::BuiltinType::Sender),
+                args,
+            } if name == "Sender" && args == &[Ty::String]
+        ),
+        "an aliased import must keep the endpoint's element: {sender:?}"
+    );
+    let receiver = &output.fn_sigs["close_receiver"].params[0];
+    assert!(
+        matches!(
+            receiver,
+            Ty::Named {
+                name,
+                builtin: Some(crate::BuiltinType::Receiver),
+                args,
+            } if name == "Receiver" && args == &[Ty::String]
+        ),
+        "an aliased import must keep the endpoint's element: {receiver:?}"
+    );
 }
 
 #[test]

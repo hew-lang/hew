@@ -1,0 +1,21 @@
+//! An aliased module import keeps the channel endpoint's element: a
+//! `Sender<string>` handed to a `Sender<i64>` parameter is refused at the
+//! checker, with both elements in the diagnostic.
+
+import std.channel as chan;
+
+fn wants_i64(tx: chan.Sender<i64>) {
+    tx.close();
+}
+
+fn main() {
+    let opened = chan.new<string>(4);
+    match opened {
+        .Ok(parts) => {
+            let (tx, rx) = parts;
+            wants_i64(tx);
+            rx.close();
+        }
+        .Err(reason) => println(reason),
+    }
+}

@@ -1,0 +1,14 @@
+[[case]]
+id = "channel-endpoint-element-through-alias"
+intent = "An aliased module import keeps a channel endpoint's element: a `Sender<string>` handed to a `Sender<i64>` parameter is refused at the checker with both elements spelled out."
+source = "fixtures/channel-endpoint-element-through-alias/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+file = "channel-endpoint-element-through-alias/main.hew"
+line = 16
+column = 23
+message = "expected `Sender<i64>`, found `Sender<string>`"

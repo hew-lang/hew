@@ -101,3 +101,77 @@ fn ordinary_machine_preserves_original_declaration_occurrence() {
         );
     }
 }
+
+/// A shared import DAG must normalize in time proportional to its size. The
+/// root-module identity check once compared item lists structurally, which
+/// recursed into every import's resolved body and visited a diamond chain's
+/// shared bodies once per path, so a chain of sixty modules never finished.
+#[test]
+fn normalize_walks_a_shared_import_dag_once() {
+    use std::sync::Arc;
+
+    use super::super::machine_normalize;
+    use hew_parser::ast::Item;
+
+    fn import_item(name: &str, body: &Arc<Vec<Spanned<Item>>>) -> Spanned<Item> {
+        let parsed = hew_parser::parse(&format!("import {name};"));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let (item, span) = parsed.program.items.into_iter().next().expect("one import");
+        let Item::Import(mut decl) = item else {
+            panic!("expected an import item");
+        };
+        decl.resolved_items = Some(Arc::clone(body));
+        (Item::Import(decl), span)
+    }
+
+    let machine = hew_parser::parse(
+        "machine Gate { events { Open, } state Closed, state Opened, on Open: Closed => Opened { .Opened } default { state } }",
+    );
+    assert!(machine.errors.is_empty(), "{:?}", machine.errors);
+
+    // bodies[i] imports bodies[i - 1] and bodies[i - 2]: a diamond chain whose
+    // path count grows like the Fibonacci numbers.
+    let mut bodies: Vec<Arc<Vec<Spanned<Item>>>> = vec![
+        Arc::new(machine.program.items.clone()),
+        Arc::new(machine.program.items.clone()),
+    ];
+    for depth in 2..60 {
+        let items = vec![
+            import_item(&format!("m{}", depth - 1), &bodies[depth - 1]),
+            import_item(&format!("m{}", depth - 2), &bodies[depth - 2]),
+        ];
+        bodies.push(Arc::new(items));
+    }
+    let mut root_items = vec![
+        import_item("m59", &bodies[59]),
+        import_item("m58", &bodies[58]),
+    ];
+    root_items.extend(machine.program.items.clone());
+
+    let root_id = ModuleId::root();
+    let root_module = Module {
+        id: root_id.clone(),
+        items: root_items.clone(),
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(root_module).unwrap();
+    mg.topo_order = vec![root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: root_items,
+        module_doc: None,
+    };
+
+    let normalized = machine_normalize::normalize(&program)
+        .expect("normalization succeeds")
+        .expect("a machine is present");
+    let root = &normalized.program.module_graph.as_ref().unwrap().modules[&ModuleId::root()];
+    assert_eq!(
+        root.items.len(),
+        normalized.program.items.len(),
+        "the root module carries the program's normalized items"
+    );
+}

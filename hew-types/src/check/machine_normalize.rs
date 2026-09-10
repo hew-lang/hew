@@ -95,7 +95,7 @@ pub(super) fn normalize(
                         .filter_map(|_| module.source_paths.first().cloned())
                         .collect()
                 });
-            module.items = if *id == graph.root && *old_items == program.items {
+            module.items = if *id == graph.root && same_item_list(old_items, &program.items) {
                 normalized.items.clone()
             } else {
                 builder.items(old_items, &sources, &id.path.join("."))?
@@ -127,6 +127,22 @@ pub(super) fn normalize(
         program: normalized,
         source_spans: builder.source_spans,
     })))
+}
+
+/// Whether two item lists are the same declarations: the root module carries
+/// the program's own items, while the synthetic root of a direct stdlib
+/// compile does not. Spans and item kinds settle it. Structural equality
+/// would recurse into every import's resolved body, and with a shared import
+/// DAG the same bodies are compared once per path that reaches them.
+fn same_item_list(left: &[Spanned<Item>], right: &[Spanned<Item>]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|((left_item, left_span), (right_item, right_span))| {
+                left_span == right_span
+                    && std::mem::discriminant(left_item) == std::mem::discriminant(right_item)
+            })
 }
 
 type ExpansionKey = (Option<PathBuf>, String, Span, usize);

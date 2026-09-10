@@ -1,6 +1,7 @@
 //! Experimental same-build C wrappers over the verified native status ABI.
 
 use super::*;
+use hew_types::RuntimeCallFamily;
 
 /// A checked synchronous string-in/string-out export of one physical module.
 /// The borrowed module prevents callers from changing its verified contract.
@@ -175,32 +176,32 @@ fn host_value(ty: &ResolvedTy) -> bool {
 
 fn host_runtime(action: PhysicalRuntimeAction) -> bool {
     matches!(
-        action,
-        PhysicalRuntimeAction::StringConcat
-            | PhysicalRuntimeAction::StringEquals
-            | PhysicalRuntimeAction::StringCompare
-            | PhysicalRuntimeAction::StringContains
-            | PhysicalRuntimeAction::StringStartsWith
-            | PhysicalRuntimeAction::StringEndsWith
-            | PhysicalRuntimeAction::StringIsEmpty
-            | PhysicalRuntimeAction::StringIsDigit
-            | PhysicalRuntimeAction::StringIsAlpha
-            | PhysicalRuntimeAction::StringIsAlphanumeric
-            | PhysicalRuntimeAction::StringSlice
-            | PhysicalRuntimeAction::StringIndex
-            | PhysicalRuntimeAction::StringSliceCodepoints
-            | PhysicalRuntimeAction::StringSliceCodepointsFrom
-            | PhysicalRuntimeAction::StringToLowercase
-            | PhysicalRuntimeAction::StringToUppercase
-            | PhysicalRuntimeAction::StringTrim
-            | PhysicalRuntimeAction::StringLen
-            | PhysicalRuntimeAction::StringByteLen
-            | PhysicalRuntimeAction::StringLines
-            | PhysicalRuntimeAction::BytesLen
-            | PhysicalRuntimeAction::BytesIsEmpty
-            | PhysicalRuntimeAction::BytesContains
-            | PhysicalRuntimeAction::U8ToString
-            | PhysicalRuntimeAction::I64ToString
+        action.family,
+        RuntimeCallFamily::StringConcat
+            | RuntimeCallFamily::StringEquals
+            | RuntimeCallFamily::StringCompare
+            | RuntimeCallFamily::StringContains
+            | RuntimeCallFamily::StringStartsWith
+            | RuntimeCallFamily::StringEndsWith
+            | RuntimeCallFamily::StringIsEmpty
+            | RuntimeCallFamily::StringIsDigit
+            | RuntimeCallFamily::StringIsAlpha
+            | RuntimeCallFamily::StringIsAlphanumeric
+            | RuntimeCallFamily::StringSlice
+            | RuntimeCallFamily::StringIndex
+            | RuntimeCallFamily::StringSliceCodepoints
+            | RuntimeCallFamily::StringSliceCodepointsFrom
+            | RuntimeCallFamily::StringToLowercase
+            | RuntimeCallFamily::StringToUppercase
+            | RuntimeCallFamily::StringTrim
+            | RuntimeCallFamily::StringLen
+            | RuntimeCallFamily::StringByteLen
+            | RuntimeCallFamily::StringLines
+            | RuntimeCallFamily::BytesLen
+            | RuntimeCallFamily::BytesIsEmpty
+            | RuntimeCallFamily::BytesContains
+            | RuntimeCallFamily::U8ToString
+            | RuntimeCallFamily::I64ToString
     )
 }
 

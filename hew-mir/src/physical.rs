@@ -10,7 +10,7 @@ pub use hew_sir::{
     SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
     SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
-use hew_types::runtime_call::{sequence_element_type, ArrayValueOp, MathIntrinsic};
+use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
 pub use hew_sir::{SemWireKind, SemWirePlan};
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,7 +89,7 @@ use hew_types::runtime_call::{collection_type_arguments, MapValueOp, SetValueOp}
 pub use hew_types::runtime_call::{EncodingFormat, EncodingOp};
 use hew_types::{
     BuiltinType, CloneKind, EntryExitPlan, ResolvedTy, RuntimeArgumentEffect, RuntimeCallFamily,
-    RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
+    RuntimePhysicalForm, RuntimeResultEffect, TypeInstanceKey, ValueCapability, VecValueOp,
 };
 
 /// Function-local identity of one concrete storage allocation.
@@ -593,27 +593,7 @@ pub enum PhysicalVectorOp {
     SliceFrom,
 }
 
-impl PhysicalVectorOp {
-    const fn semantic_op(self) -> VecValueOp {
-        match self {
-            Self::New => VecValueOp::New,
-            Self::Len => VecValueOp::Len,
-            Self::Contains => VecValueOp::Contains,
-            Self::Index => VecValueOp::Index,
-            Self::Get { .. } => VecValueOp::Get,
-            Self::Push => VecValueOp::Push,
-            Self::Set => VecValueOp::Set,
-            Self::Pop { .. } => VecValueOp::Pop,
-            Self::Remove { .. } => VecValueOp::Remove,
-            Self::Clear => VecValueOp::Clear,
-            Self::IndexBorrow => VecValueOp::IndexBorrow,
-            Self::GetBorrow { .. } => VecValueOp::GetBorrow,
-            Self::TakeFirst { .. } => VecValueOp::TakeFirst,
-            Self::Slice => VecValueOp::Slice,
-            Self::SliceFrom => VecValueOp::SliceFrom,
-        }
-    }
-}
+impl PhysicalVectorOp {}
 
 /// Map operations retain exact result-shape identities selected by physical lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -643,24 +623,7 @@ pub enum PhysicalMapOp {
     },
 }
 
-impl PhysicalMapOp {
-    const fn semantic_op(self) -> MapValueOp {
-        match self {
-            Self::New => MapValueOp::New,
-            Self::Len => MapValueOp::Len,
-            Self::Index => MapValueOp::Index,
-            Self::Get { .. } => MapValueOp::Get,
-            Self::GetBorrow { .. } => MapValueOp::GetBorrow,
-            Self::ContainsKey => MapValueOp::ContainsKey,
-            Self::Insert => MapValueOp::Insert,
-            Self::Remove { .. } => MapValueOp::Remove,
-            Self::Clear => MapValueOp::Clear,
-            Self::Keys => MapValueOp::Keys,
-            Self::Values => MapValueOp::Values,
-            Self::Entries { .. } => MapValueOp::Entries,
-        }
-    }
-}
+impl PhysicalMapOp {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhysicalSetOp {
@@ -673,19 +636,7 @@ pub enum PhysicalSetOp {
     Elements,
 }
 
-impl PhysicalSetOp {
-    const fn semantic_op(self) -> SetValueOp {
-        match self {
-            Self::New => SetValueOp::New,
-            Self::Len => SetValueOp::Len,
-            Self::Contains => SetValueOp::Contains,
-            Self::Insert { .. } => SetValueOp::Insert,
-            Self::Remove { .. } => SetValueOp::Remove,
-            Self::Clear => SetValueOp::Clear,
-            Self::Elements => SetValueOp::Elements,
-        }
-    }
-}
+impl PhysicalSetOp {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
@@ -921,128 +872,31 @@ pub struct PhysicalVariantArm {
     pub target: PhysicalEdge,
 }
 
-/// Exact no-unwind runtime ABI operation selected from a verified SIR runtime
-/// family. The emitter executes this closed physical action; it never selects
-/// ownership or failure behaviour from a linker symbol.
+/// The physical carriers one runtime action's result needs, resolved against
+/// this module's glue tables. Which shape an operation takes is its row's
+/// `physical` form, so lowering never has to recognise the operation twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PhysicalRuntimeAction {
-    /// One fungible supervisor pool member, addressed by index within the
-    /// pool's consecutive slots. `option` names the `Option<ChildRef<T>>`
-    /// descriptor `get` builds; the trapping and awaiting forms have none.
-    SupervisorPool {
-        operation: hew_types::runtime_call::SupervisorPoolOp,
-        option: Option<PhysicalVariantId>,
-    },
-    FileRead(hew_types::runtime_call::FileReadOp),
-    Tcp(hew_types::runtime_call::TcpOp),
-    StreamClose,
-    SinkClose,
-    /// The channel substrate's non-suspending entries: allocating and
-    /// splitting a pair, and closing either half.
-    ChannelSenderClone,
-    ChannelSenderClose,
-    ChannelReceiverClose,
-    ChannelPairNew,
-    ChannelPairFree,
-    ActorRequestRelease,
-    ActorCallFree,
-    ActorRequestTake,
-    ChannelPairIsValid,
-    ChannelPairSender,
-    ChannelPairReceiver,
-    Encoding {
-        format: EncodingFormat,
-        op: EncodingOp,
-    },
-    /// Materialize an owned regex pattern from one compiled regex literal.
-    /// Operand zero is the literal's slot index; the module slot is cloned so
-    /// the result owns its handle.
-    RegexHandle,
-    /// Test a borrowed string against one compiled regex literal. Operand
-    /// zero is the literal's slot index; operand one is the string.
-    RegexMatch,
-    StringConcat,
-    StringEquals,
-    StringCompare,
-    StringStartsWith,
-    StringEndsWith,
-    StringContains,
-    StringFind {
-        result: PhysicalVariantId,
-    },
-    BytesGet {
-        result: PhysicalVariantId,
-    },
-    /// `bytes.pop()` - shrinks the receiver and yields `(bytes, Option<u8>)`.
-    /// `result` names the pair, `option` its optional byte half.
-    BytesPop {
-        result: PhysicalAggregateId,
+pub enum PhysicalRuntimeCarrier {
+    /// Nothing beyond the call's own storage.
+    None,
+    /// One tagged-variant result built in place.
+    Variant(PhysicalVariantId),
+    /// A `(receiver, Option<element>)` pair: the pair and its optional half.
+    PairWithOption {
+        pair: PhysicalAggregateId,
         option: PhysicalVariantId,
     },
-    StringCharAt {
-        result: PhysicalVariantId,
-    },
-    StringIsEmpty,
-    StringIsDigit,
-    StringIsAlpha,
-    StringIsAlphanumeric,
-    StringToBytesOwned,
-    StringToUppercase,
-    StringToLowercase,
-    StringSlice,
-    StringRepeat,
-    MathIntrinsic(MathIntrinsic),
-    StringReplace,
-    StringClone,
-    StringSplit,
-    StringLines,
-    StringChars,
-    StringIndex,
-    StringSliceCodepoints,
-    StringSliceCodepointsFrom,
-    StringTrim,
-    StringLen,
-    StringByteLen,
-    /// One `duration`/`instant` scalar accessor. Both receivers are i64-backed,
-    /// so every one of these is the same physical shape - i64 arguments in, one
-    /// scalar out, no ownership - and the family is the only thing that varies.
-    /// `physical_runtime_action` is the sole constructor and admits only the
-    /// eleven time families.
-    TimeScalar(RuntimeCallFamily),
-    BytesDecodeUtf8 {
+    /// `Result<string, Utf8Error>`, with the error aggregate and the variant
+    /// carrying its length.
+    Utf8Decode {
         result: PhysicalVariantId,
         error: PhysicalAggregateId,
         error_len: PhysicalVariantId,
     },
-    BytesDecodeUtf8Lossy,
-    U8ToString,
-    I32ToString,
-    I64ToString,
-    U32ToString,
-    U64ToString,
-    F64ToString,
-    CharToString,
-    BoolToString,
-    Print {
-        kind: hew_types::runtime_call::PrintKind,
-        newline: bool,
-    },
-    ProcessExit,
-    StderrWrite,
-    BytesNew,
-    BytesLen,
-    BytesIsEmpty,
-    BytesClear,
-    BytesContains,
-    BytesSet,
-    BytesIndex,
-    BytesSlice,
-    BytesSliceFrom,
-    BytesPushOwned,
-    BytesAppendOwned,
-    Array {
-        operation: ArrayValueOp,
-        glue: PhysicalVectorId,
+    /// A `Result` over two variant glues.
+    NodeResult {
+        result: PhysicalVariantId,
+        error: PhysicalVariantId,
     },
     Vector {
         operation: PhysicalVectorOp,
@@ -1056,110 +910,24 @@ pub enum PhysicalRuntimeAction {
         operation: PhysicalSetOp,
         glue: PhysicalSetId,
     },
-    /// Source-visible node lifecycle operation returning Result<(), `NodeError`>.
-    NodeShutdown,
-    /// Export this node's stable public credential as a fresh owned string.
-    NodeIdentityKey,
-    /// Register a local actor handle under a source-visible name.
-    NodeRegister,
-    /// Resolve a registered actor name into its full carried remote location.
-    NodeLookup {
-        result: PhysicalVariantId,
-        error: PhysicalVariantId,
-    },
-    NodeLifecycle {
-        family: RuntimeCallFamily,
-        result: PhysicalVariantId,
-        error: PhysicalVariantId,
-    },
+}
+
+/// One no-unwind runtime ABI operation: the verified SIR operation itself plus
+/// the physical carriers its result needs. The emitter executes this; it never
+/// selects ownership or failure behaviour from a linker symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalRuntimeAction {
+    pub family: RuntimeCallFamily,
+    pub carrier: PhysicalRuntimeCarrier,
 }
 
 impl PhysicalRuntimeAction {
-    const fn semantic_family(self) -> RuntimeCallFamily {
-        match self {
-            Self::FileRead(op) => RuntimeCallFamily::FileRead(op),
-            Self::Tcp(op) => RuntimeCallFamily::Tcp(op),
-            Self::StreamClose => RuntimeCallFamily::StreamClose,
-            Self::SinkClose => RuntimeCallFamily::SinkClose,
-            Self::ChannelSenderClone => RuntimeCallFamily::ChannelSenderClone,
-            Self::ChannelSenderClose => RuntimeCallFamily::ChannelSenderClose,
-            Self::ChannelReceiverClose => RuntimeCallFamily::ChannelReceiverClose,
-            Self::ChannelPairNew => RuntimeCallFamily::ChannelPairNew,
-            Self::ChannelPairFree => RuntimeCallFamily::ChannelPairFree,
-            Self::ActorRequestRelease => RuntimeCallFamily::ActorRequestRelease,
-            Self::ActorCallFree => RuntimeCallFamily::ActorCallFree,
-            Self::ActorRequestTake => RuntimeCallFamily::ActorRequestTake,
-            Self::ChannelPairIsValid => RuntimeCallFamily::ChannelPairIsValid,
-            Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
-            Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
-            Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
-            Self::RegexHandle => RuntimeCallFamily::RegexHandle,
-            Self::RegexMatch => RuntimeCallFamily::RegexMatch,
-            Self::StringConcat => RuntimeCallFamily::StringConcat,
-            Self::StringEquals => RuntimeCallFamily::StringEquals,
-            Self::StringCompare => RuntimeCallFamily::StringCompare,
-            Self::StringStartsWith => RuntimeCallFamily::StringStartsWith,
-            Self::StringEndsWith => RuntimeCallFamily::StringEndsWith,
-            Self::StringContains => RuntimeCallFamily::StringContains,
-            Self::StringFind { .. } => RuntimeCallFamily::StringFind,
-            Self::BytesGet { .. } => RuntimeCallFamily::BytesGet,
-            Self::StringCharAt { .. } => RuntimeCallFamily::StringCharAt,
-            Self::StringIsEmpty => RuntimeCallFamily::StringIsEmpty,
-            Self::StringIsDigit => RuntimeCallFamily::StringIsDigit,
-            Self::StringIsAlpha => RuntimeCallFamily::StringIsAlpha,
-            Self::StringIsAlphanumeric => RuntimeCallFamily::StringIsAlphanumeric,
-            Self::StringToBytesOwned => RuntimeCallFamily::StringToBytes,
-            Self::StringToUppercase => RuntimeCallFamily::StringToUppercase,
-            Self::StringToLowercase => RuntimeCallFamily::StringToLowercase,
-            Self::StringSlice => RuntimeCallFamily::StringSlice,
-            Self::StringRepeat => RuntimeCallFamily::StringRepeat,
-            Self::MathIntrinsic(kind) => RuntimeCallFamily::MathIntrinsic(kind),
-            Self::StringReplace => RuntimeCallFamily::StringReplace,
-            Self::StringClone => RuntimeCallFamily::StringClone,
-            Self::StringSplit => RuntimeCallFamily::StringSplit,
-            Self::StringLines => RuntimeCallFamily::StringLines,
-            Self::StringChars => RuntimeCallFamily::StringChars,
-            Self::StringIndex => RuntimeCallFamily::StringIndex,
-            Self::StringSliceCodepoints => RuntimeCallFamily::StringSliceCodepoints,
-            Self::StringSliceCodepointsFrom => RuntimeCallFamily::StringSliceCodepointsFrom,
-            Self::StringTrim => RuntimeCallFamily::StringTrim,
-            Self::StringLen => RuntimeCallFamily::StringLen,
-            Self::StringByteLen => RuntimeCallFamily::StringByteLen,
-            Self::TimeScalar(family) | Self::NodeLifecycle { family, .. } => family,
-            Self::NodeShutdown => RuntimeCallFamily::NodeShutdown,
-            Self::NodeIdentityKey => RuntimeCallFamily::NodeIdentityKey,
-            Self::NodeRegister => RuntimeCallFamily::NodeRegister,
-            Self::NodeLookup { .. } => RuntimeCallFamily::NodeLookup,
-            Self::BytesDecodeUtf8 { .. } => RuntimeCallFamily::BytesDecodeUtf8,
-            Self::BytesDecodeUtf8Lossy => RuntimeCallFamily::BytesDecodeUtf8Lossy,
-            Self::U8ToString => RuntimeCallFamily::U8ToString,
-            Self::I32ToString => RuntimeCallFamily::I32ToString,
-            Self::I64ToString => RuntimeCallFamily::I64ToString,
-            Self::U32ToString => RuntimeCallFamily::U32ToString,
-            Self::U64ToString => RuntimeCallFamily::U64ToString,
-            Self::F64ToString => RuntimeCallFamily::F64ToString,
-            Self::CharToString => RuntimeCallFamily::CharToString,
-            Self::BoolToString => RuntimeCallFamily::BoolToString,
-            Self::Print { kind, newline } => RuntimeCallFamily::Print { kind, newline },
-            Self::ProcessExit => RuntimeCallFamily::ProcessExit,
-            Self::StderrWrite => RuntimeCallFamily::StderrWrite,
-            Self::BytesNew => RuntimeCallFamily::BytesNew,
-            Self::BytesLen => RuntimeCallFamily::BytesLen,
-            Self::BytesIsEmpty => RuntimeCallFamily::BytesIsEmpty,
-            Self::BytesClear => RuntimeCallFamily::BytesClear,
-            Self::BytesPop { .. } => RuntimeCallFamily::BytesPop,
-            Self::BytesContains => RuntimeCallFamily::BytesContains,
-            Self::BytesSet => RuntimeCallFamily::BytesSet,
-            Self::BytesIndex => RuntimeCallFamily::BytesIndex,
-            Self::BytesSlice => RuntimeCallFamily::BytesSlice,
-            Self::BytesSliceFrom => RuntimeCallFamily::BytesSliceFrom,
-            Self::BytesPushOwned => RuntimeCallFamily::BytesPush,
-            Self::BytesAppendOwned => RuntimeCallFamily::BytesAppend,
-            Self::SupervisorPool { operation, .. } => RuntimeCallFamily::SupervisorPool(operation),
-            Self::Array { operation, .. } => RuntimeCallFamily::Array(operation),
-            Self::Vector { operation, .. } => RuntimeCallFamily::Vector(operation.semantic_op()),
-            Self::Map { operation, .. } => RuntimeCallFamily::Map(operation.semantic_op()),
-            Self::Set { operation, .. } => RuntimeCallFamily::Set(operation.semantic_op()),
+    /// A runtime action needing no physical carrier.
+    #[must_use]
+    pub const fn direct(family: RuntimeCallFamily) -> Self {
+        Self {
+            family,
+            carrier: PhysicalRuntimeCarrier::None,
         }
     }
 }
@@ -2607,106 +2375,6 @@ fn blocks_by_id(
     function.blocks.iter().find(|block| block.id == id)
 }
 
-fn physical_runtime_action(
-    family: RuntimeCallFamily,
-) -> Result<PhysicalRuntimeAction, PhysicalError> {
-    Ok(match family {
-        RuntimeCallFamily::FileRead(op) => PhysicalRuntimeAction::FileRead(op),
-        RuntimeCallFamily::Tcp(op) => PhysicalRuntimeAction::Tcp(op),
-        RuntimeCallFamily::StreamClose => PhysicalRuntimeAction::StreamClose,
-        RuntimeCallFamily::SinkClose => PhysicalRuntimeAction::SinkClose,
-        RuntimeCallFamily::ChannelSenderClone => PhysicalRuntimeAction::ChannelSenderClone,
-        RuntimeCallFamily::ChannelSenderClose => PhysicalRuntimeAction::ChannelSenderClose,
-        RuntimeCallFamily::ChannelReceiverClose => PhysicalRuntimeAction::ChannelReceiverClose,
-        RuntimeCallFamily::ChannelPairNew => PhysicalRuntimeAction::ChannelPairNew,
-        RuntimeCallFamily::ChannelPairFree => PhysicalRuntimeAction::ChannelPairFree,
-        RuntimeCallFamily::ActorRequestRelease => PhysicalRuntimeAction::ActorRequestRelease,
-        RuntimeCallFamily::ActorCallFree => PhysicalRuntimeAction::ActorCallFree,
-        RuntimeCallFamily::ActorRequestTake => PhysicalRuntimeAction::ActorRequestTake,
-        RuntimeCallFamily::ChannelPairIsValid => PhysicalRuntimeAction::ChannelPairIsValid,
-        RuntimeCallFamily::ChannelPairSender => PhysicalRuntimeAction::ChannelPairSender,
-        RuntimeCallFamily::ChannelPairReceiver => PhysicalRuntimeAction::ChannelPairReceiver,
-        RuntimeCallFamily::Encoding { format, op } => {
-            PhysicalRuntimeAction::Encoding { format, op }
-        }
-        RuntimeCallFamily::RegexHandle => PhysicalRuntimeAction::RegexHandle,
-        RuntimeCallFamily::RegexMatch => PhysicalRuntimeAction::RegexMatch,
-        RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
-        RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,
-        RuntimeCallFamily::StringCompare => PhysicalRuntimeAction::StringCompare,
-        RuntimeCallFamily::StringStartsWith => PhysicalRuntimeAction::StringStartsWith,
-        RuntimeCallFamily::StringEndsWith => PhysicalRuntimeAction::StringEndsWith,
-        RuntimeCallFamily::StringContains => PhysicalRuntimeAction::StringContains,
-        RuntimeCallFamily::StringIsEmpty => PhysicalRuntimeAction::StringIsEmpty,
-        RuntimeCallFamily::StringIsDigit => PhysicalRuntimeAction::StringIsDigit,
-        RuntimeCallFamily::StringIsAlpha => PhysicalRuntimeAction::StringIsAlpha,
-        RuntimeCallFamily::StringIsAlphanumeric => PhysicalRuntimeAction::StringIsAlphanumeric,
-        RuntimeCallFamily::StringToBytes => PhysicalRuntimeAction::StringToBytesOwned,
-        RuntimeCallFamily::StringToUppercase => PhysicalRuntimeAction::StringToUppercase,
-        RuntimeCallFamily::StringToLowercase => PhysicalRuntimeAction::StringToLowercase,
-        RuntimeCallFamily::StringSlice => PhysicalRuntimeAction::StringSlice,
-        RuntimeCallFamily::StringRepeat => PhysicalRuntimeAction::StringRepeat,
-        RuntimeCallFamily::MathIntrinsic(kind) => PhysicalRuntimeAction::MathIntrinsic(kind),
-        RuntimeCallFamily::StringReplace => PhysicalRuntimeAction::StringReplace,
-        RuntimeCallFamily::StringClone => PhysicalRuntimeAction::StringClone,
-        RuntimeCallFamily::StringSplit => PhysicalRuntimeAction::StringSplit,
-        RuntimeCallFamily::StringLines => PhysicalRuntimeAction::StringLines,
-        RuntimeCallFamily::StringChars => PhysicalRuntimeAction::StringChars,
-        RuntimeCallFamily::StringIndex => PhysicalRuntimeAction::StringIndex,
-        RuntimeCallFamily::StringSliceCodepoints => PhysicalRuntimeAction::StringSliceCodepoints,
-        RuntimeCallFamily::StringSliceCodepointsFrom => {
-            PhysicalRuntimeAction::StringSliceCodepointsFrom
-        }
-        RuntimeCallFamily::StringTrim => PhysicalRuntimeAction::StringTrim,
-        RuntimeCallFamily::StringLen => PhysicalRuntimeAction::StringLen,
-        RuntimeCallFamily::StringByteLen => PhysicalRuntimeAction::StringByteLen,
-        RuntimeCallFamily::BytesDecodeUtf8Lossy => PhysicalRuntimeAction::BytesDecodeUtf8Lossy,
-        RuntimeCallFamily::U8ToString => PhysicalRuntimeAction::U8ToString,
-        RuntimeCallFamily::I32ToString => PhysicalRuntimeAction::I32ToString,
-        RuntimeCallFamily::I64ToString => PhysicalRuntimeAction::I64ToString,
-        RuntimeCallFamily::U32ToString => PhysicalRuntimeAction::U32ToString,
-        RuntimeCallFamily::U64ToString => PhysicalRuntimeAction::U64ToString,
-        RuntimeCallFamily::F64ToString => PhysicalRuntimeAction::F64ToString,
-        RuntimeCallFamily::CharToString => PhysicalRuntimeAction::CharToString,
-        RuntimeCallFamily::BoolToString => PhysicalRuntimeAction::BoolToString,
-        RuntimeCallFamily::Print { kind, newline } => {
-            PhysicalRuntimeAction::Print { kind, newline }
-        }
-        RuntimeCallFamily::ProcessExit => PhysicalRuntimeAction::ProcessExit,
-        RuntimeCallFamily::StderrWrite => PhysicalRuntimeAction::StderrWrite,
-        RuntimeCallFamily::BytesNew => PhysicalRuntimeAction::BytesNew,
-        RuntimeCallFamily::BytesLen => PhysicalRuntimeAction::BytesLen,
-        RuntimeCallFamily::BytesIsEmpty => PhysicalRuntimeAction::BytesIsEmpty,
-        RuntimeCallFamily::BytesClear => PhysicalRuntimeAction::BytesClear,
-        RuntimeCallFamily::BytesContains => PhysicalRuntimeAction::BytesContains,
-        RuntimeCallFamily::BytesSet => PhysicalRuntimeAction::BytesSet,
-        RuntimeCallFamily::BytesIndex => PhysicalRuntimeAction::BytesIndex,
-        RuntimeCallFamily::BytesSlice => PhysicalRuntimeAction::BytesSlice,
-        RuntimeCallFamily::BytesSliceFrom => PhysicalRuntimeAction::BytesSliceFrom,
-        family @ (RuntimeCallFamily::InstantNow
-        | RuntimeCallFamily::InstantElapsed
-        | RuntimeCallFamily::InstantDurationSince
-        | RuntimeCallFamily::DurationNanos
-        | RuntimeCallFamily::DurationMicros
-        | RuntimeCallFamily::DurationMillis
-        | RuntimeCallFamily::DurationSecs
-        | RuntimeCallFamily::DurationMins
-        | RuntimeCallFamily::DurationHours
-        | RuntimeCallFamily::DurationAbs
-        | RuntimeCallFamily::DurationIsZero) => PhysicalRuntimeAction::TimeScalar(family),
-        RuntimeCallFamily::BytesPush => PhysicalRuntimeAction::BytesPushOwned,
-        RuntimeCallFamily::BytesAppend => PhysicalRuntimeAction::BytesAppendOwned,
-        RuntimeCallFamily::NodeShutdown => PhysicalRuntimeAction::NodeShutdown,
-        RuntimeCallFamily::NodeIdentityKey => PhysicalRuntimeAction::NodeIdentityKey,
-        RuntimeCallFamily::NodeRegister => PhysicalRuntimeAction::NodeRegister,
-        _ => {
-            return Err(PhysicalError::new(format!(
-                "runtime family `{family:?}` has no physical no-unwind ABI action"
-            )));
-        }
-    })
-}
-
 impl FunctionLowerer<'_> {
     fn next_storage_id(&self) -> Result<StorageId, PhysicalError> {
         Ok(StorageId(u32::try_from(self.storage.len()).map_err(
@@ -3965,12 +3633,15 @@ impl FunctionLowerer<'_> {
         Ok(&self.storage[self.value(receiver.operand.value)?.0 as usize].ty)
     }
 
-    fn map_action(
+    fn map_carrier(
         &self,
-        op: MapValueOp,
+        family: RuntimeCallFamily,
         args: &[hew_sir::BoundaryOperand],
         result: &CallResult,
-    ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+    ) -> Result<PhysicalRuntimeCarrier, PhysicalError> {
+        let RuntimeCallFamily::Map(op) = family else {
+            return Err(PhysicalError::new("map carrier requires a map operation"));
+        };
         let CallResult::Value(value) = result else {
             return Err(PhysicalError::new("map operation has no result value"));
         };
@@ -4019,15 +3690,18 @@ impl FunctionLowerer<'_> {
                     .ok_or_else(|| PhysicalError::new("map entries lack their vector recipe"))?,
             },
         };
-        Ok(PhysicalRuntimeAction::Map { operation, glue })
+        Ok(PhysicalRuntimeCarrier::Map { operation, glue })
     }
 
-    fn set_action(
+    fn set_carrier(
         &self,
-        op: SetValueOp,
+        family: RuntimeCallFamily,
         args: &[hew_sir::BoundaryOperand],
         result: &CallResult,
-    ) -> Result<PhysicalRuntimeAction, PhysicalError> {
+    ) -> Result<PhysicalRuntimeCarrier, PhysicalError> {
+        let RuntimeCallFamily::Set(op) = family else {
+            return Err(PhysicalError::new("set carrier requires a set operation"));
+        };
         let CallResult::Value(value) = result else {
             return Err(PhysicalError::new("set operation has no result value"));
         };
@@ -4051,40 +3725,86 @@ impl FunctionLowerer<'_> {
             SetValueOp::Clear => PhysicalSetOp::Clear,
             SetValueOp::Elements => PhysicalSetOp::Elements,
         };
-        Ok(PhysicalRuntimeAction::Set { operation, glue })
+        Ok(PhysicalRuntimeCarrier::Set { operation, glue })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "runtime families select target-specific glue in one closed authority"
-    )]
+    /// Resolve one verified runtime operation into its physical action.
+    ///
+    /// The operation's row says which physical form it takes, so the shapes
+    /// below are selected by that fact rather than recognised again here.
     fn runtime_action(
         &self,
         family: RuntimeCallFamily,
         args: &[hew_sir::BoundaryOperand],
         result: &CallResult,
     ) -> Result<PhysicalRuntimeAction, PhysicalError> {
-        match family {
-            RuntimeCallFamily::Map(op) => return self.map_action(op, args, result),
-            RuntimeCallFamily::Set(op) => return self.set_action(op, args, result),
-            _ => {}
-        }
-        if let RuntimeCallFamily::SupervisorPool(operation) = family {
-            let option = match operation {
-                hew_types::runtime_call::SupervisorPoolOp::Get => {
-                    let CallResult::Value(value) = result else {
-                        return Err(PhysicalError::new(
-                            "supervisor pool `get` has no result value",
-                        ));
-                    };
-                    Some(self.variant_id(&value.ty)?)
+        let carrier = match family.row().physical {
+            RuntimePhysicalForm::NotAnAction => {
+                return Err(PhysicalError::new(format!(
+                    "runtime operation `{family:?}` has no physical no-unwind ABI action"
+                )))
+            }
+            RuntimePhysicalForm::Direct => PhysicalRuntimeCarrier::None,
+            RuntimePhysicalForm::Map => self.map_carrier(family, args, result)?,
+            RuntimePhysicalForm::Set => self.set_carrier(family, args, result)?,
+            RuntimePhysicalForm::Vector => self.vector_carrier(family, args, result)?,
+            RuntimePhysicalForm::NodeResult => self.node_result_carrier(family, args, result)?,
+            RuntimePhysicalForm::VariantResult => {
+                let CallResult::Value(value) = result else {
+                    return Err(PhysicalError::new(
+                        "optional runtime result has no result value",
+                    ));
+                };
+                PhysicalRuntimeCarrier::Variant(self.variant_id(&value.ty)?)
+            }
+            RuntimePhysicalForm::PairWithOption => {
+                let CallResult::Value(value) = result else {
+                    return Err(PhysicalError::new("bytes pop has no transformed result"));
+                };
+                let ResolvedTy::Tuple(fields) = &value.ty else {
+                    return Err(PhysicalError::new("bytes pop result is not a pair"));
+                };
+                let [_, option] = fields.as_slice() else {
+                    return Err(PhysicalError::new("bytes pop result is not a pair"));
+                };
+                PhysicalRuntimeCarrier::PairWithOption {
+                    pair: self.aggregate_id(&value.ty)?,
+                    option: self.variant_id(option)?,
                 }
-                hew_types::runtime_call::SupervisorPoolOp::Member
-                | hew_types::runtime_call::SupervisorPoolOp::AwaitRestartMember => None,
-            };
-            return Ok(PhysicalRuntimeAction::SupervisorPool { operation, option });
-        }
-        if let RuntimeCallFamily::Array(operation) = family {
+            }
+            RuntimePhysicalForm::Utf8Decode => {
+                let CallResult::Value(value) = result else {
+                    return Err(PhysicalError::new("UTF-8 decode has no result value"));
+                };
+                let refs = hew_sir::runtime_variant_shape_refs(
+                    hew_types::RuntimeVariantResultKind::Utf8Decode,
+                    &value.ty,
+                    &self.module.aggregate_shapes,
+                    &self.module.variant_shapes,
+                )
+                .map_err(PhysicalError::new)?;
+                PhysicalRuntimeCarrier::Utf8Decode {
+                    result: self.variant_id(&value.ty)?,
+                    error: self.aggregate_id(
+                        &self.module.aggregate_shapes[refs.error.0 as usize].aggregate_ty,
+                    )?,
+                    error_len: self.variant_id(
+                        &self.module.variant_shapes[refs.error_len.0 as usize].enum_ty,
+                    )?,
+                }
+            }
+        };
+        Ok(PhysicalRuntimeAction { family, carrier })
+    }
+
+    /// Fixed arrays share the vector glue and the vector operation vocabulary.
+    fn vector_carrier(
+        &self,
+        family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeCarrier, PhysicalError> {
+        if let RuntimeCallFamily::Array(op) = family {
             let receiver = args
                 .first()
                 .ok_or_else(|| PhysicalError::new("array operation has no receiver"))?;
@@ -4095,115 +3815,112 @@ impl FunctionLowerer<'_> {
                 .get(ty)
                 .copied()
                 .ok_or_else(|| PhysicalError::new("array receiver has no element recipe"))?;
-            return Ok(PhysicalRuntimeAction::Array { operation, glue });
-        }
-        if let RuntimeCallFamily::Vector(op) = family {
-            let CallResult::Value(value) = result else {
-                return Err(PhysicalError::new("vector operation has no result value"));
-            };
-            let vector = if op == VecValueOp::New {
-                &value.ty
-            } else {
-                let receiver = args
-                    .first()
-                    .ok_or_else(|| PhysicalError::new("vector operation has no receiver"))?;
-                &self.storage[self.value(receiver.operand.value)?.0 as usize].ty
-            };
-            let glue = self.glue_ids.vectors.get(vector).copied().ok_or_else(|| {
-                PhysicalError::new(format!(
-                    "vector `{}` has no physical glue identity",
-                    vector.user_facing()
-                ))
-            })?;
             let operation = match op {
-                VecValueOp::New => PhysicalVectorOp::New,
-                VecValueOp::Len => PhysicalVectorOp::Len,
-                VecValueOp::Contains => PhysicalVectorOp::Contains,
-                VecValueOp::Index => PhysicalVectorOp::Index,
-                VecValueOp::Get => PhysicalVectorOp::Get {
-                    result: self.variant_id(&value.ty)?,
-                },
-                VecValueOp::Push => PhysicalVectorOp::Push,
-                VecValueOp::Set => PhysicalVectorOp::Set,
-                VecValueOp::Pop => PhysicalVectorOp::Pop {
-                    result: self.aggregate_id(&value.ty)?,
-                },
-                VecValueOp::Remove => PhysicalVectorOp::Remove {
-                    result: self.aggregate_id(&value.ty)?,
-                },
-                VecValueOp::Clear => PhysicalVectorOp::Clear,
-                VecValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
-                VecValueOp::GetBorrow => PhysicalVectorOp::GetBorrow {
-                    result: self.variant_id(&value.ty)?,
-                },
-                VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
-                    result: self.aggregate_id(&value.ty)?,
-                },
-                VecValueOp::Slice => PhysicalVectorOp::Slice,
-                VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
+                ArrayValueOp::Len => PhysicalVectorOp::Len,
+                ArrayValueOp::Index => PhysicalVectorOp::Index,
+                ArrayValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+                ArrayValueOp::Set => PhysicalVectorOp::Set,
             };
-            return Ok(PhysicalRuntimeAction::Vector { operation, glue });
+            return Ok(PhysicalRuntimeCarrier::Vector { operation, glue });
         }
-        if matches!(
-            family,
-            RuntimeCallFamily::NodeStart | RuntimeCallFamily::NodeConnect
-        ) {
-            if family == RuntimeCallFamily::NodeStart {
-                let config = args
-                    .first()
-                    .ok_or_else(|| PhysicalError::new("Node::start has no NodeConfig argument"))?;
-                let config_ty = &self.storage[self.value(config.operand.value)?.0 as usize].ty;
-                let expected_fields = vec![
-                    ResolvedTy::String,
-                    ResolvedTy::String,
-                    ResolvedTy::String,
-                    ResolvedTy::String,
-                    ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
-                    ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
-                ];
-                let shape = self
-                    .module
-                    .aggregate_shapes
+        let RuntimeCallFamily::Vector(op) = family else {
+            return Err(PhysicalError::new(
+                "vector carrier requires a vector operation",
+            ));
+        };
+        let CallResult::Value(value) = result else {
+            return Err(PhysicalError::new("vector operation has no result value"));
+        };
+        let vector = if op == VecValueOp::New {
+            &value.ty
+        } else {
+            let receiver = args
+                .first()
+                .ok_or_else(|| PhysicalError::new("vector operation has no receiver"))?;
+            &self.storage[self.value(receiver.operand.value)?.0 as usize].ty
+        };
+        let glue = self.glue_ids.vectors.get(vector).copied().ok_or_else(|| {
+            PhysicalError::new(format!(
+                "vector `{}` has no physical glue identity",
+                vector.user_facing()
+            ))
+        })?;
+        let operation = match op {
+            VecValueOp::New => PhysicalVectorOp::New,
+            VecValueOp::Len => PhysicalVectorOp::Len,
+            VecValueOp::Contains => PhysicalVectorOp::Contains,
+            VecValueOp::Index => PhysicalVectorOp::Index,
+            VecValueOp::Get => PhysicalVectorOp::Get {
+                result: self.variant_id(&value.ty)?,
+            },
+            VecValueOp::Push => PhysicalVectorOp::Push,
+            VecValueOp::Set => PhysicalVectorOp::Set,
+            VecValueOp::Pop => PhysicalVectorOp::Pop {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            VecValueOp::Remove => PhysicalVectorOp::Remove {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            VecValueOp::Clear => PhysicalVectorOp::Clear,
+            VecValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
+            VecValueOp::GetBorrow => PhysicalVectorOp::GetBorrow {
+                result: self.variant_id(&value.ty)?,
+            },
+            VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
+                result: self.aggregate_id(&value.ty)?,
+            },
+            VecValueOp::Slice => PhysicalVectorOp::Slice,
+            VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
+        };
+        Ok(PhysicalRuntimeCarrier::Vector { operation, glue })
+    }
+
+    /// `Node::start`, `Node::connect` and `Node::lookup` all return a `Result`
+    /// whose success and error cases are separate variant glue.
+    fn node_result_carrier(
+        &self,
+        family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeCarrier, PhysicalError> {
+        if family == RuntimeCallFamily::NodeStart {
+            let config = args
+                .first()
+                .ok_or_else(|| PhysicalError::new("Node::start has no NodeConfig argument"))?;
+            let config_ty = &self.storage[self.value(config.operand.value)?.0 as usize].ty;
+            let expected_fields = vec![
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
+            ];
+            let shape = self
+                .module
+                .aggregate_shapes
+                .iter()
+                .find(|shape| shape.aggregate_ty == *config_ty);
+            if !shape.is_some_and(|shape| {
+                shape
+                    .fields
                     .iter()
-                    .find(|shape| shape.aggregate_ty == *config_ty);
-                if !shape.is_some_and(|shape| {
-                    shape
-                        .fields
-                        .iter()
-                        .map(|field| field.ty.clone())
-                        .collect::<Vec<_>>()
-                        == expected_fields
-                }) {
-                    return Err(PhysicalError::new(
-                        "Node::start requires NodeConfig ABI fields bind, transport, key, trust, peers, seeds in source order",
-                    ));
-                }
-            }
-            let CallResult::Value(value) = result else {
+                    .map(|field| field.ty.clone())
+                    .collect::<Vec<_>>()
+                    == expected_fields
+            }) {
                 return Err(PhysicalError::new(
-                    "node lifecycle operation has no Result value",
+                    "Node::start requires NodeConfig ABI fields bind, transport, key, trust, peers, seeds in source order",
                 ));
-            };
-            let result = self.variant_id(&value.ty)?;
-            let error_ty = match &value.ty {
-                ResolvedTy::Named { args, .. } if args.len() == 2 => &args[1],
-                _ => {
-                    return Err(PhysicalError::new(
-                        "node lifecycle result is not Result<(), NodeError>",
-                    ))
-                }
-            };
-            return Ok(PhysicalRuntimeAction::NodeLifecycle {
-                family,
-                result,
-                error: self.variant_id(error_ty)?,
-            });
+            }
         }
-        if family == RuntimeCallFamily::NodeLookup {
-            let CallResult::Value(value) = result else {
-                return Err(PhysicalError::new("Node::lookup has no Result value"));
-            };
-            let (_remote_ty, error_ty) = match &value.ty {
+        let CallResult::Value(value) = result else {
+            return Err(PhysicalError::new(
+                "node lifecycle operation has no Result value",
+            ));
+        };
+        let error_ty = if family == RuntimeCallFamily::NodeLookup {
+            match &value.ty {
                 ResolvedTy::Named {
                     builtin: Some(BuiltinType::Result),
                     args,
@@ -4212,71 +3929,27 @@ impl FunctionLowerer<'_> {
                     && args[0].is_builtin(BuiltinType::RemotePid)
                     && args[1].is_builtin(BuiltinType::LookupError) =>
                 {
-                    (&args[0], &args[1])
+                    &args[1]
                 }
                 _ => {
                     return Err(PhysicalError::new(
                         "Node::lookup result is not Result<RemotePid<T>, LookupError>",
                     ))
                 }
-            };
-            let result = self.variant_id(&value.ty)?;
-            return Ok(PhysicalRuntimeAction::NodeLookup {
-                result,
-                error: self.variant_id(error_ty)?,
-            });
-        }
-        if matches!(
-            family,
-            RuntimeCallFamily::StringFind
-                | RuntimeCallFamily::StringCharAt
-                | RuntimeCallFamily::BytesGet
-        ) {
-            let CallResult::Value(value) = result else {
-                return Err(PhysicalError::new("string find has no optional result"));
-            };
-            let result = self.variant_id(&value.ty)?;
-            return Ok(match family {
-                RuntimeCallFamily::StringFind => PhysicalRuntimeAction::StringFind { result },
-                RuntimeCallFamily::StringCharAt => PhysicalRuntimeAction::StringCharAt { result },
-                RuntimeCallFamily::BytesGet => PhysicalRuntimeAction::BytesGet { result },
-                _ => unreachable!("matched optional runtime family"),
-            });
-        }
-        if family == RuntimeCallFamily::BytesPop {
-            let CallResult::Value(value) = result else {
-                return Err(PhysicalError::new("bytes pop has no transformed result"));
-            };
-            let ResolvedTy::Tuple(fields) = &value.ty else {
-                return Err(PhysicalError::new("bytes pop result is not a pair"));
-            };
-            let [_, option] = fields.as_slice() else {
-                return Err(PhysicalError::new("bytes pop result is not a pair"));
-            };
-            return Ok(PhysicalRuntimeAction::BytesPop {
-                result: self.aggregate_id(&value.ty)?,
-                option: self.variant_id(option)?,
-            });
-        }
-        if family != RuntimeCallFamily::BytesDecodeUtf8 {
-            return physical_runtime_action(family);
-        }
-        let CallResult::Value(value) = result else {
-            return Err(PhysicalError::new("UTF-8 decode has no result value"));
+            }
+        } else {
+            match &value.ty {
+                ResolvedTy::Named { args, .. } if args.len() == 2 => &args[1],
+                _ => {
+                    return Err(PhysicalError::new(
+                        "node lifecycle result is not Result<(), NodeError>",
+                    ))
+                }
+            }
         };
-        let refs = hew_sir::runtime_variant_shape_refs(
-            hew_types::RuntimeVariantResultKind::Utf8Decode,
-            &value.ty,
-            &self.module.aggregate_shapes,
-            &self.module.variant_shapes,
-        )
-        .map_err(PhysicalError::new)?;
-        Ok(PhysicalRuntimeAction::BytesDecodeUtf8 {
+        Ok(PhysicalRuntimeCarrier::NodeResult {
             result: self.variant_id(&value.ty)?,
-            error: self
-                .aggregate_id(&self.module.aggregate_shapes[refs.error.0 as usize].aggregate_ty)?,
-            error_len: self
-                .variant_id(&self.module.variant_shapes[refs.error_len.0 as usize].enum_ty)?,
+            error: self.variant_id(error_ty)?,
         })
     }
 
@@ -7163,7 +6836,7 @@ fn terminator_successors(
             ..
         } => {
             let failure_inputs = action
-                .semantic_family()
+                .family
                 .semantic_contract()
                 .is_some_and(hew_types::RuntimeSemanticContract::preserves_inputs_on_failure)
                 .then(|| state.clone());
@@ -7207,12 +6880,9 @@ fn terminator_successors(
             }
             // A never-returning action ends the path; its normal edge is only
             // the structural unreachable continuation.
-            let returns = !action
-                .semantic_family()
-                .semantic_contract()
-                .is_some_and(|contract| {
-                    matches!(contract.result, hew_types::RuntimeResultEffect::Never)
-                });
+            let returns = !action.family.semantic_contract().is_some_and(|contract| {
+                matches!(contract.result, hew_types::RuntimeResultEffect::Never)
+            });
             let mut successors = Vec::new();
             if returns {
                 successors.push(apply_edge(function, normal, normal_state, block)?);
@@ -7223,7 +6893,7 @@ fn terminator_successors(
                 }
                 state.exit = defer::TRAP;
                 if action
-                    .semantic_family()
+                    .family
                     .semantic_contract()
                     .is_some_and(hew_types::RuntimeSemanticContract::propagates_fault)
                 {
@@ -8212,7 +7882,7 @@ fn verify_terminator(
             failure,
         } => {
             let contract = action
-                .semantic_family()
+                .family
                 .semantic_contract()
                 .ok_or_else(|| PhysicalError::new("physical runtime action lost its contract"))?;
             if args.len() != contract.arguments.len() {
@@ -8288,10 +7958,10 @@ fn verify_terminator(
                     )));
                 }
             }
-            if let PhysicalRuntimeAction::BytesPop {
-                result: pair,
+            if let PhysicalRuntimeCarrier::PairWithOption {
+                pair,
                 option: descriptor,
-            } = action
+            } = &action.carrier
             {
                 let Some(output) = result else {
                     return Err(PhysicalError::new("bytes pop has no result storage"));
@@ -8315,15 +7985,18 @@ fn verify_terminator(
                     ));
                 }
             }
-            if let PhysicalRuntimeAction::StringFind { result: descriptor }
-            | PhysicalRuntimeAction::StringCharAt { result: descriptor }
-            | PhysicalRuntimeAction::BytesGet { result: descriptor } = action
+            // The scalar optional reads publish an exact payload type; other
+            // variant results carry their own checked type and are verified by
+            // their operation's contract.
+            let scalar_optional = match action.family {
+                RuntimeCallFamily::StringFind => Some(ResolvedTy::I64),
+                RuntimeCallFamily::StringCharAt => Some(ResolvedTy::Char),
+                RuntimeCallFamily::BytesGet => Some(ResolvedTy::U8),
+                _ => None,
+            };
+            if let (PhysicalRuntimeCarrier::Variant(descriptor), Some(payload)) =
+                (&action.carrier, scalar_optional)
             {
-                let payload = match action {
-                    PhysicalRuntimeAction::StringCharAt { .. } => ResolvedTy::Char,
-                    PhysicalRuntimeAction::BytesGet { .. } => ResolvedTy::U8,
-                    _ => ResolvedTy::I64,
-                };
                 let Some(output) = result else {
                     return Err(PhysicalError::new("string find has no result storage"));
                 };
@@ -8343,11 +8016,11 @@ fn verify_terminator(
             match (contract.result, result) {
                 (RuntimeResultEffect::FreshOwnedVariant(kind), Some(id)) => {
                     let result_slot = slot(*id)?;
-                    let PhysicalRuntimeAction::BytesDecodeUtf8 {
+                    let PhysicalRuntimeCarrier::Utf8Decode {
                         result: result_glue,
                         error,
                         error_len,
-                    } = *action
+                    } = action.carrier
                     else {
                         return Err(PhysicalError::new(
                             "variant runtime result has no physical contract",
@@ -8427,34 +8100,21 @@ fn verify_terminator(
                     }
                 }
             }
-            match *action {
-                PhysicalRuntimeAction::Array { operation, glue } => {
-                    let descriptor = vector_glue(module, glue)?;
-                    if !matches!(descriptor.ty, ResolvedTy::Array(_, _)) {
+            match action.carrier {
+                PhysicalRuntimeCarrier::Vector { operation, glue } => {
+                    if matches!(action.family, RuntimeCallFamily::Array(_))
+                        && !matches!(vector_glue(module, glue)?.ty, ResolvedTy::Array(_, _))
+                    {
                         return Err(PhysicalError::new(
                             "array operation has a non-array descriptor",
                         ));
                     }
-                    verify_vector_call(
-                        module,
-                        match operation {
-                            ArrayValueOp::Len => PhysicalVectorOp::Len,
-                            ArrayValueOp::Index => PhysicalVectorOp::Index,
-                            ArrayValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
-                            ArrayValueOp::Set => PhysicalVectorOp::Set,
-                        },
-                        glue,
-                        &parameter_types,
-                        result_type,
-                    )?;
-                }
-                PhysicalRuntimeAction::Vector { operation, glue } => {
                     verify_vector_call(module, operation, glue, &parameter_types, result_type)?;
                 }
-                PhysicalRuntimeAction::Map { operation, glue } => {
+                PhysicalRuntimeCarrier::Map { operation, glue } => {
                     verify_map_call(module, operation, glue, &parameter_types, result_type)?;
                 }
-                PhysicalRuntimeAction::Set { operation, glue } => {
+                PhysicalRuntimeCarrier::Set { operation, glue } => {
                     verify_set_call(module, operation, glue, &parameter_types, result_type)?;
                 }
                 _ => {}
@@ -9094,8 +8754,12 @@ mod tests {
             .into_unverified();
         let PhysicalTerminator::RuntimeCall {
             action:
-                PhysicalRuntimeAction::BytesDecodeUtf8 {
-                    result, error_len, ..
+                PhysicalRuntimeAction {
+                    carrier:
+                        PhysicalRuntimeCarrier::Utf8Decode {
+                            result, error_len, ..
+                        },
+                    ..
                 },
             failure,
             ..
@@ -10152,18 +9816,18 @@ mod tests {
             .iter()
             .flat_map(|function| &function.blocks)
             .filter_map(|block| match block.terminator {
-                PhysicalTerminator::RuntimeCall { action, .. } => Some(action),
+                PhysicalTerminator::RuntimeCall { action, .. } => Some(action.family),
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(
             actions,
             std::collections::HashSet::from([
-                PhysicalRuntimeAction::StringEquals,
-                PhysicalRuntimeAction::StringStartsWith,
-                PhysicalRuntimeAction::StringIsEmpty,
-                PhysicalRuntimeAction::StringToUppercase,
-                PhysicalRuntimeAction::Print {
+                RuntimeCallFamily::StringEquals,
+                RuntimeCallFamily::StringStartsWith,
+                RuntimeCallFamily::StringIsEmpty,
+                RuntimeCallFamily::StringToUppercase,
+                RuntimeCallFamily::Print {
                     kind: hew_types::runtime_call::PrintKind::Str,
                     newline: true
                 },
@@ -10184,9 +9848,12 @@ mod tests {
             .any(|block| matches!(
                 block.terminator,
                 PhysicalTerminator::RuntimeCall {
-                    action: PhysicalRuntimeAction::Print {
-                        kind: hew_types::runtime_call::PrintKind::I64,
-                        newline: true
+                    action: PhysicalRuntimeAction {
+                        family: RuntimeCallFamily::Print {
+                            kind: hew_types::runtime_call::PrintKind::I64,
+                            newline: true
+                        },
+                        ..
                     },
                     ..
                 }
@@ -10206,14 +9873,14 @@ mod tests {
             .iter()
             .flat_map(|function| &function.blocks)
             .filter_map(|block| match block.terminator {
-                PhysicalTerminator::RuntimeCall { action, .. } => Some(action),
+                PhysicalTerminator::RuntimeCall { action, .. } => Some(action.family),
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
-        assert!(actions.contains(&PhysicalRuntimeAction::StringToBytesOwned));
-        assert!(actions.contains(&PhysicalRuntimeAction::BytesPushOwned));
-        assert!(actions.contains(&PhysicalRuntimeAction::BytesLen));
-        assert!(actions.contains(&PhysicalRuntimeAction::BytesIndex));
+        assert!(actions.contains(&RuntimeCallFamily::StringToBytes));
+        assert!(actions.contains(&RuntimeCallFamily::BytesPush));
+        assert!(actions.contains(&RuntimeCallFamily::BytesLen));
+        assert!(actions.contains(&RuntimeCallFamily::BytesIndex));
     }
 
     #[test]
@@ -10230,7 +9897,11 @@ mod tests {
             .flat_map(|function| &mut function.blocks)
             .find_map(|block| match &mut block.terminator {
                 PhysicalTerminator::RuntimeCall {
-                    action: PhysicalRuntimeAction::BytesPushOwned,
+                    action:
+                        PhysicalRuntimeAction {
+                            family: RuntimeCallFamily::BytesPush,
+                            ..
+                        },
                     args,
                     ..
                 } => Some(args),
@@ -10255,7 +9926,11 @@ mod tests {
             .flat_map(|function| &mut function.blocks)
             .find_map(|block| match &mut block.terminator {
                 PhysicalTerminator::RuntimeCall {
-                    action: PhysicalRuntimeAction::BytesIndex,
+                    action:
+                        PhysicalRuntimeAction {
+                            family: RuntimeCallFamily::BytesIndex,
+                            ..
+                        },
                     failure,
                     ..
                 } => Some(failure),
@@ -10865,8 +10540,11 @@ mod tests {
                     matches!(
                         block.terminator,
                         PhysicalTerminator::RuntimeCall {
-                            action: PhysicalRuntimeAction::Map {
-                                operation: PhysicalMapOp::ContainsKey,
+                            action: PhysicalRuntimeAction {
+                                carrier: PhysicalRuntimeCarrier::Map {
+                                    operation: PhysicalMapOp::ContainsKey,
+                                    ..
+                                },
                                 ..
                             },
                             ..
@@ -10881,8 +10559,12 @@ mod tests {
             .find_map(|block| match &block.terminator {
                 PhysicalTerminator::RuntimeCall {
                     action:
-                        PhysicalRuntimeAction::Map {
-                            operation: PhysicalMapOp::ContainsKey,
+                        PhysicalRuntimeAction {
+                            carrier:
+                                PhysicalRuntimeCarrier::Map {
+                                    operation: PhysicalMapOp::ContainsKey,
+                                    ..
+                                },
                             ..
                         },
                     failure: Some(edge),
@@ -11107,9 +10789,15 @@ mod tests {
     }
 
     fn vector_block(function: &mut PhysicalFunction, op: VecValueOp) -> &mut PhysicalBlock {
-        function.blocks.iter_mut().find(|block| matches!(block.terminator,
-            PhysicalTerminator::RuntimeCall { action: PhysicalRuntimeAction::Vector { operation, .. }, .. }
-                if operation.semantic_op() == op)).expect("fixture vector operation")
+        function
+            .blocks
+            .iter_mut()
+            .find(|block| {
+                matches!(block.terminator,
+                    PhysicalTerminator::RuntimeCall { action, .. }
+                        if action.family == RuntimeCallFamily::Vector(op))
+            })
+            .expect("fixture vector operation")
     }
 
     #[test]
@@ -11156,9 +10844,13 @@ mod tests {
                 .flat_map(|function| &function.blocks)
                 .filter_map(|block| match block.terminator {
                     PhysicalTerminator::RuntimeCall {
-                        action: PhysicalRuntimeAction::Vector { operation, .. },
+                        action:
+                            PhysicalRuntimeAction {
+                                family: RuntimeCallFamily::Vector(operation),
+                                ..
+                            },
                         ..
-                    } => Some(operation.semantic_op()),
+                    } => Some(operation),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -11354,9 +11046,13 @@ mod tests {
             let block = vector_block(&mut physical.functions[0], operation);
             let PhysicalTerminator::RuntimeCall {
                 action:
-                    PhysicalRuntimeAction::Vector {
-                        operation: action,
-                        glue,
+                    PhysicalRuntimeAction {
+                        carrier:
+                            PhysicalRuntimeCarrier::Vector {
+                                operation: action,
+                                glue,
+                            },
+                        ..
                     },
                 ..
             } = &mut block.terminator
@@ -11483,7 +11179,11 @@ mod tests {
                 let mut physical = original.clone();
                 let block = vector_block(&mut physical.functions[0], operation);
                 let PhysicalTerminator::RuntimeCall {
-                    action: PhysicalRuntimeAction::Vector { glue, .. },
+                    action:
+                        PhysicalRuntimeAction {
+                            carrier: PhysicalRuntimeCarrier::Vector { glue, .. },
+                            ..
+                        },
                     args,
                     normal,
                     failure,

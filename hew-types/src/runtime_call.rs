@@ -2406,132 +2406,161 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::FileRead(op) => RuntimeOpRow {
                 symbol: op.c_symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Tcp(op) => RuntimeOpRow {
                 symbol: op.c_symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Encoding { format, op } => RuntimeOpRow {
                 symbol: op.c_symbol(format),
                 contract: Some(op.contract(format)),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::SupervisorPool(op) => RuntimeOpRow {
                 symbol: op.symbol(),
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                // Only `get` builds an `Option<ChildRef<T>>` descriptor; the
+                // trapping and awaiting forms hand back the member itself.
+                physical: match op {
+                    SupervisorPoolOp::Get => RuntimePhysicalForm::VariantResult,
+                    SupervisorPoolOp::Member | SupervisorPoolOp::AwaitRestartMember => {
+                        RuntimePhysicalForm::Direct
+                    }
+                },
             },
             Self::ActorAsk => RuntimeOpRow {
                 symbol: "hew_actor_ask",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorAskWithChannel => RuntimeOpRow {
                 symbol: "hew_actor_ask_with_channel",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorCooperate => RuntimeOpRow {
                 symbol: "hew_actor_cooperate",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorDemonitor => RuntimeOpRow {
                 symbol: "hew_actor_demonitor",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorGenSinkComplete => RuntimeOpRow {
                 symbol: "hew_actor_gen_sink_complete",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorGenSinkRegister => RuntimeOpRow {
                 symbol: "hew_actor_gen_sink_register",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorLink => RuntimeOpRow {
                 symbol: "hew_actor_link",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::LinkRemote => RuntimeOpRow {
                 symbol: "hew_node_link_remote_location",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorMonitor => RuntimeOpRow {
                 symbol: "hew_actor_monitor",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorSelf => RuntimeOpRow {
                 symbol: "hew_actor_self",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorSendById => RuntimeOpRow {
                 symbol: "hew_actor_send_by_id",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorSpawn => RuntimeOpRow {
                 symbol: "hew_actor_spawn",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ActorUnlink => RuntimeOpRow {
                 symbol: "hew_actor_unlink",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::AutoMutexAlloc => RuntimeOpRow {
                 symbol: "hew_auto_mutex_alloc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::AutoMutexFree => RuntimeOpRow {
                 symbol: "hew_auto_mutex_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::AutoMutexLock => RuntimeOpRow {
                 symbol: "hew_auto_mutex_lock",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::AutoMutexUnlock => RuntimeOpRow {
                 symbol: "hew_auto_mutex_unlock",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::BytesAppend => RuntimeOpRow {
                 symbol: "hew_bytes_append",
@@ -2551,6 +2580,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesClear => RuntimeOpRow {
                 symbol: "hew_bytes_clear",
@@ -2564,6 +2594,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesContains => RuntimeOpRow {
                 symbol: "hew_bytes_contains",
@@ -2583,6 +2614,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesDecodeUtf8 => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8",
@@ -2596,6 +2628,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Utf8Decode,
             },
             Self::BytesDecodeUtf8Lossy => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8_lossy",
@@ -2609,6 +2642,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesGet => RuntimeOpRow {
                 symbol: "hew_bytes_get",
@@ -2628,6 +2662,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
             },
             Self::BytesIndex => RuntimeOpRow {
                 symbol: "hew_bytes_index",
@@ -2647,6 +2682,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesIsEmpty => RuntimeOpRow {
                 symbol: "hew_bytes_is_empty",
@@ -2660,6 +2696,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesLen => RuntimeOpRow {
                 symbol: "hew_bytes_len",
@@ -2673,6 +2710,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesPop => RuntimeOpRow {
                 symbol: "hew_bytes_pop",
@@ -2689,6 +2727,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::PairWithOption,
             },
             Self::BytesPush => RuntimeOpRow {
                 symbol: "hew_bytes_push",
@@ -2708,6 +2747,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesSet => RuntimeOpRow {
                 symbol: "hew_bytes_set",
@@ -2731,6 +2771,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesSlice => RuntimeOpRow {
                 symbol: "hew_bytes_slice",
@@ -2754,6 +2795,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesSliceFrom => RuntimeOpRow {
                 symbol: "hew_bytes_slice_from",
@@ -2773,6 +2815,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BytesNew => RuntimeOpRow {
                 symbol: "bytes::new",
@@ -2783,42 +2826,49 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::BytesConstructor,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::CancelTokenIsRequested => RuntimeOpRow {
                 symbol: "hew_cancel_token_is_requested",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::CancelTokenRelease => RuntimeOpRow {
                 symbol: "hew_cancel_token_release",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::CancelTokenRetain => RuntimeOpRow {
                 symbol: "hew_cancel_token_retain",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ChannelRecvLayout => RuntimeOpRow {
                 symbol: "hew_channel_recv_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ChannelSendLayout => RuntimeOpRow {
                 symbol: "hew_channel_send_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ChannelTryRecvLayout => RuntimeOpRow {
                 symbol: "hew_channel_try_recv_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ChannelSenderClone => RuntimeOpRow {
                 symbol: "hew_channel_sender_clone",
@@ -2832,6 +2882,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelSenderClose => RuntimeOpRow {
                 symbol: "hew_channel_sender_close",
@@ -2845,6 +2896,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelReceiverClose => RuntimeOpRow {
                 symbol: "hew_channel_receiver_close",
@@ -2858,6 +2910,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelPairNew => RuntimeOpRow {
                 symbol: "hew_channel_new",
@@ -2871,6 +2924,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelPairFree => RuntimeOpRow {
                 symbol: "hew_channel_pair_free",
@@ -2884,6 +2938,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ActorRequestRelease => RuntimeOpRow {
                 symbol: "hew_msg_envelope_release",
@@ -2897,6 +2952,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ActorCallFree => RuntimeOpRow {
                 symbol: "hew_actor_call_free",
@@ -2910,6 +2966,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ActorRequestTake => RuntimeOpRow {
                 symbol: "hew_actor_ask_wait_take_request",
@@ -2923,6 +2980,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelPairIsValid => RuntimeOpRow {
                 symbol: "hew_channel_pair_is_valid",
@@ -2936,6 +2994,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelPairSender => RuntimeOpRow {
                 symbol: "hew_channel_pair_sender",
@@ -2949,6 +3008,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ChannelPairReceiver => RuntimeOpRow {
                 symbol: "hew_channel_pair_receiver",
@@ -2962,72 +3022,84 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DuplexClone => RuntimeOpRow {
                 symbol: "hew_duplex_clone",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexClose => RuntimeOpRow {
                 symbol: "hew_duplex_close",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexCloseHalf => RuntimeOpRow {
                 symbol: "hew_duplex_close_half",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexPair => RuntimeOpRow {
                 symbol: "hew_duplex_pair",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexPayloadFree => RuntimeOpRow {
                 symbol: "hew_duplex_payload_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexRecv => RuntimeOpRow {
                 symbol: "hew_duplex_recv",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexRecvHalf => RuntimeOpRow {
                 symbol: "hew_duplex_recv_half",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexSend => RuntimeOpRow {
                 symbol: "hew_duplex_send",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexSendHalf => RuntimeOpRow {
                 symbol: "hew_duplex_send_half",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexTryRecv => RuntimeOpRow {
                 symbol: "hew_duplex_try_recv",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DuplexTrySend => RuntimeOpRow {
                 symbol: "hew_duplex_try_send",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DurationAbs => RuntimeOpRow {
                 symbol: "hew_duration_abs",
@@ -3041,6 +3113,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationHours => RuntimeOpRow {
                 symbol: "hew_duration_hours",
@@ -3054,6 +3127,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationIsZero => RuntimeOpRow {
                 symbol: "hew_duration_is_zero",
@@ -3067,6 +3141,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationMicros => RuntimeOpRow {
                 symbol: "hew_duration_micros",
@@ -3080,6 +3155,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationMillis => RuntimeOpRow {
                 symbol: "hew_duration_millis",
@@ -3093,6 +3169,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationMins => RuntimeOpRow {
                 symbol: "hew_duration_mins",
@@ -3106,6 +3183,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationNanos => RuntimeOpRow {
                 symbol: "hew_duration_nanos",
@@ -3119,6 +3197,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DurationSecs => RuntimeOpRow {
                 symbol: "hew_duration_secs",
@@ -3132,162 +3211,189 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::DynBoxAlloc => RuntimeOpRow {
                 symbol: "hew_dyn_box_alloc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::DynBoxFree => RuntimeOpRow {
                 symbol: "hew_dyn_box_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapContainsKeyLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_contains_key_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapClearLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_clear_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapCloneLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapEntriesLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_entries_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapFreeLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_free_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapGetLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_get_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashMapLayoutGet,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapInsertLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_insert_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapKeysLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_keys_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapLenLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_len_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapNew => RuntimeOpRow {
                 symbol: "HashMap::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapNewWithLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_new_with_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapRemoveLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_remove_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashMapValuesLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_values_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetContainsLayout => RuntimeOpRow {
                 symbol: "hew_hashset_contains_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetClearLayout => RuntimeOpRow {
                 symbol: "hew_hashset_clear_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetCloneLayout => RuntimeOpRow {
                 symbol: "hew_hashset_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetFreeLayout => RuntimeOpRow {
                 symbol: "hew_hashset_free_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetInsertLayout => RuntimeOpRow {
                 symbol: "hew_hashset_insert_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetIsEmptyLayout => RuntimeOpRow {
                 symbol: "hew_hashset_is_empty_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetLenLayout => RuntimeOpRow {
                 symbol: "hew_hashset_len_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetNew => RuntimeOpRow {
                 symbol: "HashSet::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetNewWithLayout => RuntimeOpRow {
                 symbol: "hew_hashset_new_with_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetRemoveLayout => RuntimeOpRow {
                 symbol: "hew_hashset_remove_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::HashSetToVecLayout => RuntimeOpRow {
                 symbol: "hew_hashset_to_vec_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::InstantDurationSince => RuntimeOpRow {
                 symbol: "hew_instant_duration_since",
@@ -3307,6 +3413,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::InstantElapsed => RuntimeOpRow {
                 symbol: "hew_instant_elapsed",
@@ -3320,6 +3427,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::InstantNow => RuntimeOpRow {
                 symbol: "hew_instant_now",
@@ -3330,6 +3438,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
                 symbol: "sqrt",
@@ -3343,6 +3452,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Exp) => RuntimeOpRow {
                 symbol: "exp",
@@ -3356,6 +3466,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Log) => RuntimeOpRow {
                 symbol: "log",
@@ -3369,6 +3480,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Sin) => RuntimeOpRow {
                 symbol: "sin",
@@ -3382,6 +3494,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Cos) => RuntimeOpRow {
                 symbol: "cos",
@@ -3395,6 +3508,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsI64) => RuntimeOpRow {
                 symbol: "abs",
@@ -3408,6 +3522,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::MinI64) => RuntimeOpRow {
                 symbol: "min",
@@ -3427,6 +3542,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxI64) => RuntimeOpRow {
                 symbol: "max",
@@ -3446,6 +3562,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsF64) => RuntimeOpRow {
                 symbol: "abs_f",
@@ -3459,6 +3576,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::MinF64) => RuntimeOpRow {
                 symbol: "min_f",
@@ -3478,6 +3596,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxF64) => RuntimeOpRow {
                 symbol: "max_f",
@@ -3497,6 +3616,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Pow) => RuntimeOpRow {
                 symbol: "pow",
@@ -3516,6 +3636,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Floor) => RuntimeOpRow {
                 symbol: "floor",
@@ -3529,6 +3650,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Ceil) => RuntimeOpRow {
                 symbol: "ceil",
@@ -3542,6 +3664,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::MathIntrinsic(MathIntrinsic::Round) => RuntimeOpRow {
                 symbol: "round",
@@ -3555,12 +3678,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::NodeAllowPeer => RuntimeOpRow {
                 symbol: "Node::allow_peer",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::NodeConnect => RuntimeOpRow {
                 symbol: "Node::connect",
@@ -3577,12 +3702,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NodeResult,
             },
             Self::NodeId => RuntimeOpRow {
                 symbol: "Node::id",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::NodeIdentityKey => RuntimeOpRow {
                 symbol: "Node::identity_key",
@@ -3593,12 +3720,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::NodeLoadKeys => RuntimeOpRow {
                 symbol: "Node::load_keys",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::NodeLookup => RuntimeOpRow {
                 symbol: "Node::lookup",
@@ -3612,12 +3741,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NodeResult,
             },
             Self::NodeMonitor => RuntimeOpRow {
                 symbol: "hew_node_monitor_location",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::NodeRegister => RuntimeOpRow {
                 symbol: "Node::register",
@@ -3637,12 +3768,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::NodeSetTransport => RuntimeOpRow {
                 symbol: "Node::set_transport",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::NodeShutdown => RuntimeOpRow {
                 symbol: "Node::shutdown",
@@ -3653,6 +3786,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::NodeStart => RuntimeOpRow {
                 symbol: "Node::start",
@@ -3669,210 +3803,245 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NodeResult,
             },
             Self::MetricCounterRegister => RuntimeOpRow {
                 symbol: "hew_metric_counter_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricCounterInc => RuntimeOpRow {
                 symbol: "hew_metric_counter_inc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricCounterAdd => RuntimeOpRow {
                 symbol: "hew_metric_counter_add",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricGaugeRegister => RuntimeOpRow {
                 symbol: "hew_metric_gauge_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricGaugeSet => RuntimeOpRow {
                 symbol: "hew_metric_gauge_set",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricGaugeInc => RuntimeOpRow {
                 symbol: "hew_metric_gauge_inc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricGaugeDec => RuntimeOpRow {
                 symbol: "hew_metric_gauge_dec",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricGaugeAdd => RuntimeOpRow {
                 symbol: "hew_metric_gauge_add",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricHistogramRegister => RuntimeOpRow {
                 symbol: "hew_metric_histogram_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricHistogramRegisterSimple => RuntimeOpRow {
                 symbol: "hew_metric_histogram_register_simple",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricHistogramRecord => RuntimeOpRow {
                 symbol: "hew_metric_histogram_record",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricVecRegister => RuntimeOpRow {
                 symbol: "hew_metric_vec_register",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::MetricVecWith => RuntimeOpRow {
                 symbol: "hew_metric_vec_with",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ObserveReadU64 => RuntimeOpRow {
                 symbol: "hew_observe_read_u64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ObserveScrape => RuntimeOpRow {
                 symbol: "hew_observe_scrape",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ObserveSeries => RuntimeOpRow {
                 symbol: "hew_observe_series",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ObserveBarrier => RuntimeOpRow {
                 symbol: "hew_observe_barrier",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcClone => RuntimeOpRow {
                 symbol: "hew_rc_clone",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcDowngrade => RuntimeOpRow {
                 symbol: "hew_rc_downgrade",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcDrop => RuntimeOpRow {
                 symbol: "hew_rc_drop",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcGet => RuntimeOpRow {
                 symbol: "hew_rc_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcIsUnique => RuntimeOpRow {
                 symbol: "hew_rc_is_unique",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcNew => RuntimeOpRow {
                 symbol: "hew_rc_new",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcSet => RuntimeOpRow {
                 symbol: "hew_rc_set",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcStrongCount => RuntimeOpRow {
                 symbol: "hew_rc_strong_count",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RcWeakCount => RuntimeOpRow {
                 symbol: "hew_rc_weak_count",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::WeakCloneRc => RuntimeOpRow {
                 symbol: "hew_weak_clone_rc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::WeakDropRc => RuntimeOpRow {
                 symbol: "hew_weak_drop_rc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::WeakUpgradeRc => RuntimeOpRow {
                 symbol: "hew_weak_upgrade_rc",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RecvHalfRecv => RuntimeOpRow {
                 symbol: "hew_recv_half_recv",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RecvHalfTryRecv => RuntimeOpRow {
                 symbol: "hew_recv_half_try_recv",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RegexCapture => RuntimeOpRow {
                 symbol: "hew_regex_capture",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RegexCompile => RuntimeOpRow {
                 symbol: "hew_regex_compile",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RegexFreeCapture => RuntimeOpRow {
                 symbol: "hew_regex_free_capture",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::RegexHandle => RuntimeOpRow {
                 symbol: "hew_regex_handle",
@@ -3886,6 +4055,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::RegexMatch => RuntimeOpRow {
                 symbol: "hew_regex_match",
@@ -3905,60 +4075,70 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::RemotePidSend => RuntimeOpRow {
                 symbol: "hew_remote_pid_send",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ReplyChannelCancel => RuntimeOpRow {
                 symbol: "hew_reply_channel_cancel",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ReplyChannelFree => RuntimeOpRow {
                 symbol: "hew_reply_channel_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ReplyChannelNew => RuntimeOpRow {
                 symbol: "hew_reply_channel_new",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ReplyPayloadFree => RuntimeOpRow {
                 symbol: "hew_reply_payload_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::ReplyWait => RuntimeOpRow {
                 symbol: "hew_reply_wait",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SelectFirst => RuntimeOpRow {
                 symbol: "hew_select_first",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SendHalfSend => RuntimeOpRow {
                 symbol: "hew_send_half_send",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SendHalfTrySend => RuntimeOpRow {
                 symbol: "hew_send_half_try_send",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SinkClose => RuntimeOpRow {
                 symbol: "hew_sink_close",
@@ -3972,36 +4152,42 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::SinkPeerClosed => RuntimeOpRow {
                 symbol: "hew_sink_peer_closed",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SinkWrite(StreamElementKind::Bytes) => RuntimeOpRow {
                 symbol: "hew_sink_write_bytes",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SinkWrite(StreamElementKind::String) => RuntimeOpRow {
                 symbol: "hew_sink_write_string",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SinkTryWrite(StreamElementKind::Bytes) => RuntimeOpRow {
                 symbol: "hew_sink_try_write_bytes",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SinkTryWrite(StreamElementKind::String) => RuntimeOpRow {
                 symbol: "hew_sink_try_write_string",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StreamClose => RuntimeOpRow {
                 symbol: "hew_stream_close",
@@ -4015,24 +4201,28 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StreamNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_next_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StreamSendLayout => RuntimeOpRow {
                 symbol: "hew_stream_send_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StreamTryNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_try_next_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StringCharAt => RuntimeOpRow {
                 symbol: "hew_string_char_at",
@@ -4052,18 +4242,21 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
             },
             Self::StringCharAtUtf8 => RuntimeOpRow {
                 symbol: "hew_string_char_at_utf8",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StringCharCount => RuntimeOpRow {
                 symbol: "hew_string_char_count",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StringByteLen => RuntimeOpRow {
                 symbol: "hew_string_byte_length",
@@ -4077,6 +4270,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringConcat => RuntimeOpRow {
                 symbol: "hew_string_concat",
@@ -4096,6 +4290,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringEquals => RuntimeOpRow {
                 symbol: "hew_string_equals",
@@ -4115,6 +4310,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringCompare => RuntimeOpRow {
                 symbol: "hew_string_compare",
@@ -4134,6 +4330,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringStartsWith => RuntimeOpRow {
                 symbol: "hew_string_starts_with",
@@ -4153,6 +4350,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringEndsWith => RuntimeOpRow {
                 symbol: "hew_string_ends_with",
@@ -4172,6 +4370,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringContains => RuntimeOpRow {
                 symbol: "hew_string_contains",
@@ -4191,6 +4390,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringIsEmpty => RuntimeOpRow {
                 symbol: "hew_string_is_empty",
@@ -4204,6 +4404,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringIsDigit => RuntimeOpRow {
                 symbol: "hew_string_is_digit",
@@ -4217,6 +4418,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringIsAlpha => RuntimeOpRow {
                 symbol: "hew_string_is_alpha",
@@ -4230,6 +4432,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringIsAlphanumeric => RuntimeOpRow {
                 symbol: "hew_string_is_alphanumeric",
@@ -4243,12 +4446,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StructuralFormat => RuntimeOpRow {
                 symbol: "hew_structural_format",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StringFind => RuntimeOpRow {
                 symbol: "hew_string_find",
@@ -4268,12 +4473,14 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
             },
             Self::StringGet => RuntimeOpRow {
                 symbol: "hew_string_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::StringIndex => RuntimeOpRow {
                 symbol: "hew_string_index",
@@ -4293,6 +4500,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringLen => RuntimeOpRow {
                 symbol: "hew_string_length",
@@ -4306,6 +4514,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringRepeat => RuntimeOpRow {
                 symbol: "hew_string_repeat",
@@ -4325,6 +4534,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringReplace => RuntimeOpRow {
                 symbol: "hew_string_replace",
@@ -4348,6 +4558,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringClone => RuntimeOpRow {
                 symbol: "hew_string_clone",
@@ -4361,6 +4572,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringSplit => RuntimeOpRow {
                 symbol: "hew_string_split",
@@ -4380,6 +4592,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringLines => RuntimeOpRow {
                 symbol: "hew_string_lines",
@@ -4393,6 +4606,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringChars => RuntimeOpRow {
                 symbol: "hew_string_chars",
@@ -4406,6 +4620,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringSliceCodepoints => RuntimeOpRow {
                 symbol: "hew_string_slice_codepoints",
@@ -4429,6 +4644,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringSliceCodepointsFrom => RuntimeOpRow {
                 symbol: "hew_string_slice_codepoints_from",
@@ -4448,6 +4664,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringSlice => RuntimeOpRow {
                 symbol: "hew_string_slice",
@@ -4471,6 +4688,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringToLowercase => RuntimeOpRow {
                 symbol: "hew_string_to_lowercase",
@@ -4484,6 +4702,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringToBytes => RuntimeOpRow {
                 symbol: "hew_string_to_bytes",
@@ -4497,6 +4716,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringToUppercase => RuntimeOpRow {
                 symbol: "hew_string_to_uppercase",
@@ -4510,6 +4730,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StringTrim => RuntimeOpRow {
                 symbol: "hew_string_trim",
@@ -4523,6 +4744,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::U8ToString => RuntimeOpRow {
                 symbol: "hew_u8_to_string",
@@ -4536,6 +4758,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::I32ToString => RuntimeOpRow {
                 symbol: "hew_int_to_string",
@@ -4549,6 +4772,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::I64ToString => RuntimeOpRow {
                 symbol: "hew_i64_to_string",
@@ -4562,6 +4786,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::U32ToString => RuntimeOpRow {
                 symbol: "hew_uint_to_string",
@@ -4575,6 +4800,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::U64ToString => RuntimeOpRow {
                 symbol: "hew_u64_to_string",
@@ -4588,6 +4814,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::F64ToString => RuntimeOpRow {
                 symbol: "hew_float_to_string",
@@ -4601,6 +4828,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::CharToString => RuntimeOpRow {
                 symbol: "hew_char_to_string",
@@ -4614,6 +4842,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::I32,
@@ -4630,6 +4859,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::I32,
@@ -4646,6 +4876,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::I64,
@@ -4662,6 +4893,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::I64,
@@ -4678,6 +4910,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U8,
@@ -4694,6 +4927,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U8,
@@ -4710,6 +4944,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U32,
@@ -4726,6 +4961,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U32,
@@ -4742,6 +4978,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U64,
@@ -4758,6 +4995,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::U64,
@@ -4774,6 +5012,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::F64,
@@ -4790,6 +5029,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::F64,
@@ -4806,6 +5046,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::Bool,
@@ -4822,6 +5063,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::Bool,
@@ -4838,6 +5080,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::Str,
@@ -4854,6 +5097,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::Print {
                 kind: PrintKind::Str,
@@ -4870,6 +5114,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::ProcessExit => RuntimeOpRow {
                 symbol: "hew_exit",
@@ -4883,6 +5128,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::StderrWrite => RuntimeOpRow {
                 symbol: "hew_io_write_err",
@@ -4896,6 +5142,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::BoolToString => RuntimeOpRow {
                 symbol: "hew_bool_to_string",
@@ -4909,192 +5156,224 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
             },
             Self::SupervisorDirectId => RuntimeOpRow {
                 symbol: "hew_supervisor_direct_id",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorChildGet => RuntimeOpRow {
                 symbol: "hew_supervisor_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::LocalPidSupervisorChildGet => RuntimeOpRow {
                 symbol: "hew_local_pid_supervisor_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorNestedGet => RuntimeOpRow {
                 symbol: "hew_supervisor_nested_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorPoolChildGet => RuntimeOpRow {
                 symbol: "hew_supervisor_pool_child_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::LocalPidSupervisorPoolChildRefGet => RuntimeOpRow {
                 symbol: "hew_local_pid_supervisor_pool_child_ref_get",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorPoolLen => RuntimeOpRow {
                 symbol: "hew_supervisor_pool_len",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorStop => RuntimeOpRow {
                 symbol: "hew_supervisor_stop",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::SupervisorRestartAwaitBlocking => RuntimeOpRow {
                 symbol: "hew_supervisor_restart_await_blocking",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TcpAttachLocal => RuntimeOpRow {
                 symbol: "hew_tcp_attach_local",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TlsAttachLocal => RuntimeOpRow {
                 symbol: "hew_tls_attach_local",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::WebSocketAttachLocal => RuntimeOpRow {
                 symbol: "hew_ws_attach_local",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskAwaitBlocking => RuntimeOpRow {
                 symbol: "hew_task_await_blocking",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskCompleteThreaded => RuntimeOpRow {
                 symbol: "hew_task_complete_threaded",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskCompletionObserve => RuntimeOpRow {
                 symbol: "hew_task_completion_observe",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskCompletionUnobserve => RuntimeOpRow {
                 symbol: "hew_task_completion_unobserve",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskFree => RuntimeOpRow {
                 symbol: "hew_task_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::GeneratorFree => RuntimeOpRow {
                 symbol: "hew_checked_generator_free",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskGetEnv => RuntimeOpRow {
                 symbol: "hew_task_get_env",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskGetError => RuntimeOpRow {
                 symbol: "hew_task_get_error",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskGetResult => RuntimeOpRow {
                 symbol: "hew_task_get_result",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskNew => RuntimeOpRow {
                 symbol: "hew_task_new",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeCancelAfterNs => RuntimeOpRow {
                 symbol: "hew_task_scope_cancel_after_ns",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeDestroy => RuntimeOpRow {
                 symbol: "hew_task_scope_destroy",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeJoinAll => RuntimeOpRow {
                 symbol: "hew_task_scope_join_all",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeNew => RuntimeOpRow {
                 symbol: "hew_task_scope_new",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeSetCurrent => RuntimeOpRow {
                 symbol: "hew_task_scope_set_current",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskScopeSpawn => RuntimeOpRow {
                 symbol: "hew_task_scope_spawn",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskSetEnv => RuntimeOpRow {
                 symbol: "hew_task_set_env",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskSetResult => RuntimeOpRow {
                 symbol: "hew_task_set_result",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::TaskSpawnThread => RuntimeOpRow {
                 symbol: "hew_task_spawn_thread",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::Vector(VecValueOp::New) => RuntimeOpRow {
                 symbol: "vec.value.new",
@@ -5105,6 +5384,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Len) => RuntimeOpRow {
                 symbol: "vec.value.len",
@@ -5118,6 +5398,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Contains) => RuntimeOpRow {
                 symbol: "vec.value.contains",
@@ -5137,6 +5418,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Index) => RuntimeOpRow {
                 symbol: "vec.value.index",
@@ -5156,6 +5438,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Get) => RuntimeOpRow {
                 symbol: "vec.value.get",
@@ -5178,6 +5461,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Push) => RuntimeOpRow {
                 symbol: "vec.value.push",
@@ -5197,6 +5481,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Set) => RuntimeOpRow {
                 symbol: "vec.value.set",
@@ -5220,6 +5505,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Pop) => RuntimeOpRow {
                 symbol: "vec.value.pop",
@@ -5236,6 +5522,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Remove) => RuntimeOpRow {
                 symbol: "vec.value.remove",
@@ -5258,6 +5545,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Clear) => RuntimeOpRow {
                 symbol: "vec.value.clear",
@@ -5271,6 +5559,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::IndexBorrow) => RuntimeOpRow {
                 symbol: "vec.value.index_borrow",
@@ -5290,6 +5579,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::GetBorrow) => RuntimeOpRow {
                 symbol: "vec.value.get_borrow",
@@ -5309,6 +5599,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::TakeFirst) => RuntimeOpRow {
                 symbol: "vec.value.take_first",
@@ -5325,6 +5616,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::Slice) => RuntimeOpRow {
                 symbol: "vec.value.slice",
@@ -5348,6 +5640,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Vector(VecValueOp::SliceFrom) => RuntimeOpRow {
                 symbol: "vec.value.slice_from",
@@ -5367,6 +5660,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Array(ArrayValueOp::Len) => RuntimeOpRow {
                 symbol: "array.value.len",
@@ -5380,6 +5674,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Array(ArrayValueOp::Index) => RuntimeOpRow {
                 symbol: "array.value.index",
@@ -5399,6 +5694,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Array(ArrayValueOp::IndexBorrow) => RuntimeOpRow {
                 symbol: "array.value.index_borrow",
@@ -5418,6 +5714,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Array(ArrayValueOp::Set) => RuntimeOpRow {
                 symbol: "array.value.set",
@@ -5441,6 +5738,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
             },
             Self::Map(MapValueOp::New) => RuntimeOpRow {
                 symbol: "map.value.new",
@@ -5451,6 +5749,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Len) => RuntimeOpRow {
                 symbol: "map.value.len",
@@ -5464,6 +5763,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Index) => RuntimeOpRow {
                 symbol: "map.value.index",
@@ -5486,6 +5786,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Get) => RuntimeOpRow {
                 symbol: "map.value.get",
@@ -5508,6 +5809,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::GetBorrow) => RuntimeOpRow {
                 symbol: "map.value.get_borrow",
@@ -5527,6 +5829,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::ContainsKey) => RuntimeOpRow {
                 symbol: "map.value.contains_key",
@@ -5546,6 +5849,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Insert) => RuntimeOpRow {
                 symbol: "map.value.insert",
@@ -5569,6 +5873,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Remove) => RuntimeOpRow {
                 symbol: "map.value.remove",
@@ -5591,6 +5896,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Clear) => RuntimeOpRow {
                 symbol: "map.value.clear",
@@ -5604,6 +5910,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Keys) => RuntimeOpRow {
                 symbol: "map.value.keys",
@@ -5620,6 +5927,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Values) => RuntimeOpRow {
                 symbol: "map.value.values",
@@ -5636,6 +5944,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Map(MapValueOp::Entries) => RuntimeOpRow {
                 symbol: "map.value.entries",
@@ -5652,6 +5961,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Map,
             },
             Self::Set(SetValueOp::New) => RuntimeOpRow {
                 symbol: "set.value.new",
@@ -5662,6 +5972,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Len) => RuntimeOpRow {
                 symbol: "set.value.len",
@@ -5675,6 +5986,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Contains) => RuntimeOpRow {
                 symbol: "set.value.contains",
@@ -5694,6 +6006,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Insert) => RuntimeOpRow {
                 symbol: "set.value.insert",
@@ -5716,6 +6029,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Remove) => RuntimeOpRow {
                 symbol: "set.value.remove",
@@ -5738,6 +6052,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Clear) => RuntimeOpRow {
                 symbol: "set.value.clear",
@@ -5751,6 +6066,7 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::Set(SetValueOp::Elements) => RuntimeOpRow {
                 symbol: "set.value.elements",
@@ -5767,234 +6083,273 @@ impl RuntimeCallFamily {
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Set,
             },
             Self::VecAppend => RuntimeOpRow {
                 symbol: "hew_vec_append",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecClear => RuntimeOpRow {
                 symbol: "hew_vec_clear",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecClone => RuntimeOpRow {
                 symbol: "hew_vec_clone",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecCloneLayout => RuntimeOpRow {
                 symbol: "hew_vec_clone_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecCloneOwned => RuntimeOpRow {
                 symbol: "hew_vec_clone_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsLayout => RuntimeOpRow {
                 symbol: "hew_vec_contains_thunk",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecTakeAll => RuntimeOpRow {
                 symbol: "hew_vec_take_all",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsOwned => RuntimeOpRow {
                 symbol: "hew_vec_contains_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsScalar(VecContainsScalarElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_contains_f64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_contains_i32",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_contains_i64",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecContainsScalar(VecContainsScalarElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_contains_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Bool) => RuntimeOpRow {
                 symbol: "hew_vec_get_bool",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecBool,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::F32) => RuntimeOpRow {
                 symbol: "hew_vec_get_f32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_get_f64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::I8) => RuntimeOpRow {
                 symbol: "hew_vec_get_i8",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::I16) => RuntimeOpRow {
                 symbol: "hew_vec_get_i16",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_get_i32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecI32GetSet,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_get_i64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Clone) => RuntimeOpRow {
                 symbol: "hew_vec_get_clone",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Take) => RuntimeOpRow {
                 symbol: "hew_vec_take_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Layout) => RuntimeOpRow {
                 symbol: "hew_vec_get_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Owned) => RuntimeOpRow {
                 symbol: "hew_vec_get_owned",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Ptr) => RuntimeOpRow {
                 symbol: "hew_vec_get_ptr",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_get_str",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::U8) => RuntimeOpRow {
                 symbol: "hew_vec_get_u8",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecGet(VecGetElem::U16) => RuntimeOpRow {
                 symbol: "hew_vec_get_u16",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecIsEmpty => RuntimeOpRow {
                 symbol: "hew_vec_is_empty",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecJoinStr => RuntimeOpRow {
                 symbol: "hew_vec_join_str",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecLen => RuntimeOpRow {
                 symbol: "hew_vec_len",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecNew => RuntimeOpRow {
                 symbol: "Vec::new",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecConstructor,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPopBool => RuntimeOpRow {
                 symbol: "hew_vec_pop_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPopLayout => RuntimeOpRow {
                 symbol: "hew_vec_pop_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPopOwned => RuntimeOpRow {
                 symbol: "hew_vec_pop_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPushBool => RuntimeOpRow {
                 symbol: "hew_vec_push_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPushLayout => RuntimeOpRow {
                 symbol: "hew_vec_push_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPushOwned => RuntimeOpRow {
                 symbol: "hew_vec_push_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecPushOwnedMove => RuntimeOpRow {
                 symbol: "hew_vec_push_owned_move",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6004,6 +6359,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6013,6 +6369,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6022,6 +6379,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6031,6 +6389,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6040,6 +6399,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6049,6 +6409,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6058,6 +6419,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6067,6 +6429,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6076,6 +6439,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6085,6 +6449,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6094,6 +6459,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6103,6 +6469,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6112,6 +6479,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6121,6 +6489,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6130,6 +6499,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6139,6 +6509,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6148,6 +6519,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6157,6 +6529,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6166,6 +6539,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6175,6 +6549,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6184,6 +6559,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6193,6 +6569,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6202,6 +6579,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6211,6 +6589,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6220,6 +6599,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecI32GetSet,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6229,6 +6609,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6238,6 +6619,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6247,6 +6629,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6256,6 +6639,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6265,6 +6649,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6274,6 +6659,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6283,6 +6669,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6292,6 +6679,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6301,6 +6689,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6310,6 +6699,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6319,6 +6709,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6328,6 +6719,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6337,6 +6729,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6346,6 +6739,7 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6355,102 +6749,119 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecRemoveAtBool => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecRemoveAtLayout => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecRemoveAtOwned => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSetBool => RuntimeOpRow {
                 symbol: "hew_vec_set_bool",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSetLayout => RuntimeOpRow {
                 symbol: "hew_vec_set_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSetOwned => RuntimeOpRow {
                 symbol: "hew_vec_set_owned",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSetOwnedMove => RuntimeOpRow {
                 symbol: "hew_vec_set_owned_move",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::Bytesize) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_bytesize",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_f64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_i32",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_i64",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::Layout) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_layout",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::Owned) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_owned",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::Ptr) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_ptr",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VecSliceRange(VecSliceElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_str",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::VtableDispatchPanicOnOob => RuntimeOpRow {
                 symbol: "hew_vtable_dispatch_panic_on_oob",
                 contract: None,
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
             },
         }
     }
@@ -7412,6 +7823,30 @@ impl RuntimeCallFamily {
     }
 }
 
+/// How physical MIR realizes one runtime operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimePhysicalForm {
+    /// Some other physical construct realizes the operation - a suspend or
+    /// actor terminator, a drop descriptor, or a backend intercept - so it
+    /// never becomes a runtime action.
+    NotAnAction,
+    /// A runtime action carrying nothing beyond the call's own storage.
+    Direct,
+    /// A runtime action whose result is one tagged variant built in place.
+    VariantResult,
+    /// A runtime action returning a `(receiver, Option<element>)` pair.
+    PairWithOption,
+    /// `Result<string, Utf8Error>`, with the error aggregate and the variant
+    /// carrying its length.
+    Utf8Decode,
+    /// A `Result` over two variant glues.
+    NodeResult,
+    /// Vector glue, shared by the fixed-size array operations.
+    Vector,
+    Map,
+    Set,
+}
+
 /// How the backend reaches one runtime operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeStaging {
@@ -7440,6 +7875,7 @@ pub struct RuntimeOpRow {
     pub contract: Option<RuntimeSemanticContract>,
     pub staging: RuntimeStaging,
     pub abi_shape: RuntimeCallAbiShape,
+    pub physical: RuntimePhysicalForm,
 }
 
 /// ABI-routing shape for collection calls that require bespoke codegen.

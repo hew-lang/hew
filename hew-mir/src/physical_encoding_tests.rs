@@ -99,10 +99,10 @@ fn encoding_calls_reject_scalar_contract_drift_even_at_equal_widths() {
         else {
             panic!("runtime call")
         };
-        *action = PhysicalRuntimeAction::Encoding {
+        *action = PhysicalRuntimeAction::direct(RuntimeCallFamily::Encoding {
             format: EncodingFormat::Json,
             op: changed,
-        };
+        });
         assert!(
             verify_physical_module(&module).is_err(),
             "{original:?} changed to {changed:?}"
@@ -149,10 +149,10 @@ fn encoding_mutation_rejects_wrong_transfers_missing_receiver_result_and_failure
                 2 => *result = None,
                 3 => *failure = Some(normal.clone()),
                 4 => {
-                    *action = PhysicalRuntimeAction::Encoding {
+                    *action = PhysicalRuntimeAction::direct(RuntimeCallFamily::Encoding {
                         format: EncodingFormat::Yaml,
                         op,
-                    }
+                    })
                 }
                 _ => unreachable!(),
             }

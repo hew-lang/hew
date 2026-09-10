@@ -432,7 +432,7 @@ pub(super) fn verify_calls(
             }
             PhysicalTerminator::RuntimeCall { action, .. }
                 if action
-                    .semantic_family()
+                    .family
                     .semantic_contract()
                     .is_none_or(hew_types::RuntimeSemanticContract::propagates_fault) =>
             {
@@ -689,15 +689,12 @@ fn raise_origin(
                     ..
                 } => {
                     slot == 1
-                        && action
-                            .semantic_family()
-                            .semantic_contract()
-                            .is_some_and(|c| {
-                                !c.failures.is_empty()
-                                    && c.failures.iter().all(|f| {
-                                        hew_sir::runtime_failure_trap_kind(*f) == Some(kind)
-                                    })
-                            })
+                        && action.family.semantic_contract().is_some_and(|c| {
+                            !c.failures.is_empty()
+                                && c.failures
+                                    .iter()
+                                    .all(|f| hew_sir::runtime_failure_trap_kind(*f) == Some(kind))
+                        })
                 }
                 PhysicalTerminator::Goto(_) | PhysicalTerminator::Branch { .. } => {
                     block.ops.iter().all(pure) && raise_origin(block.id, kind, function, visiting)

@@ -339,14 +339,21 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .functions
                 .iter()
                 .flat_map(|function| &function.blocks)
-                .any(|block| matches!(
-                    block.terminator,
-                    PhysicalTerminator::NativeIo { .. }
-                        | PhysicalTerminator::RuntimeCall {
-                            action: hew_mir::physical::PhysicalRuntimeAction::NodeLifecycle { .. } | hew_mir::physical::PhysicalRuntimeAction::NodeShutdown,
-                            ..
-                        }
-                ))
+                .any(|block| {
+                    matches!(
+                        block.terminator,
+                        PhysicalTerminator::NativeIo { .. }
+                            | PhysicalTerminator::RuntimeCall {
+                                action: hew_mir::physical::PhysicalRuntimeAction {
+                                    family: hew_types::RuntimeCallFamily::NodeStart
+                                        | hew_types::RuntimeCallFamily::NodeConnect
+                                        | hew_types::RuntimeCallFamily::NodeShutdown,
+                                    ..
+                                },
+                                ..
+                            }
+                    )
+                })
     }
 
     pub(super) fn emit_process_runtime_start(

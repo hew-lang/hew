@@ -1,7 +1,7 @@
 //! Selected value callbacks execute the exact physical capability selections. They borrow
 //! value slots and publish a result only after every selected operation succeeds.
 
-use hew_mir::physical::{PhysicalValueCapability, PhysicalValueMethod};
+use hew_mir::physical::{PhysicalRuntimeCarrier, PhysicalValueCapability, PhysicalValueMethod};
 use hew_types::ValueCapability;
 use inkwell::types::IntType;
 
@@ -42,8 +42,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 let PhysicalTerminator::RuntimeCall { action, .. } = &block.terminator else {
                     continue;
                 };
-                let (name, recipe) = match action {
-                    PhysicalRuntimeAction::Map {
+                let (name, recipe) = match &action.carrier {
+                    PhysicalRuntimeCarrier::Map {
                         operation: PhysicalMapOp::New,
                         glue,
                     } => {
@@ -57,7 +57,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             })?;
                         (map_key_descriptor_symbol(*glue), &recipe.key)
                     }
-                    PhysicalRuntimeAction::Set {
+                    PhysicalRuntimeCarrier::Set {
                         operation: PhysicalSetOp::New,
                         glue,
                     } => {

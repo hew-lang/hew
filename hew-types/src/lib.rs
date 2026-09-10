@@ -96,8 +96,9 @@ pub use runtime_call::{
     vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,
     MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallDescriptor,
     RuntimeCallFamily, RuntimeDropDescriptor, RuntimeInstantiatedContract, RuntimeLogicalFailure,
-    RuntimeOpRow, RuntimeResultEffect, RuntimeSemanticContract, RuntimeStaging, RuntimeValueKind,
-    RuntimeVariantResultKind, StreamElementKind, VecGetElem, VecSliceElem, VecValueOp,
+    RuntimeOpRow, RuntimePhysicalForm, RuntimeResultEffect, RuntimeSemanticContract,
+    RuntimeStaging, RuntimeValueKind, RuntimeVariantResultKind, StreamElementKind, VecGetElem,
+    VecSliceElem, VecValueOp,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{

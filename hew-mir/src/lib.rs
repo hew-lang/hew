@@ -6,9 +6,9 @@ pub use physical::{
     lower_physical_module, ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier,
     PhysicalBlock, PhysicalCallable, PhysicalCheckedFailure, PhysicalConst, PhysicalEdge,
     PhysicalError, PhysicalFunction, PhysicalLayout, PhysicalModule, PhysicalOp, PhysicalParam,
-    PhysicalRepr, PhysicalRuntimeAction, PhysicalStorage, PhysicalTarget, PhysicalTerminator,
-    PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp,
-    ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
+    PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier, PhysicalStorage, PhysicalTarget,
+    PhysicalTerminator, PhysicalVectorDescriptor, PhysicalVectorGlue, PhysicalVectorId,
+    PhysicalVectorOp, ReturnTransfer, StorageId, StorageOrigin, VerifiedPhysicalModule,
 };
 
 /// Pointer width selected by a compilation host.

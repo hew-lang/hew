@@ -66,8 +66,9 @@ use hew_mir::physical::{
 use hew_mir::{
     ArgumentTransfer, CloneAction, DestroyAction, ParamCarrier, PhysicalBlock, PhysicalCallable,
     PhysicalCheckedFailure, PhysicalConst, PhysicalEdge, PhysicalFunction, PhysicalLayout,
-    PhysicalModule, PhysicalOp, PhysicalRepr, PhysicalRuntimeAction, PhysicalStorage,
-    PhysicalTarget, PhysicalTerminator, ReturnTransfer, StorageId, VerifiedPhysicalModule,
+    PhysicalModule, PhysicalOp, PhysicalRepr, PhysicalRuntimeAction, PhysicalRuntimeCarrier,
+    PhysicalStorage, PhysicalTarget, PhysicalTerminator, ReturnTransfer, StorageId,
+    VerifiedPhysicalModule,
 };
 use hew_parser::ast::{BinaryOp, UnaryOp};
 use hew_runtime::internal::types::{
@@ -77,7 +78,9 @@ use hew_runtime::internal::types::{
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::{collection_type_arguments, MathIntrinsic};
-use hew_types::{EntryExitAction, EntryIntegerType, ResolvedTy, ValueCapability};
+use hew_types::{
+    EntryExitAction, EntryIntegerType, ResolvedTy, RuntimeCallFamily, ValueCapability,
+};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -1916,6 +1919,17 @@ fn build_module_with_host<'ctx>(
 /// The module-private array of compiled `*HewRegex` handles, one slot per
 /// regex literal, filled in the process entry prologue.
 const REGEX_HANDLES: &str = "hew_regex_handles";
+
+/// The single tagged-variant carrier a runtime operation's result needs.
+fn variant_carrier(action: PhysicalRuntimeAction) -> CodegenResult<PhysicalVariantId> {
+    match action.carrier {
+        PhysicalRuntimeCarrier::Variant(id) => Ok(id),
+        _ => Err(CodegenError::FailClosed(format!(
+            "runtime operation `{:?}` has no optional result carrier",
+            action.family
+        ))),
+    }
+}
 
 fn regex_slot_count(module: &PhysicalModule) -> CodegenResult<Option<u32>> {
     if module.regex_patterns.is_empty() {
@@ -4108,125 +4122,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             })
         };
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        match action {
-            PhysicalRuntimeAction::MathIntrinsic(kind) => {
-                return self.emit_math_intrinsic(
-                    kind,
-                    transfers,
-                    required_result()?,
-                    normal,
-                    failure,
-                );
-            }
-            PhysicalRuntimeAction::Tcp(op) => {
-                self.emit_tcp_operation(op, transfers, result)?;
-            }
-            PhysicalRuntimeAction::FileRead(op) => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::FileRead(op),
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::StreamClose => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::StreamClose,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::SinkClose => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::SinkClose,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelSenderClose => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelSenderClose,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelReceiverClose => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelReceiverClose,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelPairNew => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairNew,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelPairFree => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairFree,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ActorCallFree => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ActorCallFree,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ActorRequestRelease => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ActorRequestRelease,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ActorRequestTake => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ActorRequestTake,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelPairIsValid => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairIsValid,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelSenderClone => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelSenderClone,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelPairSender => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairSender,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::ChannelPairReceiver => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairReceiver,
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::Encoding { format, op } => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::Encoding { format, op },
-                    transfers,
-                    result,
-                )?;
-            }
-            PhysicalRuntimeAction::Map { operation, glue } => {
+        // A collection operation is realized entirely by its physical glue.
+        match action.carrier {
+            PhysicalRuntimeCarrier::Map { operation, glue } => {
                 return self.emit_map_call(
                     (operation, glue),
                     transfers,
@@ -4235,7 +4133,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
-            PhysicalRuntimeAction::Set { operation, glue } => {
+            PhysicalRuntimeCarrier::Set { operation, glue } => {
                 return self.emit_set_call(
                     (operation, glue),
                     transfers,
@@ -4244,14 +4142,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
-            PhysicalRuntimeAction::Array { operation, glue } => {
-                use hew_types::runtime_call::ArrayValueOp;
-                let operation = match operation {
-                    ArrayValueOp::Len => PhysicalVectorOp::Len,
-                    ArrayValueOp::Index => PhysicalVectorOp::Index,
-                    ArrayValueOp::IndexBorrow => PhysicalVectorOp::IndexBorrow,
-                    ArrayValueOp::Set => PhysicalVectorOp::Set,
-                };
+            PhysicalRuntimeCarrier::Vector { operation, glue } => {
                 return self.emit_vector_call(
                     (operation, glue),
                     transfers,
@@ -4260,7 +4151,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
-            PhysicalRuntimeAction::SupervisorPool { operation, option } => {
+            _ => {}
+        }
+        match action.family {
+            RuntimeCallFamily::SupervisorPool(operation) => {
+                let option = match action.carrier {
+                    PhysicalRuntimeCarrier::Variant(id) => Some(id),
+                    _ => None,
+                };
                 return self.emit_supervisor_pool_member(
                     operation,
                     option,
@@ -4270,16 +4168,124 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
-            PhysicalRuntimeAction::Vector { operation, glue } => {
-                return self.emit_vector_call(
-                    (operation, glue),
+            RuntimeCallFamily::MathIntrinsic(kind) => {
+                return self.emit_math_intrinsic(
+                    kind,
                     transfers,
                     required_result()?,
                     normal,
                     failure,
                 );
             }
-            PhysicalRuntimeAction::NodeShutdown => {
+            RuntimeCallFamily::Tcp(op) => {
+                self.emit_tcp_operation(op, transfers, result)?;
+            }
+            RuntimeCallFamily::FileRead(op) => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::FileRead(op),
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::StreamClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::StreamClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::SinkClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::SinkClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelSenderClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelSenderClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelReceiverClose => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelReceiverClose,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelPairNew => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairNew,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelPairFree => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairFree,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ActorCallFree => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorCallFree,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ActorRequestRelease => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorRequestRelease,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ActorRequestTake => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ActorRequestTake,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelPairIsValid => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairIsValid,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelSenderClone => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelSenderClone,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelPairSender => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairSender,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::ChannelPairReceiver => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::ChannelPairReceiver,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::Encoding { format, op } => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::Encoding { format, op },
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::NodeShutdown => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_node_api_shutdown",
@@ -4287,7 +4293,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let _ = self.runtime_call_value(function, &[], "node.shutdown")?;
             }
-            PhysicalRuntimeAction::NodeIdentityKey => {
+            RuntimeCallFamily::NodeIdentityKey => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_node_api_identity_key",
@@ -4298,7 +4304,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.runtime_call_value(function, &[], "node.identity.key")?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::NodeRegister => {
+            RuntimeCallFamily::NodeRegister => {
                 let status_ty = self.ctx.i32_type();
                 let ptr = self.ctx.ptr_type(AddressSpace::default());
                 let pid_accessor = get_or_declare_external(
@@ -4340,10 +4346,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, status)?;
             }
-            PhysicalRuntimeAction::NodeLookup {
-                result: result_glue,
-                error: error_glue,
-            } => {
+            RuntimeCallFamily::NodeLookup => {
+                let PhysicalRuntimeCarrier::NodeResult {
+                    result: result_glue,
+                    error: error_glue,
+                } = action.carrier
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "Node::lookup has no Result carrier".into(),
+                    ));
+                };
                 let status_ty = self.ctx.i32_type();
                 let lookup = get_or_declare_external(
                     self.llvm,
@@ -4436,11 +4448,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish node lookup failure result")?;
                 self.builder.position_at_end(complete);
             }
-            PhysicalRuntimeAction::NodeLifecycle {
-                family,
-                result: result_glue,
-                error: error_glue,
-            } => {
+            family @ (RuntimeCallFamily::NodeStart | RuntimeCallFamily::NodeConnect) => {
+                let PhysicalRuntimeCarrier::NodeResult {
+                    result: result_glue,
+                    error: error_glue,
+                } = action.carrier
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "node lifecycle operation has no Result carrier".into(),
+                    ));
+                };
                 let status_ty = self.ctx.i32_type();
                 let function = match family {
                     hew_types::RuntimeCallFamily::NodeStart => get_or_declare_external(
@@ -4527,11 +4544,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish node failure result")?;
                 self.builder.position_at_end(complete);
             }
-            PhysicalRuntimeAction::BytesDecodeUtf8 {
-                result: result_glue,
-                error,
-                error_len,
-            } => {
+            RuntimeCallFamily::BytesDecodeUtf8 => {
+                let PhysicalRuntimeCarrier::Utf8Decode {
+                    result: result_glue,
+                    error,
+                    error_len,
+                } = action.carrier
+                else {
+                    return Err(CodegenError::FailClosed(
+                        "UTF-8 decode has no result carrier".into(),
+                    ));
+                };
                 self.emit_utf8_decode(
                     source(0)?,
                     required_result()?,
@@ -4540,7 +4563,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     error_len,
                 )?;
             }
-            PhysicalRuntimeAction::BytesDecodeUtf8Lossy => {
+            RuntimeCallFamily::BytesDecodeUtf8Lossy => {
                 let function =
                     external_unary_ptr(self.ctx, self.llvm, "hew_bytes_decode_utf8_lossy")?;
                 let value = self.runtime_call_value(
@@ -4550,7 +4573,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringConcat => {
+            RuntimeCallFamily::StringConcat => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_concat",
@@ -4566,9 +4589,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringFind { result: option }
-            | PhysicalRuntimeAction::StringCharAt { result: option } => {
-                let character = matches!(action, PhysicalRuntimeAction::StringCharAt { .. });
+            RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAt => {
+                let option = variant_carrier(action)?;
+                let character = action.family == RuntimeCallFamily::StringCharAt;
                 let (symbol, function_type) = if character {
                     (
                         "hew_string_char_at",
@@ -4623,10 +4646,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("finish string find miss")?;
                 self.builder.position_at_end(complete);
             }
-            PhysicalRuntimeAction::BytesPop { option, .. } => {
+            RuntimeCallFamily::BytesPop => {
+                let PhysicalRuntimeCarrier::PairWithOption { option, .. } = action.carrier else {
+                    return Err(CodegenError::FailClosed(
+                        "bytes pop has no pair carrier".into(),
+                    ));
+                };
                 return self.emit_bytes_pop(source(0)?, required_result()?, option, normal);
             }
-            PhysicalRuntimeAction::BytesGet { result: option } => {
+            RuntimeCallFamily::BytesGet => {
+                let option = variant_carrier(action)?;
                 return self.emit_bytes_get(
                     source(0)?,
                     source(1)?,
@@ -4635,7 +4664,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     normal,
                 );
             }
-            PhysicalRuntimeAction::StringCompare => {
+            RuntimeCallFamily::StringCompare => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_compare",
@@ -4650,7 +4679,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.runtime_call_value(function, &arguments, "string.compare")?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::RegexHandle => {
+            RuntimeCallFamily::RegexHandle => {
                 let handle = self.load_regex_handle(source(0)?)?;
                 let function = external_unary_ptr(self.ctx, self.llvm, "hew_regex_clone")?;
                 // The module slot outlives every pattern value built from it,
@@ -4658,7 +4687,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let owned = self.runtime_call_value(function, &[handle.into()], "regex.pattern")?;
                 self.store(required_result()?, owned)?;
             }
-            PhysicalRuntimeAction::RegexMatch => {
+            RuntimeCallFamily::RegexMatch => {
                 let handle = self.load_regex_handle(source(0)?)?;
                 let text = self.load(source(1)?, "regex.text")?;
                 let function = get_or_declare_external(
@@ -4689,37 +4718,35 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("widen the regex match result")?;
                 self.store(dest, truth.into())?;
             }
-            PhysicalRuntimeAction::StringEquals
-            | PhysicalRuntimeAction::StringStartsWith
-            | PhysicalRuntimeAction::StringEndsWith
-            | PhysicalRuntimeAction::StringContains
-            | PhysicalRuntimeAction::StringIsEmpty
-            | PhysicalRuntimeAction::StringIsDigit
-            | PhysicalRuntimeAction::StringIsAlpha
-            | PhysicalRuntimeAction::StringIsAlphanumeric => {
-                let (symbol, return_type) = match action {
-                    PhysicalRuntimeAction::StringEquals => {
-                        ("hew_string_equals", self.ctx.i32_type())
-                    }
-                    PhysicalRuntimeAction::StringStartsWith => {
+            RuntimeCallFamily::StringEquals
+            | RuntimeCallFamily::StringStartsWith
+            | RuntimeCallFamily::StringEndsWith
+            | RuntimeCallFamily::StringContains
+            | RuntimeCallFamily::StringIsEmpty
+            | RuntimeCallFamily::StringIsDigit
+            | RuntimeCallFamily::StringIsAlpha
+            | RuntimeCallFamily::StringIsAlphanumeric => {
+                let (symbol, return_type) = match action.family {
+                    RuntimeCallFamily::StringEquals => ("hew_string_equals", self.ctx.i32_type()),
+                    RuntimeCallFamily::StringStartsWith => {
                         ("hew_string_starts_with", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringEndsWith => {
+                    RuntimeCallFamily::StringEndsWith => {
                         ("hew_string_ends_with", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringContains => {
+                    RuntimeCallFamily::StringContains => {
                         ("hew_string_contains", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringIsEmpty => {
+                    RuntimeCallFamily::StringIsEmpty => {
                         ("hew_string_is_empty", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringIsDigit => {
+                    RuntimeCallFamily::StringIsDigit => {
                         ("hew_string_is_digit", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringIsAlpha => {
+                    RuntimeCallFamily::StringIsAlpha => {
                         ("hew_string_is_alpha", self.ctx.bool_type())
                     }
-                    PhysicalRuntimeAction::StringIsAlphanumeric => {
+                    RuntimeCallFamily::StringIsAlphanumeric => {
                         ("hew_string_is_alphanumeric", self.ctx.bool_type())
                     }
                     _ => unreachable!("matched string predicate"),
@@ -4753,7 +4780,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("widen string predicate result")?;
                 self.store(dest, truth.into())?;
             }
-            PhysicalRuntimeAction::TimeScalar(family) => {
+            family @ (RuntimeCallFamily::InstantNow
+            | RuntimeCallFamily::InstantElapsed
+            | RuntimeCallFamily::InstantDurationSince
+            | RuntimeCallFamily::DurationNanos
+            | RuntimeCallFamily::DurationMicros
+            | RuntimeCallFamily::DurationMillis
+            | RuntimeCallFamily::DurationSecs
+            | RuntimeCallFamily::DurationMins
+            | RuntimeCallFamily::DurationHours
+            | RuntimeCallFamily::DurationAbs
+            | RuntimeCallFamily::DurationIsZero) => {
                 // The semantic contract is the one authority for how many
                 // arguments cross and whether the result is a predicate; the
                 // C ABI carries every operand as `i64` and every predicate as
@@ -4808,7 +4845,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     self.store(dest, value.into())?;
                 }
             }
-            PhysicalRuntimeAction::StringToBytesOwned => {
+            RuntimeCallFamily::StringToBytes => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_to_bytes_owned",
@@ -4825,7 +4862,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "string.to.bytes",
                 )?;
             }
-            PhysicalRuntimeAction::StringRepeat => {
+            RuntimeCallFamily::StringRepeat => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_repeat",
@@ -4841,7 +4878,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringSplit => {
+            RuntimeCallFamily::StringSplit => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_split",
@@ -4857,7 +4894,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringLines => {
+            RuntimeCallFamily::StringLines => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_lines",
@@ -4870,7 +4907,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringChars => {
+            RuntimeCallFamily::StringChars => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_chars",
@@ -4883,7 +4920,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringReplace => {
+            RuntimeCallFamily::StringReplace => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_replace",
@@ -4900,7 +4937,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringSlice => {
+            RuntimeCallFamily::StringSlice => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_string_slice",
@@ -4924,7 +4961,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringIndex => {
+            RuntimeCallFamily::StringIndex => {
                 return self.emit_string_index(
                     source(0)?,
                     source(1)?,
@@ -4937,7 +4974,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::StringSliceCodepoints => {
+            RuntimeCallFamily::StringSliceCodepoints => {
                 return self.emit_string_slice_codepoints(
                     source(0)?,
                     source(1)?,
@@ -4951,7 +4988,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::StringSliceCodepointsFrom => {
+            RuntimeCallFamily::StringSliceCodepointsFrom => {
                 return self.emit_string_slice_codepoints_from(
                     source(0)?,
                     source(1)?,
@@ -4964,14 +5001,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::StringToUppercase
-            | PhysicalRuntimeAction::StringToLowercase
-            | PhysicalRuntimeAction::StringClone
-            | PhysicalRuntimeAction::StringTrim => {
-                let symbol = match action {
-                    PhysicalRuntimeAction::StringClone => "hew_string_clone",
-                    PhysicalRuntimeAction::StringTrim => "hew_string_trim",
-                    PhysicalRuntimeAction::StringToLowercase => "hew_string_to_lowercase",
+            RuntimeCallFamily::StringToUppercase
+            | RuntimeCallFamily::StringToLowercase
+            | RuntimeCallFamily::StringClone
+            | RuntimeCallFamily::StringTrim => {
+                let symbol = match action.family {
+                    RuntimeCallFamily::StringClone => "hew_string_clone",
+                    RuntimeCallFamily::StringTrim => "hew_string_trim",
+                    RuntimeCallFamily::StringToLowercase => "hew_string_to_lowercase",
                     _ => "hew_string_to_uppercase",
                 };
                 let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
@@ -4982,8 +5019,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::StringLen | PhysicalRuntimeAction::StringByteLen => {
-                let symbol = if action == PhysicalRuntimeAction::StringLen {
+            RuntimeCallFamily::StringLen | RuntimeCallFamily::StringByteLen => {
+                let symbol = if action.family == RuntimeCallFamily::StringLen {
                     "hew_string_length"
                 } else {
                     "hew_string_byte_length"
@@ -5000,14 +5037,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::I32ToString
-            | PhysicalRuntimeAction::U32ToString
-            | PhysicalRuntimeAction::CharToString => {
+            RuntimeCallFamily::I32ToString
+            | RuntimeCallFamily::U32ToString
+            | RuntimeCallFamily::CharToString => {
                 // `char` crosses the C ABI as the i32 the runtime expects,
                 // so the three share one 32-bit scalar shape.
-                let symbol = match action {
-                    PhysicalRuntimeAction::I32ToString => "hew_int_to_string",
-                    PhysicalRuntimeAction::U32ToString => "hew_uint_to_string",
+                let symbol = match action.family {
+                    RuntimeCallFamily::I32ToString => "hew_int_to_string",
+                    RuntimeCallFamily::U32ToString => "hew_uint_to_string",
                     _ => "hew_char_to_string",
                 };
                 let function = get_or_declare_external(
@@ -5022,7 +5059,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::U64ToString => {
+            RuntimeCallFamily::U64ToString => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_u64_to_string",
@@ -5035,7 +5072,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::F64ToString => {
+            RuntimeCallFamily::F64ToString => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_float_to_string",
@@ -5048,7 +5085,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::U8ToString => {
+            RuntimeCallFamily::U8ToString => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_u8_to_string",
@@ -5061,7 +5098,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::I64ToString => {
+            RuntimeCallFamily::I64ToString => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_i64_to_string",
@@ -5074,7 +5111,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::BoolToString => {
+            RuntimeCallFamily::BoolToString => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bool_to_string",
@@ -5087,7 +5124,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::ProcessExit => {
+            RuntimeCallFamily::ProcessExit => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_exit",
@@ -5101,7 +5138,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "process.exit",
                 )?;
             }
-            PhysicalRuntimeAction::StderrWrite => {
+            RuntimeCallFamily::StderrWrite => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_io_write_err",
@@ -5113,7 +5150,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "stderr.write",
                 )?;
             }
-            PhysicalRuntimeAction::BytesNew => {
+            RuntimeCallFamily::BytesNew => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_new",
@@ -5137,7 +5174,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .into_struct_value();
                 self.store(result, bytes.into())?;
             }
-            PhysicalRuntimeAction::Print { kind, newline } => {
+            RuntimeCallFamily::Print { kind, newline } => {
                 use hew_types::runtime_call::PrintKind;
                 let value = self.load(source(0)?, "print.value")?;
                 // Tags and bit packing implement hew-runtime/src/print.rs's
@@ -5206,7 +5243,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "print.value",
                 )?;
             }
-            PhysicalRuntimeAction::BytesLen => {
+            RuntimeCallFamily::BytesLen => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_len",
@@ -5219,7 +5256,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::BytesIsEmpty => {
+            RuntimeCallFamily::BytesIsEmpty => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_is_empty",
@@ -5241,7 +5278,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("widen bytes is_empty result")?;
                 self.store(result, value.into())?;
             }
-            PhysicalRuntimeAction::BytesClear => {
+            RuntimeCallFamily::BytesClear => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_clear",
@@ -5255,7 +5292,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.load(source(0)?, "bytes.clear.result")?;
                 self.store(required_result()?, value)?;
             }
-            PhysicalRuntimeAction::BytesContains => {
+            RuntimeCallFamily::BytesContains => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_contains",
@@ -5282,7 +5319,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .llvm_ctx("widen bytes contains result")?;
                 self.store(result, value.into())?;
             }
-            PhysicalRuntimeAction::BytesSet => {
+            RuntimeCallFamily::BytesSet => {
                 return self.emit_bytes_set(
                     source(0)?,
                     source(1)?,
@@ -5296,7 +5333,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::BytesIndex => {
+            RuntimeCallFamily::BytesIndex => {
                 return self.emit_bytes_index(
                     source(0)?,
                     source(1)?,
@@ -5309,7 +5346,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::BytesSlice => {
+            RuntimeCallFamily::BytesSlice => {
                 return self.emit_bytes_slice(
                     source(0)?,
                     source(1)?,
@@ -5323,7 +5360,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::BytesSliceFrom => {
+            RuntimeCallFamily::BytesSliceFrom => {
                 return self.emit_bytes_slice(
                     source(0)?,
                     source(1)?,
@@ -5337,7 +5374,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     })?,
                 );
             }
-            PhysicalRuntimeAction::BytesPushOwned => {
+            RuntimeCallFamily::BytesPush => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_push_owned",
@@ -5355,7 +5392,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.push.owned",
                 )?;
             }
-            PhysicalRuntimeAction::BytesAppendOwned => {
+            RuntimeCallFamily::BytesAppend => {
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_bytes_append_owned",
@@ -5372,6 +5409,12 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "bytes.append.owned",
                 )?;
+            }
+            _ => {
+                return Err(CodegenError::FailClosed(format!(
+                    "runtime operation `{:?}` has no backend emission",
+                    action.family
+                )))
             }
         }
         if failure.is_some() {

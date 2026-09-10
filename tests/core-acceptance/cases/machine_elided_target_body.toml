@@ -1,7 +1,7 @@
 [[case]]
-id = "machine_dotted_struct_variant_body"
+id = "machine_elided_target_body"
 intent = "The fixture runs to completion and prints exactly its recorded output."
-source = "../vertical-slice/accept/machine_dotted_struct_variant_body.hew"
+source = "../vertical-slice/accept/machine_elided_target_body.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 

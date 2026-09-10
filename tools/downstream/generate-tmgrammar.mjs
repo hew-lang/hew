@@ -54,6 +54,17 @@ const grammar = JSON.parse(readFileSync(templatePath, 'utf8'));
 const kw = syntaxData.keywords;
 const types = syntaxData.types;
 
+// kw.supervisor_config mixes the structural field keywords (`child`,
+// `restart`, `strategy`) with the restart-strategy value constants
+// (`permanent`, `one_for_one`, ...). Split it here so both scopes stay
+// derived from syntax-data.json instead of a hand-typed list: a retired
+// word (e.g. `budget`) disappears on its own when it drops out of
+// supervisor_config, and a contextual identifier (e.g. `pool`, which was
+// never in supervisor_config) can't be hand-added to the wrong scope.
+const SUPERVISOR_STRUCTURAL_KEYWORDS = new Set(['child', 'restart', 'strategy']);
+const supervisorStrategyValues = kw.supervisor_config
+  .filter(k => !SUPERVISOR_STRUCTURAL_KEYWORDS.has(k));
+
 // -- Keyword group mapping -------------------------------------------------
 // Maps TextMate scope names to keyword arrays derived from syntax-data.json.
 
@@ -80,14 +91,11 @@ const keywordGroups = {
   ],
 
   'keyword.supervisor.hew': [
-    'supervisor', 'child', 'restart', 'budget', 'strategy',
+    'supervisor',
+    ...kw.supervisor_config.filter(k => SUPERVISOR_STRUCTURAL_KEYWORDS.has(k)),
   ],
 
-  'constant.language.strategy.hew': [
-    'permanent', 'transient', 'temporary',
-    'one_for_one', 'one_for_all', 'rest_for_one', 'simple_one_for_one',
-    'pool', 'brutal_kill',
-  ],
+  'constant.language.strategy.hew': [...supervisorStrategyValues],
 
   'keyword.wire.hew': [...kw.wire],
 

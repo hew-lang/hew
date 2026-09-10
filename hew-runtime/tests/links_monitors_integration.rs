@@ -1,7 +1,7 @@
 //! Integration tests for actor links and monitors.
 
 use hew_runtime::actor::{
-    hew_actor_get_error, hew_actor_set_crash_teardown_order_hook, HewActor,
+    hew_actor_get_error, hew_actor_set_crash_teardown_order_hook, hew_actor_trap, HewActor,
     HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE,
 };
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
@@ -399,6 +399,22 @@ fn a_crash_code_is_published_before_the_terminal_state_is_visible() {
     // SAFETY: target's wrapper is alive; hew_actor_get_error reads from it.
     let exit_reason = unsafe { hew_actor_get_error(target.as_ptr()) };
     assert_eq!(exit_reason, INJECTED_CRASH_REASON);
+
+    // Publishing ahead of the terminal CAS must not turn a trap on an
+    // already-terminal actor into a rewrite of its exit reason. A late trap is
+    // reachable in production: `monitor`'s failed-DOWN path traps the
+    // monitoring actor with its own code whenever a DOWN send finds a closed
+    // mailbox. The crashed actor keeps the reason it crashed with.
+    // SAFETY: target's wrapper is alive; a trap on a terminal actor is a no-op.
+    unsafe {
+        hew_actor_trap(target.as_ptr(), 42);
+    }
+    // SAFETY: target's wrapper is alive; hew_actor_get_error reads from it.
+    assert_eq!(
+        unsafe { hew_actor_get_error(target.as_ptr()) },
+        INJECTED_CRASH_REASON,
+        "a trap on an already-terminal actor must not rewrite its published reason",
+    );
 
     // SAFETY: link takes live actor pointers.
     unsafe {

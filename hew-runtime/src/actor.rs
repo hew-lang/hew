@@ -6839,23 +6839,30 @@ unsafe fn hew_actor_trap_inner(
     // `error_code` on a not-yet-terminal actor is the ordinary state of a
     // crashing dispatch, not something this store introduces.
     //
-    // WHY this is a store and not a claim: publishing ahead of the CAS means a
-    // trap that goes on to LOSE the CAS has also stored its code, so two traps
-    // racing the same actor with different codes leave whichever store landed
-    // last rather than the winner's. Only one trap per actor is reachable from
-    // an activation; the external callers (`monitor`'s failed-DOWN trap) all
-    // pass `HEW_TRAP_ACTOR_SEND_FAILED`, so the codes agree in practice.
-    // WHEN this stops being good enough: as soon as two distinct non-zero codes
-    // can race here — a second external trap site with its own code. WHAT the
+    // The store stays INSIDE the loop, below the already-terminal return: a
+    // trap that arrives after the actor is terminal must leave the published
+    // reason alone. `monitor`'s failed-DOWN trap fires exactly there — a DOWN
+    // send into a closed mailbox fails and traps the monitoring actor with
+    // `HEW_TRAP_ACTOR_SEND_FAILED` — so hoisting the store above the return
+    // would rewrite the reason of an actor that already crashed for its own
+    // reason. A retry after a losing CAS on a non-terminal transition re-stores
+    // the same value and is harmless.
+    //
+    // WHY this is a store and not a claim: a trap that reads a non-terminal
+    // state and then loses the CAS in the next few instructions has already
+    // stored, so within that window the published code can be the loser's
+    // rather than the winner's. WHEN this stops being good enough: when two
+    // distinct non-zero codes can reach that window — a crashing activation and
+    // an external trap landing on the same actor at the same instant. WHAT the
     // real fix is: publish state and code in one atomic (pack the terminal
     // state and the code into a single `AtomicI64` claimed by one
     // compare_exchange), which makes the winner of the claim the only writer.
-    a.error_code.store(error_code, Ordering::Release);
     loop {
         let current = a.actor_state.load(Ordering::Acquire);
         if current == HewActorState::Stopped as i32 || current == HewActorState::Crashed as i32 {
             return;
         }
+        a.error_code.store(error_code, Ordering::Release);
         if a.actor_state
             .compare_exchange(current, terminal, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()

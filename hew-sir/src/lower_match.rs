@@ -59,6 +59,23 @@ enum MatchShape {
     },
 }
 
+impl MatchShape {
+    /// How the match reads its scrutinee.
+    ///
+    /// A shape whose selected arm takes the scrutinee apart needs an owner, so
+    /// a loan is refused there as it is anywhere else a value is consumed. The
+    /// rest only read what they probe, so a loan may be matched on directly.
+    fn read(&self) -> OwnedBindingUse {
+        match self {
+            Self::Aggregate {
+                initial_value: false,
+                ..
+            } => OwnedBindingUse::Copy,
+            _ => OwnedBindingUse::Probe,
+        }
+    }
+}
+
 /// What the candidate loop needs that does not change between arms.
 struct MatchPlan {
     shape: MatchShape,
@@ -113,12 +130,8 @@ impl Builder<'_, '_> {
         // match that ends it - not the enclosing scope, which would keep the
         // collection borrowed for the rest of the body.
         let scrutinee_loan_floor = self.scope_loans.len();
-        let scrutinee = lower_initial_value_transfer(
-            self,
-            scrutinee_expr,
-            "match scrutinee",
-            OwnedBindingUse::Probe,
-        )?;
+        let scrutinee =
+            lower_initial_value_transfer(self, scrutinee_expr, "match scrutinee", shape.read())?;
         let mut outer_live = self.owned_live.clone();
         outer_live.remove(&scrutinee);
         let plan = MatchPlan {

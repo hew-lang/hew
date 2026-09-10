@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1655u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -6416,11 +6416,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
     {"hew_supervisor_stop",
      "{\"native\": \"fn hew_supervisor_stop( *mut HewSupervisor)\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_wait_restart",
-     "{\"native\": \"fn hew_supervisor_wait_restart( *mut HewSupervisor, "
-     "usize, u64, ) -> usize\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_task_await_blocking",
      "{\"native\": \"fn hew_task_await_blocking( *mut HewTask) -> *mut "

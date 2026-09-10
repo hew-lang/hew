@@ -17465,19 +17465,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_wait_restart( *mut HewSupervisor, usize, u64, ) -> usize"
-      },
-      "symbol": "hew_supervisor_wait_restart"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_task_await_blocking( *mut HewTask) -> *mut c_void"
       },
       "symbol": "hew_task_await_blocking"

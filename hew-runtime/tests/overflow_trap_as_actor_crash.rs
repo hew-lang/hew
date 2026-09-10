@@ -35,7 +35,7 @@ use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, ExitReason, HewChildSpec,
+    hew_supervisor_set_restart_notify, test_wait_for_restart, ExitReason, HewChildSpec,
 };
 use hew_runtime_testkit::ensure_scheduler;
 
@@ -316,7 +316,7 @@ fn overflow_hardware_trap_is_process_fatal_under_unwind_safe_raii() {
             .expect("crash report must appear in the global log within 5s after hardware trap");
 
         // Step 4: wait for the supervisor to complete the restart cycle.
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor must complete a restart cycle after the trap (got {restart_count})"
@@ -448,7 +448,7 @@ fn fault_inject_crash_still_works_after_sigtrap_registration() {
         hew_runtime::deterministic::hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
 
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor must restart after fault-injected crash"

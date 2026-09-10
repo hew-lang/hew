@@ -46,8 +46,8 @@ use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::duplex::{hew_duplex_close, hew_duplex_pair, HewDuplexHandle};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, hew_trap_with_code,
-    HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
+    hew_supervisor_set_restart_notify, hew_trap_with_code, test_wait_for_restart, HewChildSpec,
+    HEW_TRAP_DIVIDE_BY_ZERO,
 };
 use hew_runtime::tracing::{
     drain_events_json, hew_trace_enable, hew_trace_is_enabled, hew_trace_reset, EVENT_TYPE_NAMES,
@@ -234,7 +234,7 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
             wait_for_crash_log_growth(log_before, Duration::from_secs(5)),
             "crash report must appear within 5s of MSG_CRASH"
         );
-        let _ = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let _ = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
 
         let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!restarted.is_null(), "restarted child must spawn within 5s");

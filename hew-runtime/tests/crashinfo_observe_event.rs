@@ -36,8 +36,8 @@ use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last, snapshot_crash
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, hew_trap_with_code,
-    HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
+    hew_supervisor_set_restart_notify, hew_trap_with_code, test_wait_for_restart, HewChildSpec,
+    HEW_TRAP_DIVIDE_BY_ZERO,
 };
 use hew_runtime_testkit::ensure_scheduler;
 use serde::Deserialize;
@@ -212,7 +212,7 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
         // Wait for the supervisor to drain the crash so RECENT_CRASHES has a
         // stable head when we snapshot. The restart cycle is a side-effect; we
         // do not assert on it here.
-        let _ = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let _ = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
 
         // ── Observe event surface assertion ─────────────────────────────────
         // The profiler's /api/crashes endpoint returns exactly this body.

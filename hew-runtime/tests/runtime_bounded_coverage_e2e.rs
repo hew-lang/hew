@@ -32,7 +32,7 @@ use hew_runtime::scheduler::{
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_supervisor_is_running,
     hew_supervisor_new, hew_supervisor_set_restart_notify, hew_supervisor_start,
-    hew_supervisor_stop, hew_supervisor_wait_restart, HewChildSpec, HewSupervisor,
+    hew_supervisor_stop, test_wait_for_restart, HewChildSpec, HewSupervisor,
 };
 
 static SCHED_INIT: Once = Once::new();
@@ -300,13 +300,13 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
         // spawn and never mutated; reading it here is safe.
         let child_id = (*child).id;
         crash_child(child);
-        let restart_count = hew_supervisor_wait_restart(sup, 1, 5_000);
+        let restart_count = test_wait_for_restart(sup, 1, 5_000);
         assert!(
             restart_count >= 1,
             "first crash should trigger one restart within budget (count={restart_count})"
         );
 
-        // `hew_supervisor_wait_restart` establishes a happens-before with the
+        // `test_wait_for_restart` establishes a happens-before with the
         // `children[0]` write in `restart_child_from_spec` (sequenced-before
         // the mutex lock in `notify_restart` in the same supervisor thread).
         // `hew_supervisor_get_child_wait` then reads `children[0]` and, on
@@ -358,7 +358,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
         );
 
         crash_child(restarted_child);
-        let restart_count = hew_supervisor_wait_restart(sup, 2, 5_000);
+        let restart_count = test_wait_for_restart(sup, 2, 5_000);
         assert!(
             restart_count >= 2,
             "second crash should exhaust the restart budget and notify the supervisor (count={restart_count})"

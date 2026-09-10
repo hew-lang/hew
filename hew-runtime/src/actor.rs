@@ -7210,8 +7210,9 @@ unsafe fn hew_actor_trap_inner(
     // (scheduler `activate_actor`). That self-stop path is for graceful stop
     // and does NOT notify the supervisor. If it wins the terminal CAS, this
     // trap then reads STOPPED, treats the actor as already-terminal, bails out,
-    // and the child-crashed notification is never delivered — the supervisor's
-    // `hew_supervisor_wait_restart` blocks to its full timeout ceiling.
+    // and the child-crashed notification is never delivered — any observer
+    // blocked on the supervisor's restart counter blocks to its full timeout
+    // ceiling.
     //
     // Taking the terminal CAS first makes the trap authoritative: once the
     // actor is CRASHED/STOPPED, the worker's `Running -> Idle` / `Idle ->

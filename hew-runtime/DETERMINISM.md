@@ -12,7 +12,7 @@ not a permanent setting.
 **The ONLY re-runnable CI fault is a verified physical-runner break** — an
 OOM-kill, a truly exhausted disk (ENOSPC), a dead VM, or a network partition.
 Every timing, scheduling, or race outcome is a defect we own and fix. A test
-that passes in isolation but fails under load *always had the race*; load merely
+that passes in isolation but fails under load _always had the race_; load merely
 exposed it. A passing re-run is not evidence of a non-defect — it is evidence
 the race is intermittent.
 
@@ -32,13 +32,13 @@ the race is intermittent.
    `read()` is the synchronization.
 
 3. **Wait on the asserted event, not a correlated sibling.** A condvar wait is
-   deterministic only if it waits on the *same* logical event the assertion
+   deterministic only if it waits on the _same_ logical event the assertion
    checks. Observing a monitor `DOWN` signal does NOT imply the crash log was
-   pushed — the push runs on the crashing worker thread *after* the trap that
+   pushed — the push runs on the crashing worker thread _after_ the trap that
    delivers `DOWN`, on a different and unordered path. Likewise a `DOWN` does not
    imply the supervisor's circuit-breaker state transitioned. Wait on the count /
    state you are about to assert (to its target value, with a hang ceiling),
-   never on a sibling signal you *hope* is ordered before it.
+   never on a sibling signal you _hope_ is ordered before it.
 
 4. **Ephemeral ports + readiness handshakes for cross-process tests.** Bind
    `127.0.0.1:0`, read the chosen port back from `local_addr()` (or have the
@@ -75,8 +75,9 @@ the race is intermittent.
   inherit the parent's sim clock.
 - **Condvar wait-for-count** — the `wait_for(n, MAX)` / `wait_for_down_count` /
   `wait_for_total_dispatches` pattern (`supervision_lifecycle.rs`,
-  `ffi_boundary.rs`) and the FFI `hew_supervisor_wait_restart`. Block on a
-  logical count; fail fast only on a true hang.
+  `ffi_boundary.rs`) and the Rust-only `test_wait_for_restart`
+  (`hew-runtime/src/supervisor.rs`). Block on a logical count; fail fast only
+  on a true hang.
 - **Seeded scheduler PRNG** — `hew_deterministic_set_seed` makes work-stealing
   victim selection reproducible. It must be set **before** `hew_sched_init`; once
   the scheduler is initialised (e.g. via `ensure_scheduler()`'s `Once`), a later

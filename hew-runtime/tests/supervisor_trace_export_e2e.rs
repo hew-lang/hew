@@ -28,7 +28,7 @@ use hew_runtime::mailbox::{
 };
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_set_restart_notify,
-    hew_supervisor_wait_restart, HewChildSpec,
+    test_wait_for_restart, HewChildSpec,
 };
 use hew_runtime::tracing::{drain_events_json, hew_trace_enable, hew_trace_reset};
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
@@ -160,7 +160,7 @@ fn restart_emits_supervisor_restart_on_export_surface() {
     unsafe {
         let child = wait_for_child(sup.as_ptr(), 0, 2000);
         crash_child(child);
-        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5000);
+        let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
         assert!(
             count >= 1,
             "expected at least one restart cycle, got {count}"
@@ -221,14 +221,14 @@ fn run_three_crashes() -> usize {
         for round in 0..3 {
             let child = wait_for_child(sup.as_ptr(), 0, 2000);
             crash_child(child);
-            let c = hew_supervisor_wait_restart(sup.as_ptr(), round + 1, 5000);
+            let c = test_wait_for_restart(sup.as_ptr(), round + 1, 5000);
             assert!(
                 c > round,
                 "restart {} did not register (got {c})",
                 round + 1
             );
         }
-        hew_supervisor_wait_restart(sup.as_ptr(), 3, 5000)
+        test_wait_for_restart(sup.as_ptr(), 3, 5000)
     };
     hew_deterministic_reset();
     count

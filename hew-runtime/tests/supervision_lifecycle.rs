@@ -13,8 +13,9 @@
 //! Supervisor and standalone-actor handle lifecycle is funnelled through
 //! `hew_runtime_testkit::{TestSupervisor, TestActor}`. The runtime's child-
 //! management FFI (`HewChildSpec`, `hew_supervisor_add_child_spec`,
-//! `wait_restart`, `get_child_wait`, `set_child_state_drop`, …) is inherently
-//! raw and is annotated per-test below.
+//! `get_child_wait`, `set_child_state_drop`, …) and the Rust-only
+//! `test_wait_for_restart` restart observer are inherently raw and annotated
+//! per-test below.
 
 #![allow(
     clippy::undocumented_unsafe_blocks,
@@ -40,9 +41,8 @@ use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
     hew_supervisor_set_child_lifecycle, hew_supervisor_set_child_state_drop,
-    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify,
-    hew_supervisor_wait_restart, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
-    HEW_CIRCUIT_BREAKER_OPEN,
+    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify, test_wait_for_restart,
+    HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN,
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
@@ -62,7 +62,7 @@ use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSuperv
 // this headroom; coverage instrumentation needs it on every platform.
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Same value as [`SUPERVISOR_TIMEOUT`] expressed in milliseconds for
-/// `hew_supervisor_wait_restart`'s `timeout_ms` parameter.
+/// `test_wait_for_restart`'s `timeout_ms` parameter.
 const SUPERVISOR_TIMEOUT_MS: u64 = 30_000;
 
 /// Global lock to serialize all tests in this file.
@@ -384,7 +384,7 @@ fn supervised_actor_crash_and_restart() {
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
 
         // Wait for restart cycle.
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor should report a completed restart cycle"
@@ -509,7 +509,7 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
         // Crash the child and wait for the supervisor to complete one restart.
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor should report a completed restart cycle"
@@ -615,8 +615,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
                 .expect("watcher should observe each crash");
 
             if crash_num == 0 {
-                let restart_count =
-                    hew_supervisor_wait_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
+                let restart_count = test_wait_for_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
                 assert!(
                     restart_count >= 1,
                     "first crash should complete a supervisor restart cycle"
@@ -710,7 +709,7 @@ fn link_delivers_exit_on_crash() {
 ///
 /// The EXIT-enqueue probe sends directly from the crash teardown path after
 /// `propagate_exit_to_links`, while a separate waiter thread sends when
-/// `hew_supervisor_wait_restart` observes restart completion. The test drains
+/// `test_wait_for_restart` observes restart completion. The test drains
 /// the shared channel and asserts the first signal is the EXIT enqueue, so the
 /// assertion is not constructed by sequentially waiting for EXIT before restart.
 #[test]
@@ -835,7 +834,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             let restart_waiter_ready = Arc::clone(&restart_waiter_ready);
             std::thread::spawn(move || {
                 restart_waiter_ready.wait();
-                let restart_count = hew_supervisor_wait_restart(
+                let restart_count = test_wait_for_restart(
                     sup_addr as *mut hew_runtime::supervisor::HewSupervisor,
                     1,
                     5_000,
@@ -1194,7 +1193,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must report at least one completed restart"
@@ -1292,7 +1291,7 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must restart the dynamically added child"
@@ -1444,7 +1443,7 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
         *(*child1).state.cast::<u64>() = 0;
         hew_fault_inject_crash(id0, 1);
         hew_actor_send(child0, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "ONE_FOR_ALL supervisor must complete a restart cycle"

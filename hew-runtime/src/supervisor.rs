@@ -866,8 +866,9 @@ pub struct HewSupervisor {
 
     /// Parked `await_restart` continuations — the COOPERATIVE restart observer.
     ///
-    /// Distinct from `restart_notify` (the thread-blocking Condvar barrier used
-    /// by `hew_supervisor_wait_restart`). Each waiter is an actor that executed
+    /// Distinct from `restart_notify` (the shared restart-counter Condvar the
+    /// contextless blocking `await_restart` and test-support observers read).
+    /// Each waiter is an actor that executed
     /// `await_restart sup.child` on a Transient slot and parked instead of
     /// thread-blocking the single cooperative scheduler. `notify_restart` fires
     /// every waiter (deposit readiness + `enqueue_resume`) after the restart
@@ -1933,8 +1934,9 @@ fn schedule_delayed_restart(
 /// has made the new child reachable (this function is called at the tail of
 /// `restart_with_budget_and_strategy` / `restart_child_supervisor_with_budget`):
 ///
-/// 1. The thread-blocking Condvar barrier (`hew_supervisor_wait_restart`) — the
-///    counter increment + `notify_all`.
+/// 1. The shared `restart_notify` counter/Condvar — the counter increment +
+///    `notify_all`, read by the contextless blocking `await_restart`
+///    (`hew_supervisor_restart_await_blocking`) and by test-support code.
 /// 2. The COOPERATIVE `await_restart` observers — every parked continuation in
 ///    `restart_await_waiters` gets readiness deposited + `enqueue_resume`, then
 ///    the registry is drained. A resumed continuation re-resolves the slot and
@@ -5387,7 +5389,7 @@ mod tests {
             started.wait();
             actor::hew_actor_trap(child, 1);
             assert!(
-                hew_supervisor_wait_restart(sup, 1, 2_000) >= 1,
+                test_wait_for_restart(sup, 1, 2_000) >= 1,
                 "a supervisor restart must complete while live metrics reset runs"
             );
             resetter.join().expect("metrics resetter must not panic");
@@ -10861,8 +10863,9 @@ pub const RESTART_AWAIT_READY: i32 = 1;
 /// backoff / circuit-open). The caller MUST `coro.suspend` on SUSPEND and bind
 /// (re-fetch) on READY / resume.
 ///
-/// This is the COOPERATIVE analogue of [`hew_supervisor_wait_restart`]; it never
-/// thread-blocks the single scheduler. `key` is the static-child slot index.
+/// This is the COOPERATIVE analogue of [`hew_supervisor_restart_await_blocking`];
+/// it never thread-blocks the single scheduler. `key` is the static-child slot
+/// index.
 ///
 /// # Safety
 ///
@@ -11078,10 +11081,11 @@ unsafe fn supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32, n
 
 /// Reset the restart notification counter on this supervisor.
 ///
-/// Every completed restart cycle (including budget exhaustion) increments an
-/// internal counter and wakes any thread blocked in
-/// [`hew_supervisor_wait_restart`]. Resetting the counter lets tests wait for
-/// a fresh restart cycle window.
+/// Every completed restart cycle (including budget exhaustion) increments the
+/// counter in `restart_notify` and wakes any thread blocked on it — the
+/// contextless blocking `await_restart` path
+/// ([`hew_supervisor_restart_await_blocking`]) and [`test_wait_for_restart`].
+/// Resetting the counter lets tests wait for a fresh restart cycle window.
 ///
 /// # Safety
 ///
@@ -11102,22 +11106,30 @@ pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervis
     }
 }
 
-/// Block until the supervisor's restart counter reaches at least `target`,
-/// or `timeout_ms` milliseconds elapse.
+/// Block until the supervisor's restart counter reaches at least `target`, or
+/// `timeout_ms` milliseconds elapse.
 ///
 /// Returns the current restart count on success, or `0` on timeout / null
-/// pointer.  The counter is cumulative and never resets.
+/// pointer. The counter is cumulative and never resets.
+///
+/// Test-support only — reads the same `restart_notify` counter/Condvar the
+/// contextless blocking `await_restart` path
+/// ([`hew_supervisor_restart_await_blocking`]) synchronizes on, so it is not a
+/// second authority for restart completion. Not part of the C ABI: no
+/// `#[no_mangle]`, no entry in `scripts/cabi-surface.json` or
+/// `scripts/runtime-export-classification.toml`. Callers are Rust test code in
+/// this workspace (`hew-runtime/tests/*.rs`, this module's own unit tests),
+/// never generated or native code.
 ///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_wait_restart(
+#[doc(hidden)]
+pub unsafe fn test_wait_for_restart(
     sup: *mut HewSupervisor,
     target: usize,
     timeout_ms: u64,
 ) -> usize {
-    cabi_guard!(sup.is_null(), 0);
     let Some(pair) = restart_notify_snapshot(sup) else {
         return 0;
     };

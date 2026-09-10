@@ -3424,7 +3424,7 @@ mod rest_for_one_tests {
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_new,
         hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-        hew_supervisor_wait_restart, HewChildSpec,
+        test_wait_for_restart, HewChildSpec,
     };
 
     const STRATEGY_REST_FOR_ONE: i32 = 2;
@@ -3502,7 +3502,7 @@ mod rest_for_one_tests {
             hew_actor_trap(child1, 1);
 
             // Wait for the restart cycle to complete (condvar, no polling).
-            let count = hew_supervisor_wait_restart(sup, 1, 10_000);
+            let count = test_wait_for_restart(sup, 1, 10_000);
             assert!(count >= 1, "restart cycle never completed");
 
             // Child 0 should NOT be restarted.
@@ -3546,7 +3546,7 @@ mod supervisor_escalation_tests {
         hew_supervisor_add_child_supervisor_with_init, hew_supervisor_get_child,
         hew_supervisor_get_child_supervisor, hew_supervisor_get_child_wait,
         hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_set_restart_notify,
-        hew_supervisor_start, hew_supervisor_stop, hew_supervisor_wait_restart, HewChildSpec,
+        hew_supervisor_start, hew_supervisor_stop, test_wait_for_restart, HewChildSpec,
         HewSupervisor,
     };
 
@@ -3736,7 +3736,7 @@ mod supervisor_escalation_tests {
             hew_actor_trap(actor, 1);
 
             // Wait for first restart via condvar (no polling).
-            let count = hew_supervisor_wait_restart(child, 1, 10_000);
+            let count = test_wait_for_restart(child, 1, 10_000);
             assert!(count >= 1, "first restart should have completed");
             assert_eq!(
                 hew_supervisor_is_running(child),
@@ -3751,10 +3751,10 @@ mod supervisor_escalation_tests {
 
             // Wait for escalation: child supervisor notifies on budget exhaustion,
             // then parent notifies when it processes the escalation.
-            let count = hew_supervisor_wait_restart(child, 2, 10_000);
+            let count = test_wait_for_restart(child, 2, 10_000);
             assert!(count >= 2, "child should notify on budget exhaustion");
 
-            let count = hew_supervisor_wait_restart(parent, 1, 10_000);
+            let count = test_wait_for_restart(parent, 1, 10_000);
             assert!(count >= 1, "parent should process escalation");
 
             // Both supervisors should have stopped.
@@ -3945,7 +3945,7 @@ mod supervisor_escalation_tests {
             // 30s: this wait twice missed a 10s budget on loaded hosted
             // Windows runners (0.21s isolated — the bound is contention
             // headroom, not expected duration).
-            let count = hew_supervisor_wait_restart(child, 1, 30_000);
+            let count = test_wait_for_restart(child, 1, 30_000);
             assert!(
                 count >= 1,
                 "child supervisor should restart nested actor once"
@@ -3966,7 +3966,7 @@ mod supervisor_escalation_tests {
             hew_actor_trap(restarted_actor, 1);
 
             // 30s: same contention headroom as the child wait above.
-            let count = hew_supervisor_wait_restart(parent, 1, 30_000);
+            let count = test_wait_for_restart(parent, 1, 30_000);
             assert!(
                 count >= 1,
                 "parent should observe child supervisor escalation"

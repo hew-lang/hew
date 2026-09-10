@@ -990,6 +990,15 @@ pub fn collection_value_dependencies(
             // The handle's checked copy recipe is complete on its own.
             continue;
         }
+        if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }
+            if kind.is_encoding_value())
+        {
+            // A managed encoding value carries its own copy and release
+            // recipes from the runtime; §1.1 classes it `CowValue`/`DeepCopy`
+            // whatever it holds. It has no structural field partition to
+            // describe, and asking for one refused every collection of them.
+            continue;
+        }
         if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&ty) {
             pending.extend_from_slice(arguments);
         } else if let ResolvedTy::Named { .. } = &ty {

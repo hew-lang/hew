@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-cycle-is-a-leak"
+intent = "Two records that reach each other through strong handles keep each other's counts positive, so neither payload is released: reference counting with no cycle collector is the documented behaviour (D457). The same shape with a weak back edge releases both. Acceptance only - the cycle is a live allocation at exit, so this case is not declared in the leak-checked safety suite."
+source = "cases/rc-cycle-is-a-leak.hew"
+suites = ["acceptance"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "closing the loop\nclose 1\ncycle first=2 second=2\ncycle scope ended with no close\nwatched first=1 second=1\nclose 12\nclose 11\nwatched scope ended\n"
+exit = 0

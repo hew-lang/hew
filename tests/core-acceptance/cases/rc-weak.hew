@@ -1,0 +1,45 @@
+// `Weak<T>` observes a shared allocation without owning its payload. Upgrading
+// answers `Some` while a strong reference is still live and `None` once the
+// last one is gone, and the allocation itself outlives the payload for exactly
+// as long as some weak handle names it.
+
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn upgraded_count(observer: Weak<Tag>) -> i64 {
+    match observer.upgrade() {
+        .Some(strong) => strong.strong_count(),
+        .None => 0,
+    }
+}
+
+// The strong reference dies with this call, so the observer it hands back has
+// already outlived its payload.
+fn outlives_payload() -> Weak<Tag> {
+    let owner = Rc.new(Tag { id: 2 });
+    let observer = owner.downgrade();
+    println(f"alive weak={owner.weak_count()} upgraded={upgraded_count(observer.clone())}");
+    observer
+}
+
+fn main() {
+    let owner = Rc.new(Tag { id: 1 });
+    let observer = owner.downgrade();
+    let second = observer.clone();
+    println(f"weak={owner.weak_count()} strong={owner.strong_count()}");
+    println(f"upgrade while live={upgraded_count(observer.clone())}");
+    println(f"after upgrade strong={owner.strong_count()} weak={owner.weak_count()}");
+    let _ = second;
+    let _ = observer;
+
+    let expired = outlives_payload();
+    println(f"upgrade after release={upgraded_count(expired.clone())}");
+    let _ = expired;
+    println("main about to release");
+}

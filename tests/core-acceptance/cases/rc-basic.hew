@@ -1,0 +1,45 @@
+// `Rc<T>` is a shared handle onto one runtime-counted allocation. Cloning it
+// retains, dropping it releases, and the payload's own destructor runs exactly
+// once, when the last strong reference goes.
+
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+// Counts, payload reads and in-place replacement over a Copy payload. Every
+// strong alias sees the replacement, because they share one allocation.
+fn scalar_handle() {
+    let shared = Rc.new(1);
+    println(f"get={shared.get()} strong={shared.strong_count()} unique={shared.is_unique()}");
+    let alias = shared.clone();
+    println(f"cloned strong={shared.strong_count()} unique={shared.is_unique()}");
+    shared.set(9);
+    println(f"replaced alias={alias.get()} strong={alias.strong_count()}");
+}
+
+// The clone lives only as long as this call, so the count falls back to one.
+fn borrow_once(handle: Rc<Tag>) -> i64 {
+    let held = handle.clone();
+    held.strong_count()
+}
+
+// The payload's close runs when the last strong reference is released, not
+// when the first one is.
+fn resource_payload() {
+    let owner = Rc.new(Tag { id: 1 });
+    println(f"inside call strong={borrow_once(owner.clone())}");
+    println(f"after call strong={owner.strong_count()}");
+    println("owner about to release");
+}
+
+fn main() {
+    scalar_handle();
+    println("scalar done");
+    resource_payload();
+    println("resource done");
+}

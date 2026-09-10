@@ -1,0 +1,13 @@
+[[case]]
+id = "check-rc-not-send"
+intent = "A shared handle counts without synchronization, so it belongs to one actor's heap. Sending an `Rc<T>` across an actor boundary stays refused now that the handle works inside an actor: the negative control for the rest of the Rc surface."
+source = "cases/check-rc-not-send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 15
+column = 21
+message = "cannot send `Rc<i64>` to actor: type is not Send"

@@ -1,0 +1,19 @@
+// `Rc<T>` counts without synchronization, so it belongs to one actor's heap.
+// Sending one across an actor boundary would share the count between
+// schedulers; the checker refuses it and points at the owning-actor pattern.
+
+actor Sink {
+    var seen: i64 = 0,
+    receive fn take(handle: Rc<i64>) -> i64 {
+        seen = seen + handle.get();
+        seen
+    }
+}
+
+fn main() {
+    let sink = spawn Sink();
+    match sink.take(Rc.new(3)) {
+        .Ok(total) => println(total),
+        .Err(_) => panic("send failed"),
+    }
+}

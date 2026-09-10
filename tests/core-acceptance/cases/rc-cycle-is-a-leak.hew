@@ -1,0 +1,43 @@
+// Hew counts references and runs no cycle collector (D457). Two records that
+// reach each other through strong handles keep each other's counts above zero,
+// so neither payload is ever released. The program ends cleanly and the
+// allocations stay: this is the documented cost of `Rc`, and `Weak` is the way
+// to spell a back edge that does not own.
+
+#[resource]
+type Tag { id: i64 }
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Node { tag: Tag, peer: Option<Rc<Node>> }
+
+fn cyclic() {
+    let first = Rc.new(Node { tag: Tag { id: 1 }, peer: .None });
+    let second = Rc.new(Node { tag: Tag { id: 2 }, peer: .Some(first.clone()) });
+    // Closing the loop replaces the payload, so the displaced one releases
+    // here and its tag closes. What replaces it is what makes the counts
+    // unreachable but positive.
+    println("closing the loop");
+    first.set(Node { tag: Tag { id: 1 }, peer: .Some(second.clone()) });
+    println(f"cycle first={first.strong_count()} second={second.strong_count()}");
+}
+
+// The same shape with a weak back edge releases both payloads at scope exit.
+type Watched { tag: Tag, peer: Option<Weak<Watched>> }
+
+fn acyclic() {
+    let first = Rc.new(Watched { tag: Tag { id: 11 }, peer: .None });
+    let second = Rc.new(Watched { tag: Tag { id: 12 }, peer: .Some(first.downgrade()) });
+    println(f"watched first={first.strong_count()} second={second.strong_count()}");
+}
+
+fn main() {
+    cyclic();
+    println("cycle scope ended with no close");
+    acyclic();
+    println("watched scope ended");
+}

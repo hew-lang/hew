@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-basic"
+intent = "`Rc<T>` works end to end on the native path: construction, clone, payload read and replacement, strong count and uniqueness, with a `#[resource]` payload whose close runs once, when the last strong reference is released."
+source = "cases/rc-basic.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "get=1 strong=1 unique=true\ncloned strong=2 unique=false\nreplaced alias=9 strong=2\nscalar done\ninside call strong=3\nafter call strong=1\nowner about to release\nclose 1\nresource done\n"
+exit = 0

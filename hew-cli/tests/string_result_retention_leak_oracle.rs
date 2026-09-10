@@ -109,10 +109,13 @@ fn main() {
 
 /// Excluded from the active fixture list below: reading this non-Copy
 /// `ready` actor field out to move it into a closure hits a distinct,
-/// pre-existing E_SIR_UNSUPPORTED limitation ("an actor state field
+/// pre-existing `E_SIR_UNSUPPORTED` limitation ("an actor state field
 /// without a copy cannot leave the state seat"), unrelated to retired
 /// syntax. Kept for whenever that limitation lifts.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
 import std.channel;
 
@@ -617,7 +620,10 @@ fn main() {
 /// fresh actor restart loop. Each line is printed only after the crash fallback
 /// has resolved and the live coroutine-frame byte gauge has returned to the
 /// main coroutine's baseline.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 fn nested_suspending_closure_crash_restart_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 import std.observe;
@@ -675,7 +681,10 @@ fn main() {
 /// Capture-bearing twin of the frame-only restart fixture. Each of the three
 /// caller frames owns one fresh string in the exact `ExitPath::Suspend` plan
 /// opened around its synchronous child ramp.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 fn nested_captured_string_crash_restart_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 actor Gate {

@@ -574,6 +574,11 @@ stable = [
   "hew_reply_payload_free",
   "hew_reply_wait",
   "hew_reply_wait_timeout",
+  "hew_rng_new",
+  "hew_rng_next_f64",
+  "hew_rng_next_u64",
+  "hew_rng_range",
+  "hew_rng_shuffle_i64",
   "hew_seconds",
   "hew_select_first",
   "hew_select_ready_index",
@@ -3590,6 +3595,45 @@ discharge-depth = "none"
 symbol = "hew_random_shuffle_i64"
 result = "none"
 params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# random.Rng — hew-runtime/src/random.rs. xoshiro256++ state carried as an
+# ordinary Vec<u64> field; hew_rng_new allocates it like any other Hew vec
+# (released the same way, via hew_vec_free), the rest borrow and mutate it
+# in place, matching hew_random_shuffle_i64 above.
+[[ownership.contracts]]
+symbol = "hew_rng_new"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_vec_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_rng_next_u64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_rng_next_f64"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_rng_range"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_rng_shuffle_i64"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

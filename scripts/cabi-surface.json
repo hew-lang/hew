@@ -14259,6 +14259,81 @@
         "native",
         "wasm32-wasip1"
       ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rng_new( i64) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_rng_new( i64) -> *mut HewVec"
+      },
+      "symbol": "hew_rng_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rng_next_f64( *mut HewVec) -> f64",
+        "wasm32-wasip1": "fn hew_rng_next_f64( *mut HewVec) -> f64"
+      },
+      "symbol": "hew_rng_next_f64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rng_next_u64( *mut HewVec) -> u64",
+        "wasm32-wasip1": "fn hew_rng_next_u64( *mut HewVec) -> u64"
+      },
+      "symbol": "hew_rng_next_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rng_range( *mut HewVec, i64, i64) -> i64",
+        "wasm32-wasip1": "fn hew_rng_range( *mut HewVec, i64, i64) -> i64"
+      },
+      "symbol": "hew_rng_range"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_rng_shuffle_i64( *mut HewVec, *mut HewVec)",
+        "wasm32-wasip1": "fn hew_rng_shuffle_i64( *mut HewVec, *mut HewVec)"
+      },
+      "symbol": "hew_rng_shuffle_i64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
       "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",

@@ -1,0 +1,11 @@
+[[case]]
+id = "random-rng"
+intent = "Rng.new(seed).next_u64() matches an independently-computed xoshiro256++ reference sequence for a fixed seed; equally-seeded generators agree and differently-seeded ones diverge; next_f64 and range stay in bounds; shuffle preserves the element multiset; crypto_bytes/crypto_u64 draw well-formed, distinct values from OS entropy."
+source = "cases/random-rng.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Rng matches the independent xoshiro256++ reference and crypto draws are well-formed\n"
+stderr = ""
+exit = 0

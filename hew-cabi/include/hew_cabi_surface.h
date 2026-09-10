@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1659u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1659] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -5249,6 +5249,32 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "HewExecutionContext\", \"wasm32-wasip1\": \"fn "
      "hew_require_execution_context() -> *mut HewExecutionContext\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_rng_new",
+     "{\"native\": \"fn hew_rng_new( i64) -> *mut HewVec\", \"wasm32-wasip1\": "
+     "\"fn hew_rng_new( i64) -> *mut HewVec\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_rng_next_f64",
+     "{\"native\": \"fn hew_rng_next_f64( *mut HewVec) -> f64\", "
+     "\"wasm32-wasip1\": \"fn hew_rng_next_f64( *mut HewVec) -> f64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_rng_next_u64",
+     "{\"native\": \"fn hew_rng_next_u64( *mut HewVec) -> u64\", "
+     "\"wasm32-wasip1\": \"fn hew_rng_next_u64( *mut HewVec) -> u64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_rng_range",
+     "{\"native\": \"fn hew_rng_range( *mut HewVec, i64, i64) -> i64\", "
+     "\"wasm32-wasip1\": \"fn hew_rng_range( *mut HewVec, i64, i64) -> i64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_rng_shuffle_i64",
+     "{\"native\": \"fn hew_rng_shuffle_i64( *mut HewVec, *mut HewVec)\", "
+     "\"wasm32-wasip1\": \"fn hew_rng_shuffle_i64( *mut HewVec, *mut "
+     "HewVec)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_runtime_cleanup",
      "{\"native\": \"fn hew_runtime_cleanup()\", \"wasm32-wasip1\": \"fn "

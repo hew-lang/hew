@@ -1,0 +1,69 @@
+import std.random;
+
+fn main() {
+    // Reference sequence computed independently in Python from the published
+    // splitmix64 seed-expansion and xoshiro256++ step algorithms (not derived
+    // from this compiler or its runtime) for seed 42. See
+    // hew-runtime/src/random.rs for the algorithms and the matching pinned
+    // Rust unit test.
+    let rng = random.Rng.new(42);
+    assert(rng.next_u64() == 15021278609987233951);
+    assert(rng.next_u64() == 5881210131331364753);
+    assert(rng.next_u64() == 18149643915985481100);
+    assert(rng.next_u64() == 12933668939759105464);
+    assert(rng.next_u64() == 14637574242682825331);
+
+    // Two generators seeded identically agree, independent of the first.
+    let a = random.Rng.new(1234);
+    let b = random.Rng.new(1234);
+    assert(a.next_u64() == b.next_u64());
+    assert(a.next_u64() == b.next_u64());
+    assert(a.next_f64() == b.next_f64());
+
+    // Two generators seeded differently diverge.
+    let c = random.Rng.new(1);
+    let d = random.Rng.new(2);
+    assert(c.next_u64() != d.next_u64());
+
+    // next_f64 stays within [0.0, 1.0).
+    let f = random.Rng.new(99);
+    for i in 0 .. 1000 {
+        let x = f.next_f64();
+        assert(x >= 0.0 && x < 1.0);
+    }
+
+    // range(lo, hi) always lands in [lo, hi) and hi <= lo returns lo.
+    let g = random.Rng.new(7);
+    for i in 0 .. 1000 {
+        let n = g.range(10, 20);
+        assert(n >= 10 && n < 20);
+    }
+    assert(g.range(5, 5) == 5);
+    assert(g.range(5, 1) == 5);
+
+    // shuffle rearranges a vector in place and preserves its multiset of
+    // elements; two independently-seeded generators are overwhelmingly
+    // unlikely to produce the same permutation of a large vector.
+    let h = random.Rng.new(2026);
+    var original: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    h.shuffle(original);
+    var seen: Vec<bool> = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false];
+    for i in 0 .. original.len() {
+        let v = original[i];
+        assert(!seen[v]);
+        seen[v] = true;
+    }
+
+    // crypto_bytes(n) returns exactly n bytes; two draws differ.
+    let cb1 = random.crypto_bytes(16);
+    let cb2 = random.crypto_bytes(16);
+    assert(cb1.len() == 16);
+    assert(cb2.len() == 16);
+    assert(cb1 != cb2);
+    assert(random.crypto_bytes(0).len() == 0);
+
+    // crypto_u64 draws differ across calls.
+    assert(random.crypto_u64() != random.crypto_u64());
+
+    println("Rng matches the independent xoshiro256++ reference and crypto draws are well-formed");
+}

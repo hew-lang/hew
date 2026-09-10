@@ -166,7 +166,7 @@ pub(crate) fn load_module_checked(
 ///
 /// For ecosystem modules (e.g. `ecosystem::db::postgres`), the root is
 /// `ecosystem/` instead of `std/`.
-fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf> {
     let segments: Vec<&str> = module_path.split("::").collect();
     if segments.is_empty() {
         return None;

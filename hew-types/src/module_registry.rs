@@ -12,9 +12,21 @@ use hew_parser::module::ModuleId;
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
 /// Parsed module data that may be reused across checker runs.
+///
+/// Keyed by the canonical path of the source each module was parsed from, not
+/// by the spelling that reached it. A spelling is a resolution input, and two
+/// sources may answer one spelling across programs (a different search path, a
+/// different project root), so a spelling-keyed slot hands the second program
+/// the first program's source.
 #[derive(Debug, Default)]
 struct ModuleParseCache {
-    modules: HashMap<ModuleId, ModuleInfo>,
+    modules: HashMap<PathBuf, ModuleInfo>,
+}
+
+/// The cache identity of a parsed source: its canonical path where the
+/// filesystem resolves one, else the path as selected.
+fn parse_cache_key(source: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf())
 }
 
 /// Module declarations and derived metadata visible to one checked program.
@@ -509,11 +521,12 @@ impl ModuleRegistry {
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         let module_id = module_id_from_identity(owner);
+        let loader_path = module_id.path.join("::");
         if let Some(info) = self
             .active
             .modules
             .get(&module_id)
-            .or_else(|| self.cache.modules.get(&module_id))
+            .or_else(|| self.cached_module_for_spelling(&loader_path))
         {
             if !Self::module_info_declares_nominal(info, leaf) {
                 return None;
@@ -521,7 +534,6 @@ impl ModuleRegistry {
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
             return Some(canonical_source_module_identity(owner, &source_paths));
         }
-        let loader_path = module_id_from_identity(owner).path.join("::");
         self.search_paths.iter().find_map(|search_path| {
             let info = load_module_checked(&loader_path, search_path)
                 .ok()
@@ -735,24 +747,32 @@ impl ModuleRegistry {
             return Ok(());
         }
 
-        if let Some(info) = self.cache.modules.get(&id).cloned() {
-            if self.module_info_has_stdlib_authority(&id, &info) {
-                self.activate_module(&id, info);
-                return Ok(());
-            }
-        }
-
         let compiler_root = self.compiler_stdlib_root.clone().ok_or_else(|| {
             CompilerModuleError::AuthorityUnavailable {
                 module_path: module_path.to_string(),
             }
         })?;
-        let Some(info) = load_module_checked(&loader_path, &compiler_root)? else {
+        let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, &compiler_root)
+        else {
             return Err(ModuleError::NotFound {
                 module_path: module_path.to_string(),
                 searched: vec![compiler_root],
             }
             .into());
+        };
+        let cache_key = parse_cache_key(&source);
+        let cached = self.cache.modules.get(&cache_key).cloned();
+        let info = if let Some(info) = cached {
+            info
+        } else {
+            let Some(info) = load_module_checked(&loader_path, &compiler_root)? else {
+                return Err(ModuleError::NotFound {
+                    module_path: module_path.to_string(),
+                    searched: vec![compiler_root],
+                }
+                .into());
+            };
+            info
         };
 
         let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
@@ -775,9 +795,7 @@ impl ModuleRegistry {
             return Ok(());
         }
 
-        self.cache
-            .modules
-            .insert(canonical_id.clone(), info.clone());
+        self.cache.modules.insert(cache_key, info.clone());
         self.activate_module(&canonical_id, info);
         Ok(())
     }
@@ -803,26 +821,43 @@ impl ModuleRegistry {
         if self.active.modules.contains_key(&id) {
             return Ok(&self.active.modules[&id]);
         }
-        if let Some(info) = self.cache.modules.get(&id).cloned() {
-            return Ok(self.activate_module(&id, info));
-        }
 
-        for search_path in &self.search_paths {
-            if let Some(info) = load_module_checked(&loader_path, search_path)? {
-                let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-                let canonical_owner =
-                    canonical_source_module_identity(&id.path.join("."), &source_paths);
-                let canonical_id = module_id_from_identity(&canonical_owner);
-                self.cache
-                    .modules
-                    .insert(canonical_id.clone(), info.clone());
-                return Ok(self.activate_module(&canonical_id, info));
-            }
+        let search_paths = self.search_paths.clone();
+        for search_path in &search_paths {
+            let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, search_path)
+            else {
+                continue;
+            };
+            let cache_key = parse_cache_key(&source);
+            let cached = self.cache.modules.get(&cache_key).cloned();
+            let info = if let Some(info) = cached {
+                info
+            } else {
+                let Some(info) = load_module_checked(&loader_path, search_path)? else {
+                    continue;
+                };
+                self.cache.modules.insert(cache_key, info.clone());
+                info
+            };
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            let canonical_owner =
+                canonical_source_module_identity(&id.path.join("."), &source_paths);
+            let canonical_id = module_id_from_identity(&canonical_owner);
+            return Ok(self.activate_module(&canonical_id, info));
         }
 
         Err(ModuleError::NotFound {
             module_path: module_path.to_string(),
             searched: self.search_paths.clone(),
+        })
+    }
+
+    /// The parse-cache entry for the source a spelling resolves to under the
+    /// configured search paths, if that source has already been parsed.
+    fn cached_module_for_spelling(&self, loader_path: &str) -> Option<&ModuleInfo> {
+        self.search_paths.iter().find_map(|search_path| {
+            let source = crate::stdlib_loader::resolve_hew_path(loader_path, search_path)?;
+            self.cache.modules.get(&parse_cache_key(&source))
         })
     }
 
@@ -1987,6 +2022,30 @@ mod tests {
         assert!(
             next_program.loaded_modules().next().is_none(),
             "the loaded view must not reveal parse-cache entries from a completed program"
+        );
+    }
+
+    #[test]
+    fn parse_cache_keeps_two_sources_under_one_spelling_apart_across_programs() {
+        // Two project trees each declare `std.alpha`, and both are checked by
+        // one registry the way a driver reuses it: the second program's
+        // `std.alpha` is a different file, so it must be parsed from its own
+        // source rather than served from the first program's slot.
+        let first = TestHewTree::new("cache-key-first");
+        first.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+        let second = TestHewTree::new("cache-key-second");
+        let second_source = second.write_std_module("alpha", "pub fn alpha() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![first.root().clone()]);
+        registry.load("std.alpha").expect("load the first alpha");
+
+        let mut registry = registry.for_new_program();
+        registry.search_paths = vec![second.root().clone()];
+        let info = registry.load("std.alpha").expect("load the second alpha");
+        assert_eq!(
+            info.source_path.as_ref(),
+            Some(&second_source),
+            "a second source under the same spelling must not reuse the first source's parse"
         );
     }
 

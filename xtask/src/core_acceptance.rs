@@ -97,6 +97,13 @@ struct ExpectedDiagnostic {
     column: usize,
     #[serde(default)]
     message: Option<String>,
+    /// The source file the diagnostic must be reported against, matched as a
+    /// path suffix so a case never pins the checkout's absolute location. A
+    /// multi-file case uses it to prove provenance: an imported file's spans
+    /// are its own byte offsets, so an untagged diagnostic renders against the
+    /// root source at whatever text shares the offset.
+    #[serde(default)]
+    file: Option<String>,
 }
 
 #[derive(Debug)]
@@ -900,13 +907,15 @@ fn read_capture(path: &Path, stream: &str) -> Result<String> {
 
 /// The slice of `hew check --format json`'s `JsonDiagnostic` this runner
 /// needs. Serde ignores the rest of the object (severity, channel, source,
-/// file, notes, fixes) — the JSON diagnostics array is the one authority,
-/// read directly, never re-derived from the text renderer.
+/// notes, fixes) — the JSON diagnostics array is the one authority, read
+/// directly, never re-derived from the text renderer.
 #[derive(Debug, Deserialize)]
 struct ActualDiagnostic {
     code: String,
     span: ActualSpan,
     message: String,
+    #[serde(default)]
+    file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -931,14 +940,25 @@ fn diagnostics_match(expected: &[ExpectedDiagnostic], actual: &[ActualDiagnostic
                     Some(substring) => got.message.contains(substring.as_str()),
                     None => true,
                 }
+                && match &want.file {
+                    Some(suffix) => got
+                        .file
+                        .as_deref()
+                        .is_some_and(|file| file.ends_with(suffix.as_str())),
+                    None => true,
+                }
         });
         match position {
             Some(index) => {
                 remaining.remove(index);
             }
             None => missing.push(format!(
-                "{}@{}:{}{}",
+                "{}@{}{}:{}{}",
                 want.code,
+                want.file
+                    .as_deref()
+                    .map(|f| format!("{f}:"))
+                    .unwrap_or_default(),
                 want.line,
                 want.column,
                 want.message
@@ -955,8 +975,15 @@ fn diagnostics_match(expected: &[ExpectedDiagnostic], actual: &[ActualDiagnostic
         .iter()
         .map(|got| {
             format!(
-                "{}@{}:{} ({:?})",
-                got.code, got.span.start_line, got.span.start_col, got.message
+                "{}@{}{}:{} ({:?})",
+                got.code,
+                got.file
+                    .as_deref()
+                    .map(|f| format!("{f}:"))
+                    .unwrap_or_default(),
+                got.span.start_line,
+                got.span.start_col,
+                got.message
             )
         })
         .collect();
@@ -1243,6 +1270,7 @@ mod tests {
                 line: 1,
                 column: 1,
                 message: None,
+                file: None,
             }],
             &["acceptance"],
             "cases/case.hew",
@@ -1292,6 +1320,7 @@ mod tests {
                 line: 1,
                 column: 1,
                 message: None,
+                file: None,
             }],
             &["acceptance", "safety"],
             "cases/case.hew",
@@ -1311,12 +1340,14 @@ mod tests {
                 start_col: 9,
             },
             message: "a select needs at least one arm: a source arm".to_string(),
+            file: Some("cases/probe.hew".to_string()),
         }];
         let expected = vec![ExpectedDiagnostic {
             code: "InvalidOperation".to_string(),
             line: 10,
             column: 9,
             message: Some("needs at least one arm".to_string()),
+            file: Some("probe.hew".to_string()),
         }];
         assert!(diagnostics_match(&expected, &actual).is_ok());
     }
@@ -1330,17 +1361,44 @@ mod tests {
                 start_col: 9,
             },
             message: "a select needs at least one arm".to_string(),
+            file: None,
         }];
         let wrong_line = vec![ExpectedDiagnostic {
             code: "InvalidOperation".to_string(),
             line: 11,
             column: 9,
             message: None,
+            file: None,
         }];
         let error = diagnostics_match(&wrong_line, &actual)
             .expect_err("naming the wrong line must fail rather than silently pass");
         assert!(error.contains("missing"));
         assert!(error.contains("extra"));
+    }
+
+    /// A multi-file case pins provenance, so naming the wrong file must fail
+    /// even when the code, line and column all match.
+    #[test]
+    fn diagnostics_match_rejects_the_wrong_file() {
+        let actual = vec![ActualDiagnostic {
+            code: "ResourceBoundaryParamMustConsume".to_string(),
+            span: ActualSpan {
+                start_line: 13,
+                start_col: 5,
+            },
+            message: "must pin its disposition".to_string(),
+            file: Some("/checkout/cases/main.hew".to_string()),
+        }];
+        let expected = vec![ExpectedDiagnostic {
+            code: "ResourceBoundaryParamMustConsume".to_string(),
+            line: 13,
+            column: 5,
+            message: None,
+            file: Some("cases/token.hew".to_string()),
+        }];
+        let error = diagnostics_match(&expected, &actual)
+            .expect_err("a diagnostic reported against another file must fail the case");
+        assert!(error.contains("cases/token.hew"));
     }
 
     #[test]
@@ -1352,6 +1410,7 @@ mod tests {
                 start_col: 13,
             },
             message: "unused variable seen".to_string(),
+            file: None,
         }];
         let error = diagnostics_match(&[], &actual)
             .expect_err("an undeclared extra diagnostic must fail the case");
@@ -1399,6 +1458,7 @@ mod tests {
                 line: 10,
                 column: 9,
                 message: None,
+                file: None,
             }],
             &["acceptance"],
             "cases/probe.hew",
@@ -1415,6 +1475,7 @@ mod tests {
                 line: 99,
                 column: 9,
                 message: None,
+                file: None,
             }],
             &["acceptance"],
             "cases/probe.hew",

@@ -1,0 +1,19 @@
+[[case]]
+id = "file-import-hir-diagnostic-provenance"
+intent = "A HIR refusal on a file-imported declaration names the file that declared it. The declaration is lowered by both the file-import splice pass and the module-graph walk, so it is reported once per pass and both must carry the declaring file."
+source = "fixtures/file-import-hir-diagnostic-provenance/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "ResourceBoundaryParamMustConsume"
+file = "file-import-hir-diagnostic-provenance/token.hew"
+line = 13
+column = 5
+
+[[case.expected.diagnostics]]
+code = "ResourceBoundaryParamMustConsume"
+file = "file-import-hir-diagnostic-provenance/token.hew"
+line = 13
+column = 5

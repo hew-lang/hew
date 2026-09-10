@@ -1,0 +1,14 @@
+#[linear]
+pub type Token {
+    id: i64,
+}
+
+impl Token {
+    pub fn release(consume self) {}
+}
+
+extern "C" {
+    // A linear handle crossing an invisible boundary must pin its
+    // disposition. HIR refuses this; the checker admits it.
+    fn take_token(t: Token);
+}

@@ -2193,6 +2193,16 @@ impl Checker {
             // that import is out of scope, exactly as it is for its types.
             if let Some(owners) = self.file_import_const_exports.get(name) {
                 let candidates: Vec<String> = owners.iter().cloned().collect();
+                // The declaring file's own body is a same-owner self-reference,
+                // not a cross-file one: the gate exists for a file that did not
+                // write the import, and `helper.hew` never imports itself.
+                if candidates.iter().any(|identity| {
+                    identity
+                        .rsplit_once('.')
+                        .is_some_and(|(owner, _)| Some(owner) == self.current_module.as_deref())
+                }) {
+                    return false;
+                }
                 let detail = candidates
                     .iter()
                     .filter_map(|identity| identity.rsplit_once('.'))

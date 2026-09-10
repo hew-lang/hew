@@ -1,0 +1,6 @@
+import "helper.hew";
+
+pub fn sub_total() -> i64 {
+    let p = Point { x: 1, y: 2 };
+    return p.x + p.y + ORIGIN_X;
+}

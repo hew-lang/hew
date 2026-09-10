@@ -254,12 +254,12 @@ fn map_snapshots_preserve_resource_and_function_value_refusals() {
     // shape's, not a projection's. Every other clone-free value is stored and
     // refused only where an operation copies it out.
     for (declarations, value, reason, keys_ok) in [
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "resource/linear", true),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "resource/linear", true),
-        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "resource/linear", true),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Token", "has no copy operation", true),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} } type Holder { token: Token }", "Holder", "has no copy operation", true),
+        ("#[resource] type Token { id: i64 } impl Token { fn close(consume self) {} }", "Vec<Token>", "has no copy operation", true),
         ("", "fn(i64) -> i64", "no map ingress", false),
-        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "closure value", true),
-        ("", "Vec<fn(i64) -> i64>", "closure value", true),
+        ("type Holder { callback: fn(i64) -> i64 }", "Holder", "has no copy operation", true),
+        ("", "Vec<fn(i64) -> i64>", "has no copy operation", true),
     ] {
         for projection in ["values", "entries", "into_iter"] {
             let source = format!(
@@ -376,7 +376,7 @@ fn forward_declared_map_values_are_checked_after_registration() {
         let output = check(&format!(
             "{declarations} fn main() {{ var values: HashMap<string, Second> = HashMap.new(); values.values(); }}"
         ));
-        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("resource/linear")), "a forward resource value must refuse the copying projection: {:#?}", output.errors);
+        assert!(output.errors.iter().any(|error| error.kind == TypeErrorKind::InvalidOperation && error.message.contains("has no copy operation")), "a forward resource value must refuse the copying projection: {:#?}", output.errors);
     }
 }
 
@@ -390,7 +390,7 @@ fn abstract_map_key_does_not_hide_a_forward_resource_value() {
             .errors
             .iter()
             .any(|error| error.kind == TypeErrorKind::InvalidOperation
-                && error.message.contains("resource/linear")),
+                && error.message.contains("has no copy operation")),
         "an abstract key must not bypass the copying projection's value admission: {:#?}",
         output.errors
     );

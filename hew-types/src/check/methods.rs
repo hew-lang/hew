@@ -5946,9 +5946,7 @@ impl Checker {
                         );
                     }
                 }
-                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
-                    .is_some()
-                    || self.queue_owned_element_admissible(elem_ty)
+                self.queue_element_describable(elem_ty)
             }
             // Builtin container/handle nominals (`Vec`/`HashMap`/`HashSet`/
             // `Rc`/handles/...) can never ride the element-layout queue
@@ -5963,26 +5961,23 @@ impl Checker {
             Ty::Named {
                 builtin: Some(_), ..
             } => false,
-            _ => {
-                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
-                    .is_some()
-                    || self.queue_owned_element_admissible(elem_ty)
-            }
+            // A callable owns a heap environment the envelope has no ingress
+            // for, which `queue_elem_rejection_reason` states in the same
+            // words; every other shape is admitted on its value class.
+            Ty::Function { .. } | Ty::Closure { .. } => false,
+            _ => self.queue_element_describable(elem_ty),
         }
     }
 
-    /// Queue/channel-scoped owned-element admission. A record/enum ELEMENT rides
-    /// the element-layout queue witness only when the Vec-owned authority admits
-    /// it AND it holds no builtin-collection field: the mailbox envelope
-    /// deep-copies the element in but has no per-message recursive drop for a
-    /// `Vec`/`HashMap`/`HashSet` field, so admitting a collection-bearing record
-    /// through a channel leaks the field on every message. Vec STORAGE admits the
-    /// same shape for copy-in `.push` (the outer Vec's per-element `drop_fn` frees
-    /// it), but that is a Vec property, not a queue property — keep the channel
-    /// path fail-closed until the mailbox drop path recurses through collection
-    /// fields.
-    fn queue_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.element_owns_heap(elem_ty)
+    /// Can the element-layout queue witness describe this element?
+    ///
+    /// It can when the element has a value class at all — the class carries the
+    /// clone and destroy actions the envelope needs — and holds no builtin
+    /// collection. A type with no class (an abstract parameter among them) has
+    /// no witness either and stays fail-closed here; the collection rule is the
+    /// mailbox's own, stated on [`Self::queue_element_holds_collection`].
+    fn queue_element_describable(&self, elem_ty: &Ty) -> bool {
+        self.element_value_facts(elem_ty).is_ok()
             && !self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new())
     }
 

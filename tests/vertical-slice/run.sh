@@ -5476,20 +5476,9 @@ if grep -q 'E_CODEGEN_FRONT_FAIL_CLOSED' "${reject_output}"; then
     record_failure "row ${LINENO}" "see stderr above"
 fi
 
-# A refcounted shared handle inside an aggregate has no aggregate-ingress
-# retain, so the composite drop plan would release it once per owner. Fail
-# closed at the checker rather than emitting a program that double-frees.
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/structural_clone_rc_member.hew" \
-    >"${reject_output}" 2>&1; then
-    echo "expected structural_clone_rc_member fixture to fail" >&2
-    record_failure "row ${LINENO}" "see stderr above"
-fi
-# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
-grep -qF 'member `0` of type `Rc<Node>`' "${reject_output}" ||
-    record_failure "row ${LINENO}" "assertion failed"
-grep -q 'no aggregate-ingress retain' "${reject_output}" ||
-    record_failure "row ${LINENO}" "assertion failed"
+# A refcounted shared handle inside an aggregate retains on ingress and
+# releases with the aggregate, so cloning the aggregate is balanced.
+run_accept_expect_stdout "structural_clone_rc_member"
 
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the

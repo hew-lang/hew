@@ -4098,9 +4098,14 @@ fn main() -> i64 {
     );
 }
 
+/// Every value-aggregate position holding an `Rc` clones through the ingress
+/// retain, so the composite drop gives back exactly what ingress took.
 #[test]
-fn tuple_clone_with_rc_member_is_refused() {
-    let source = r#"
+fn value_aggregate_clone_with_rc_member_is_admitted() {
+    let shapes = [
+        (
+            "tuple",
+            r#"
 type Node { value: i64, }
 
 fn main() -> i64 {
@@ -4109,21 +4114,11 @@ fn main() -> i64 {
     let _copied = clone pair;
     0
 }
-"#;
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `0` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "a tuple carrying an `Rc` has no balanced clone/drop plan; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn option_clone_with_rc_payload_is_refused() {
-    let source = r"
+"#,
+        ),
+        (
+            "option",
+            r"
 type Node { value: i64, }
 
 fn main() -> i64 {
@@ -4132,21 +4127,11 @@ fn main() -> i64 {
     let _copied = clone held;
     0
 }
-";
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `Some` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "`Option<Rc<T>>` shares the tuple refusal; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn result_clone_with_rc_payload_is_refused() {
-    let source = r"
+",
+        ),
+        (
+            "result",
+            r"
 type Node { value: i64, }
 
 fn main() -> i64 {
@@ -4155,21 +4140,11 @@ fn main() -> i64 {
     let _copied = clone held;
     0
 }
-";
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `Ok` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "`Result<Rc<T>, E>` shares the tuple refusal; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn record_clone_with_rc_field_is_refused() {
-    let source = r#"
+",
+        ),
+        (
+            "record",
+            r#"
 type Node { value: i64, }
 type Holder { r: Rc<Node>, tag: string, }
 
@@ -4179,16 +4154,17 @@ fn main() -> i64 {
     let _copied = clone holder;
     0
 }
-"#;
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `r` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "the record path carries the same unbalanced drop plan; got: {:?}",
-        output.errors
-    );
+"#,
+        ),
+    ];
+    for (shape, source) in shapes {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "a {shape} carrying an `Rc` clones through the ingress retain; got: {:?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
@@ -4481,39 +4457,6 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     assert!(
         modules.contains(&Some("alpha".to_string())) && modules.contains(&Some("beta".to_string())),
         "both modules must be represented; got {modules:?}"
-    );
-}
-
-#[test]
-fn rc_member_clone_refusal_suggests_no_workaround_that_double_frees() {
-    // Cloning the handle separately and rebuilding the aggregate re-enters the
-    // same missing-ingress-retain path and aborts at `Rc double-free`. The help
-    // text must not send the programmer there.
-    let source = r#"
-type Node { value: i64, }
-
-fn main() -> i64 {
-    let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let pair: (Rc<Node>, string) = (shared, "tag");
-    let _copied = clone pair;
-    0
-}
-"#;
-    let output = check_source(source);
-    let refusal = output
-        .errors
-        .iter()
-        .find(|e| e.message.contains("no aggregate-ingress retain"))
-        .expect("the Rc member refusal must fire");
-    let help = refusal.suggestions.join(" ");
-    assert!(
-        help.contains("a fix is pending"),
-        "the help must state the limitation; got: {help}"
-    );
-    assert!(
-        !help.contains("rebuild"),
-        "the help must not suggest rebuilding the aggregate from a separately cloned handle — \
-         that pattern aborts with `Rc double-free`; got: {help}"
     );
 }
 

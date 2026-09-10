@@ -1,0 +1,15 @@
+// An `Rc` inside a value aggregate retains on ingress and releases with the
+// aggregate, so cloning the aggregate is balanced: the count reflects every
+// live owner and nothing is released twice.
+type Node {
+    value: i64,
+}
+
+fn main() -> i64 {
+    let shared: Rc<Node> = Rc.new(Node { value: 7 });
+    let pair: (Rc<Node>, string) = (shared.clone(), "tag");
+    let copied = clone pair;
+    println(shared.strong_count());
+    println(copied.1);
+    0
+}

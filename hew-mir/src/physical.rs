@@ -10613,6 +10613,7 @@ mod tests {
             aggregate_glue: vec![],
             variant_glue: vec![],
             vector_glue: vec![],
+            shared_glue: vec![],
             map_glue: vec![],
             set_glue: vec![],
             type_facts: BTreeMap::new(),

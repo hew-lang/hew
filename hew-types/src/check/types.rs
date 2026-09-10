@@ -1347,12 +1347,14 @@ pub struct ArmResolution {
     /// itself is expressed via the environment, not here), `None` / unit
     /// variants, and struct/tuple patterns that destructure to wildcards only.
     pub payload_bindings: Vec<PayloadBinding>,
-    /// Nested constructor subpatterns in this arm's constructor payload
-    /// (e.g. the `IoError::NotFound` in `Err(IoError::NotFound)`).
+    /// Nested constructor subpatterns occupying one slot of this arm's
+    /// pattern: a constructor payload (the `IoError::NotFound` in
+    /// `Err(IoError::NotFound)`), a tuple element (the `.Some(n)` in
+    /// `(.Some(n), m)`) or a plain record field (`Point { x: .Some(n) }`).
     ///
-    /// Populated only for `VariantCtor` arms; consumers that cannot honour
-    /// the nested checks (if-let / while-let lowering) MUST fail closed on a
-    /// non-empty vector rather than ignore it.
+    /// `field_idx` indexes the enclosing shape's slots — payload slots for a
+    /// `VariantCtor` arm, declaration-order fields for `StructPattern`, and
+    /// element positions for `TuplePattern`.
     pub payload_variant_patterns: Vec<PayloadVariantPattern>,
 }
 

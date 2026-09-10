@@ -2236,9 +2236,10 @@ pub struct HirPayloadPredicate {
     pub ty: ResolvedTy,
 }
 
-/// Nested constructor subpattern check on one payload slot of an
-/// `EnumVariant` match arm (e.g. the `IoError::NotFound` in
-/// `Err(IoError::NotFound)` or the inner `Ok(v)` in `Ok(Ok(v))`).
+/// Nested constructor subpattern check on one slot of a match arm's shape:
+/// a variant payload slot (the `IoError::NotFound` in
+/// `Err(IoError::NotFound)`, the inner `Ok(v)` in `Ok(Ok(v))`), a record
+/// field (`Point { x: .Some(n) }`) or a tuple element (`(.Some(n), m)`).
 ///
 /// SIR tests the nested tag, then its instantiated literal predicates and
 /// recursive children before selecting the arm. Candidate bindings preserve
@@ -2246,9 +2247,10 @@ pub struct HirPayloadPredicate {
 /// the selected arm acquires those bindings for its body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirPayloadVariantPredicate {
-    /// 0-based payload slot within the ENCLOSING variant.
+    /// 0-based slot within the ENCLOSING shape: a variant payload position,
+    /// a declaration-order record field, or a tuple element.
     pub field_idx: u32,
-    /// Resolved enum type of that payload slot.
+    /// Resolved enum type of that slot.
     pub payload_ty: ResolvedTy,
     /// Checker-resolved identity of the nested variant.
     pub variant_match: VariantMatch,
@@ -2296,8 +2298,9 @@ pub struct HirMatchArm {
     /// Literal checks for constructor payload or record/tuple project fields,
     /// evaluated before bindings and the arm body.
     pub payload_predicates: Vec<HirPayloadPredicate>,
-    /// Nested constructor checks for constructor payload fields, evaluated
-    /// after `payload_predicates` and before bindings/guard/body.
+    /// Nested constructor checks for constructor payload slots, record fields
+    /// or tuple elements, evaluated after `payload_predicates` and before
+    /// bindings/guard/body.
     pub payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
     /// Optional guard expression (`Pattern if <guard> => ...`).
     ///

@@ -120,14 +120,32 @@ fn expand_arm_binding_leaf(
     }
 }
 
-/// Expand a match arm's top-level payload bindings into the leaves actually
-/// visible in the arm body. A top-level field that one of `prelude`'s
-/// `Destructure` statements further projects (an aggregate subpattern like
-/// `Ok((n, s))`) is a synthetic `__payload_*` carrier the source never
-/// wrote; its own leaf binders (`n`, `s`) take its place, recursing for a
-/// subpattern nested inside another. Keyed by `BindingId`, never by name.
+/// Push every binding a nested constructor predicate tree introduces, at any
+/// depth. These live outside `HirMatchArm::bindings` because they name slots
+/// of a nested variant, not of the arm's own shape.
+fn expand_nested_predicate_bindings(
+    predicates: &[HirPayloadVariantPredicate],
+    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+) {
+    for predicate in predicates {
+        for binding in &predicate.bindings {
+            out.push((binding.name.clone(), binding.binding, binding.ty.clone()));
+        }
+        expand_nested_predicate_bindings(&predicate.nested, out);
+    }
+}
+
+/// Expand a match arm's payload bindings into the leaves actually visible in
+/// the arm body. A top-level field that one of `prelude`'s `Destructure`
+/// statements further projects (an aggregate subpattern like `Ok((n, s))`) is
+/// a synthetic `__payload_*` carrier the source never wrote; its own leaf
+/// binders (`n`, `s`) take its place, recursing for a subpattern nested
+/// inside another. `nested` contributes the binders of nested constructor
+/// subpatterns (`Ok(Some(n))`, `(.Some(n), m)`), which the arm's own binding
+/// list does not carry. Keyed by `BindingId`, never by name.
 fn expand_arm_bindings(
     bindings: &[HirMatchArmBinding],
+    nested: &[HirPayloadVariantPredicate],
     prelude: &[HirStmt],
 ) -> Vec<(String, BindingId, ResolvedTy)> {
     let mut by_source: std::collections::HashMap<BindingId, &[HirDestructureField]> =
@@ -153,6 +171,7 @@ fn expand_arm_bindings(
             &mut out,
         );
     }
+    expand_nested_predicate_bindings(nested, &mut out);
     out
 }
 
@@ -17075,11 +17094,14 @@ impl LowerCtx {
             HirExprKind::Block(block) => &block.statements,
             _ => &[],
         };
-        let mut escapees: Vec<(String, ResolvedTy)> =
-            expand_arm_bindings(&hir_arms[0].bindings, arm0_prelude)
-                .into_iter()
-                .map(|(name, _, ty)| (name, ty))
-                .collect();
+        let mut escapees: Vec<(String, ResolvedTy)> = expand_arm_bindings(
+            &hir_arms[0].bindings,
+            &hir_arms[0].payload_variant_predicates,
+            arm0_prelude,
+        )
+        .into_iter()
+        .map(|(name, _, ty)| (name, ty))
+        .collect();
         escapees.sort_by(|a, b| a.0.cmp(&b.0));
 
         let else_hir_block = self.lower_block(else_block, &packed_ty);
@@ -29306,16 +29328,23 @@ impl LowerCtx {
                 constructor_payload_aggregate_subpatterns(&arm.pattern.0)
                     || struct_variant_payload_aggregate_subpatterns(&arm.pattern.0);
 
-            // Nested constructor subpatterns only make sense on an
-            // EnumVariant arm; anything else is a checker contract violation
-            // — fail closed rather than silently dropping the nested checks.
+            // Nested constructor subpatterns occupy a slot of a variant
+            // payload, a record field or a tuple element; any other predicate
+            // has no slot to nest into, so a non-empty vector there is a
+            // checker contract violation — fail closed rather than silently
+            // dropping the nested checks.
             if !resolution.payload_variant_patterns.is_empty()
-                && !matches!(predicate, HirMatchArmPredicate::EnumVariant { .. })
+                && !matches!(
+                    predicate,
+                    HirMatchArmPredicate::EnumVariant { .. }
+                        | HirMatchArmPredicate::RecordProject { .. }
+                        | HirMatchArmPredicate::TupleProject { .. }
+                )
             {
                 self.walk_pattern_arm_body(&arm.body);
                 self.unsupported(
                     pattern_span.clone(),
-                    "nested constructor subpatterns on a non-variant match arm — \
+                    "nested constructor subpatterns on a match arm with no slots — \
                      checker contract violation",
                     "match-expression-substrate",
                 );
@@ -29457,8 +29486,13 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir =
-                self.lower_pattern_arm_body(&arm.body, block_result_ty, &bindings, &body_prelude);
+            let mut body_hir = self.lower_pattern_arm_body(
+                &arm.body,
+                block_result_ty,
+                &bindings,
+                &payload_variant_predicates,
+                &body_prelude,
+            );
             if !body_prelude.is_empty() {
                 let body_ty = body_hir.ty.clone();
                 let body_span = arm.pattern.1.start..arm.body_end();
@@ -29523,6 +29557,7 @@ impl LowerCtx {
         body: &PatternArmBody<'_>,
         block_result_ty: &ResolvedTy,
         bindings: &[HirMatchArmBinding],
+        nested: &[HirPayloadVariantPredicate],
         body_prelude: &[HirStmt],
     ) -> HirExpr {
         match body {
@@ -29541,7 +29576,7 @@ impl LowerCtx {
                 body_span,
             ),
             PatternArmBody::Bindings(span) => {
-                self.pack_arm_bindings(bindings, body_prelude, span.clone())
+                self.pack_arm_bindings(bindings, nested, body_prelude, span.clone())
             }
         }
     }
@@ -29561,10 +29596,11 @@ impl LowerCtx {
     fn pack_arm_bindings(
         &mut self,
         bindings: &[HirMatchArmBinding],
+        nested: &[HirPayloadVariantPredicate],
         body_prelude: &[HirStmt],
         span: Span,
     ) -> HirExpr {
-        let mut ordered = expand_arm_bindings(bindings, body_prelude);
+        let mut ordered = expand_arm_bindings(bindings, nested, body_prelude);
         ordered.sort_by(|a, b| a.0.cmp(&b.0));
         match ordered.as_slice() {
             [] => self.make_unit_expr(span),
@@ -29720,7 +29756,7 @@ impl LowerCtx {
     /// Walk a rejected arm's body so the checker stream stays complete. The
     /// lowered result is discarded; only the diagnostics it produces matter.
     fn walk_pattern_arm_body(&mut self, body: &PatternArmBody<'_>) {
-        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit, &[], &[]);
+        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit, &[], &[], &[]);
     }
 
     /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into

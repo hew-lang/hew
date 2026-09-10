@@ -131,8 +131,13 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
 /// Classify subpatterns that are not yet safe for plain record/tuple project
 /// patterns.
 ///
-/// Literal predicates are supported for plain record/tuple projects. Nested
-/// aggregate and constructor subpatterns remain fail-closed.
+/// Literal predicates and nested variant patterns are supported for plain
+/// record/tuple projects; call sites classify the latter through
+/// [`Checker::nested_constructor_parts`] before reaching this function. The
+/// constructor arms here catch what that classification rejects — a
+/// struct-variant payload (`.Named { .. }`), which has no tuple payload list
+/// to recurse through, and a path that names no variant of the slot type.
+/// Nested aggregate subpatterns remain fail-closed.
 fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
         // Qualified identifier — always a constructor path in project position.
@@ -1808,37 +1813,7 @@ impl Checker {
         for (field_idx, (sub_pattern, sub_span)) in patterns.iter().enumerate() {
             let payload_ty = payload_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
             let resolved_payload = self.project_assoc_types(&self.subst.resolve(&payload_ty));
-            let nested_constructor: Option<(&str, &[Spanned<Pattern>])> = match sub_pattern {
-                Pattern::Constructor { name, patterns } => {
-                    Some((name.as_str(), patterns.as_slice()))
-                }
-                Pattern::Identifier(name) if name.contains("::") => Some((name.as_str(), &[])),
-                Pattern::Identifier(name) => self
-                    .resolve_variant_match(name, &resolved_payload)
-                    .is_some()
-                    .then_some((name.as_str(), &[])),
-                Pattern::ContextVariant(context) => match context.payload.as_ref() {
-                    None => Some((context.name.as_str(), &[])),
-                    Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                        Some((context.name.as_str(), patterns.as_slice()))
-                    }
-                    Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                },
-                Pattern::NominalPath { path, payload }
-                    if self
-                        .resolve_variant_path_match(path, &resolved_payload)
-                        .is_some() =>
-                {
-                    match payload.as_ref() {
-                        None => Some((nominal_path_leaf(path)?, &[])),
-                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                            Some((nominal_path_leaf(path)?, patterns.as_slice()))
-                        }
-                        Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                    }
-                }
-                _ => None,
-            };
+            let nested_constructor = self.nested_constructor_parts(sub_pattern, &resolved_payload);
             if let Some((constructor_name, inner_patterns)) = nested_constructor {
                 ctor_field_idxs.insert(field_idx);
                 let nested = self.build_payload_variant_pattern(
@@ -2016,52 +1991,7 @@ impl Checker {
                     let payload_ty = payload_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
                     let resolved_payload =
                         self.project_assoc_types(&self.subst.resolve(&payload_ty));
-                    // Classify the subpattern: qualified identifiers and
-                    // Pattern::Constructor are always constructors; bare identifiers
-                    // are resolved against the payload type.
-                    let nested_ctor_opt: Option<(&str, &[(Pattern, Span)])> = match sub_pat {
-                        Pattern::Constructor { name, patterns } => {
-                            Some((name.as_str(), patterns.as_slice()))
-                        }
-                        Pattern::Identifier(n) if n.contains("::") => {
-                            Some((n.as_str(), &[] as &[(Pattern, Span)]))
-                        }
-                        Pattern::Identifier(n) => {
-                            if self.resolve_variant_match(n, &resolved_payload).is_some() {
-                                Some((n.as_str(), &[] as &[(Pattern, Span)]))
-                            } else {
-                                None // plain binding regardless of case
-                            }
-                        }
-                        Pattern::ContextVariant(context) => match context.payload.as_ref() {
-                            None => Some((context.name.as_str(), &[] as &[(Pattern, Span)])),
-                            Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                                Some((context.name.as_str(), patterns.as_slice()))
-                            }
-                            Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                        },
-                        Pattern::NominalPath { path, payload }
-                            if self
-                                .resolve_variant_path_match(path, &resolved_payload)
-                                .is_some() =>
-                        {
-                            match payload.as_ref() {
-                                None => Some((
-                                    nominal_path_leaf(path).unwrap_or_default(),
-                                    &[] as &[(Pattern, Span)],
-                                )),
-                                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                                    Some((
-                                        nominal_path_leaf(path).unwrap_or_default(),
-                                        patterns.as_slice(),
-                                    ))
-                                }
-                                Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                            }
-                        }
-                        _ => None,
-                    };
-                    match nested_ctor_opt {
+                    match self.nested_constructor_parts(sub_pat, &resolved_payload) {
                         Some((ctor_name, inner_patterns)) => {
                             ctor_field_idxs.insert(field_idx);
                             let Some(pvp) = self.build_payload_variant_pattern(
@@ -2233,6 +2163,15 @@ impl Checker {
                 };
 
                 let is_enum_variant = variant_match.is_some();
+                // Compute field_idx using declaration order. Missing-field
+                // validation and rest erasure are owned by PatternPlan.
+                let ordered_field_names: Vec<String> = field_order.unwrap_or_else(|| {
+                    let mut names: Vec<String> = field_tys.keys().cloned().collect();
+                    names.sort();
+                    names
+                });
+                let mut ctor_field_idxs: HashSet<usize> = HashSet::new();
+                let mut payload_variant_patterns: Vec<PayloadVariantPattern> = Vec::new();
                 // Reject unsupported payload subpatterns in enum struct-variant
                 // arms. A field with no explicit subpattern (e.g.
                 // `Shape::Move { x, y }`) is a shorthand binding and is always
@@ -2302,70 +2241,61 @@ impl Checker {
                     }
                 } else {
                     for pf in fields {
-                        if let Some((sub_pat, sub_span)) = &pf.pattern {
-                            // Resolve bare identifier subpatterns against the field type
-                            // (#2116): a bare name is a nested constructor only if it
-                            // resolves as a variant of the field type; otherwise it is a
-                            // binder and must be accepted.
-                            if let Pattern::Identifier(n) = sub_pat {
-                                let is_nested_ctor = if n.contains("::") {
-                                    true
-                                } else {
-                                    let field_ty =
-                                        field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
-                                    let resolved_field =
-                                        self.project_assoc_types(&self.subst.resolve(&field_ty));
-                                    self.resolve_variant_match(n, &resolved_field).is_some()
-                                };
-                                if is_nested_ctor {
-                                    self.report_error_with_note(
-                                        crate::error::TypeErrorKind::InvalidOperation,
-                                        sub_span,
-                                        format!(
-                                            "field subpattern `nested constructor` in `{name} {{ {} }}` is not yet supported",
-                                            pf.name
-                                        ),
-                                        pattern_span,
-                                        "record match destructure supports field bindings (`x`), \
-                                         explicit binding aliases (`x: y`), wildcards (`x: _`), \
-                                         and literal field predicates; nested field patterns remain unsupported"
-                                            .to_string(),
-                                    );
-                                    return;
-                                }
-                                // Bare binder (any casing) — allowed; skip the label check.
+                        let Some((sub_pat, sub_span)) = &pf.pattern else {
+                            continue;
+                        };
+                        let field_ty = field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
+                        let resolved_field =
+                            self.project_assoc_types(&self.subst.resolve(&field_ty));
+                        if let Some((ctor_name, inner_patterns)) =
+                            self.nested_constructor_parts(sub_pat, &resolved_field)
+                        {
+                            let Some(field_idx) =
+                                ordered_field_names.iter().position(|n| n == &pf.name)
+                            else {
                                 continue;
-                            }
-                            if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
-                                self.report_error_with_note(
-                                    crate::error::TypeErrorKind::InvalidOperation,
-                                    sub_span,
-                                    format!(
-                                        "field subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
-                                        pf.name
-                                    ),
-                                    pattern_span,
-                                    "record match destructure supports field bindings (`x`), \
-                                     explicit binding aliases (`x: y`), wildcards (`x: _`), \
-                                     and literal field predicates; nested field patterns remain unsupported"
-                                        .to_string(),
-                                );
+                            };
+                            ctor_field_idxs.insert(field_idx);
+                            let Some(pvp) = self.build_payload_variant_pattern(
+                                field_idx,
+                                &field_ty,
+                                ctor_name,
+                                inner_patterns,
+                                sub_span,
+                                pattern_span,
+                            ) else {
                                 return;
-                            }
+                            };
+                            payload_variant_patterns.push(pvp);
+                            continue;
+                        }
+                        if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
+                            self.report_error_with_note(
+                                crate::error::TypeErrorKind::InvalidOperation,
+                                sub_span,
+                                format!(
+                                    "field subpattern `{label}` in `{name} {{ {} }}` is not yet supported",
+                                    pf.name
+                                ),
+                                pattern_span,
+                                "record match destructure supports field bindings (`x`), \
+                                 explicit binding aliases (`x: y`), wildcards (`x: _`), \
+                                 literal field predicates and nested variant patterns \
+                                 (`x: .Some(v)`); nested aggregate field patterns remain \
+                                 unsupported"
+                                    .to_string(),
+                            );
+                            return;
                         }
                     }
                 }
-                // Compute field_idx using declaration order. Missing-field
-                // validation and rest erasure are owned by PatternPlan.
-                let ordered_field_names: Vec<String> = field_order.unwrap_or_else(|| {
-                    let mut names: Vec<String> = field_tys.keys().cloned().collect();
-                    names.sort();
-                    names
-                });
                 let payload_bindings: Vec<PayloadBinding> = fields
                     .iter()
                     .filter_map(|pf| {
                         let field_idx = ordered_field_names.iter().position(|n| n == &pf.name)?;
+                        if ctor_field_idxs.contains(&field_idx) {
+                            return None; // Handled as a nested variant pattern above.
+                        }
                         let ty = field_tys.get(&pf.name).cloned()?;
                         // Only emit a PayloadBinding for the concrete binding
                         // name, not for sub-patterns (those are handled by
@@ -2391,7 +2321,7 @@ impl Checker {
                     },
                     variant_match,
                     payload_bindings,
-                    payload_variant_patterns: vec![],
+                    payload_variant_patterns,
                 }
             }
             // Shorthand `{ a, b }` is only valid in `let` position; the
@@ -2415,31 +2345,26 @@ impl Checker {
                 } else {
                     vec![Ty::Error; pats.len()]
                 };
-                for (idx, (sub_pat, sub_span)) in pats.iter().enumerate() {
-                    // Resolve bare identifier subpatterns against the element type (#2116).
-                    if let Pattern::Identifier(n) = sub_pat {
-                        let is_nested_ctor = if n.contains("::") {
-                            true
-                        } else {
-                            let elem_ty = elem_tys.get(idx).cloned().unwrap_or(Ty::Error);
-                            let resolved_elem =
-                                self.project_assoc_types(&self.subst.resolve(&elem_ty));
-                            self.resolve_variant_match(n, &resolved_elem).is_some()
-                        };
-                        if is_nested_ctor {
-                            self.report_error_with_note(
-                                crate::error::TypeErrorKind::InvalidOperation,
-                                sub_span,
-                                "tuple subpattern `nested constructor` in match destructure is not yet supported"
-                                    .to_string(),
-                                pattern_span,
-                                "tuple match destructure supports element bindings (`x`), wildcards (`_`), \
-                                 unit subpatterns (`()`), and literal element predicates; nested patterns remain unsupported"
-                                    .to_string(),
-                            );
+                let mut ctor_field_idxs: HashSet<usize> = HashSet::new();
+                let mut payload_variant_patterns: Vec<PayloadVariantPattern> = Vec::new();
+                for (field_idx, (sub_pat, sub_span)) in pats.iter().enumerate() {
+                    let elem_ty = elem_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
+                    let resolved_elem = self.project_assoc_types(&self.subst.resolve(&elem_ty));
+                    if let Some((ctor_name, inner_patterns)) =
+                        self.nested_constructor_parts(sub_pat, &resolved_elem)
+                    {
+                        ctor_field_idxs.insert(field_idx);
+                        let Some(pvp) = self.build_payload_variant_pattern(
+                            field_idx,
+                            &elem_ty,
+                            ctor_name,
+                            inner_patterns,
+                            sub_span,
+                            pattern_span,
+                        ) else {
                             return;
-                        }
-                        // Bare binder (any casing) — allowed; skip the label check.
+                        };
+                        payload_variant_patterns.push(pvp);
                         continue;
                     }
                     if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
@@ -2451,7 +2376,8 @@ impl Checker {
                             ),
                             pattern_span,
                             "tuple match destructure supports element bindings (`x`), wildcards (`_`), \
-                             unit subpatterns (`()`), and literal element predicates; nested patterns remain unsupported"
+                             unit subpatterns (`()`), literal element predicates and nested variant \
+                             patterns (`.Some(v)`); nested aggregate element patterns remain unsupported"
                                 .to_string(),
                         );
                         return;
@@ -2462,6 +2388,9 @@ impl Checker {
                     .zip(elem_tys.iter())
                     .enumerate()
                     .filter_map(|(field_idx, ((sub_pat, _sub_span), ty))| {
+                        if ctor_field_idxs.contains(&field_idx) {
+                            return None; // Handled as a nested variant pattern above.
+                        }
                         binding_name_for_pattern(sub_pat).map(|binding_name| PayloadBinding {
                             field_idx,
                             binding_name,
@@ -2473,7 +2402,7 @@ impl Checker {
                     pattern_kind: PatternKind::TuplePattern,
                     variant_match: None,
                     payload_bindings,
-                    payload_variant_patterns: vec![],
+                    payload_variant_patterns,
                 }
             }
             Pattern::Or(left, right) => {
@@ -2695,6 +2624,52 @@ impl Checker {
     /// Returns `None` after reporting (or when `bind_pattern` already
     /// reported, for unresolvable constructor names) so the caller abandons
     /// the arm resolution — a missing side-table entry fails closed in HIR.
+    /// Decide whether one slot subpattern names a constructor of that slot's
+    /// type, and return its name and tuple payload patterns when it does.
+    ///
+    /// This is the single authority for the question across every slot
+    /// position — variant payloads, tuple elements and record fields — so a
+    /// bare identifier is a constructor in exactly one place: when it resolves
+    /// as a variant of `slot_ty`. Qualified names (`Enum::Variant`) are always
+    /// constructor paths; a bare name that does not resolve is a binder,
+    /// whatever its casing (#2116). Struct-variant payloads (`.Named { .. }`)
+    /// return `None`: they have no tuple payload list to recurse through.
+    ///
+    /// `slot_ty` must already be resolved and projected.
+    pub(super) fn nested_constructor_parts<'p>(
+        &self,
+        sub_pattern: &'p Pattern,
+        slot_ty: &Ty,
+    ) -> Option<(&'p str, &'p [Spanned<Pattern>])> {
+        match sub_pattern {
+            Pattern::Constructor { name, patterns } => Some((name.as_str(), patterns.as_slice())),
+            Pattern::Identifier(name) if name.contains("::") => Some((name.as_str(), &[])),
+            Pattern::Identifier(name) => self
+                .resolve_variant_match(name, slot_ty)
+                .is_some()
+                .then_some((name.as_str(), &[] as &[Spanned<Pattern>])),
+            Pattern::ContextVariant(context) => match context.payload.as_ref() {
+                None => Some((context.name.as_str(), &[])),
+                Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                    Some((context.name.as_str(), patterns.as_slice()))
+                }
+                Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+            },
+            Pattern::NominalPath { path, payload }
+                if self.resolve_variant_path_match(path, slot_ty).is_some() =>
+            {
+                match payload.as_ref() {
+                    None => Some((nominal_path_leaf(path)?, &[])),
+                    Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
+                        Some((nominal_path_leaf(path)?, patterns.as_slice()))
+                    }
+                    Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "inline resolution logic for nested constructor subpatterns requires \
@@ -2744,47 +2719,10 @@ impl Checker {
                 .get(inner_idx)
                 .cloned()
                 .unwrap_or(Ty::Error);
-            // Resolution-based nested constructor detection for deeply-nested
-            // payload subpatterns, replacing the old case heuristic in
-            // `nested_ctor_subpattern` (#2116).
             let resolved_inner = self.project_assoc_types(&self.subst.resolve(&inner_ty));
-            let inner_nested_opt: Option<(&str, &[(Pattern, Span)])> = match sub_pat {
-                Pattern::Constructor { name, patterns } => {
-                    Some((name.as_str(), patterns.as_slice()))
-                }
-                Pattern::Identifier(n) if n.contains("::") => {
-                    Some((n.as_str(), &[] as &[(Pattern, Span)]))
-                }
-                Pattern::Identifier(n) => {
-                    if self.resolve_variant_match(n, &resolved_inner).is_some() {
-                        Some((n.as_str(), &[] as &[(Pattern, Span)]))
-                    } else {
-                        None // plain binding regardless of case
-                    }
-                }
-                Pattern::ContextVariant(context) => match context.payload.as_ref() {
-                    None => Some((context.name.as_str(), &[] as &[(Pattern, Span)])),
-                    Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                        Some((context.name.as_str(), patterns.as_slice()))
-                    }
-                    Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                },
-                Pattern::NominalPath { path, payload }
-                    if self
-                        .resolve_variant_path_match(path, &resolved_inner)
-                        .is_some() =>
-                {
-                    match payload.as_ref() {
-                        None => Some((nominal_path_leaf(path)?, &[] as &[(Pattern, Span)])),
-                        Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                            Some((nominal_path_leaf(path)?, patterns.as_slice()))
-                        }
-                        Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => None,
-                    }
-                }
-                _ => None,
-            };
-            if let Some((inner_ctor, inner_subs)) = inner_nested_opt {
+            if let Some((inner_ctor, inner_subs)) =
+                self.nested_constructor_parts(sub_pat, &resolved_inner)
+            {
                 let pvp = self.build_payload_variant_pattern(
                     inner_idx,
                     &inner_ty,

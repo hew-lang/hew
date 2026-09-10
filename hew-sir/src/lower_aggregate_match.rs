@@ -79,12 +79,6 @@ impl Builder<'_, '_> {
                     )
                 }
             }
-            if !arm.payload_variant_predicates.is_empty() {
-                return Err(
-                    "aggregate match arm carries nested variant predicates it cannot select"
-                        .to_string(),
-                );
-            }
         }
 
         let result_ty = self.ty(&whole.ty);
@@ -109,6 +103,9 @@ impl Builder<'_, '_> {
             for predicate in &arm.payload_predicates {
                 let condition = self.lower_payload_literal_test(&fields, predicate)?;
                 failures.push(self.branch_candidate_test(condition)?);
+            }
+            for predicate in &arm.payload_variant_predicates {
+                failures.extend(self.lower_nested_predicate(&fields, predicate, &arm.span)?);
             }
             if let Some(guard) = &arm.guard {
                 let guard_live = self.owned_live.clone();
@@ -144,6 +141,18 @@ impl Builder<'_, '_> {
                         })?;
                     self.redeclare_binding(binding.binding, BindingTarget::Value(field.id))?;
                 }
+                // The nested enums are now owned by the arm: take each apart
+                // once so its own bindings own their payloads and the rest
+                // join the candidate's cleanup set.
+                let owned = transferred
+                    .into_iter()
+                    .map(|field| BlockArg {
+                        value: field.id,
+                        ty: field.ty,
+                        own: field.own,
+                    })
+                    .collect::<Vec<_>>();
+                self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)?;
             }
             self.acquire_selected_match_bindings(&outer_bindings)?;
             let result = self.lower_selected_match_body(arm, &result_ty)?;

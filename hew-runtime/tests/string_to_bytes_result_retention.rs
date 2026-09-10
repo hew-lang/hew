@@ -31,7 +31,7 @@ const BYTES_HEADER_SIZE: usize = 8;
 /// `ptr` must be a live, non-null pointer returned by the bytes runtime.
 #[expect(
     clippy::cast_ptr_alignment,
-    reason = "the documented bytes header is malloc-aligned; AtomicU32 needs four-byte alignment"
+    reason = "the documented bytes header sits in a 16-byte-aligned sized-block allocation; AtomicU32 needs four-byte alignment"
 )]
 unsafe fn owner_count(ptr: *mut u8) -> u32 {
     // SAFETY: the caller supplies a live bytes pointer; its refcount is the
@@ -46,7 +46,7 @@ unsafe fn owner_count(ptr: *mut u8) -> u32 {
 /// `ptr` must be a live, non-null pointer returned by the bytes runtime.
 #[expect(
     clippy::cast_ptr_alignment,
-    reason = "the documented bytes header is malloc-aligned; u32 needs four-byte alignment"
+    reason = "the documented bytes header sits in a 16-byte-aligned sized-block allocation; u32 needs four-byte alignment"
 )]
 unsafe fn capacity(ptr: *mut u8) -> u32 {
     // SAFETY: the capacity is the second u32 in the documented bytes header.

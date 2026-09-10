@@ -61,7 +61,7 @@ unsafe fn write_stderr(msg: &[u8]) {
 ///
 /// # Safety
 ///
-/// `v` must point to a valid, non-null `HewVec` allocated with `libc::malloc`.
+/// `v` must point to a valid, non-null `HewVec` from the sized-block allocator.
 unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -75,7 +75,7 @@ unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
 ///
 /// # Safety
 ///
-/// `v` must point to a valid, non-null `HewVec` allocated with `libc::malloc`.
+/// `v` must point to a valid, non-null `HewVec` from the sized-block allocator.
 /// Callers must have already validated any layout descriptor semantics.
 unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
@@ -334,9 +334,9 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
-    // SAFETY: allocating a zeroed struct with libc::malloc is safe.
+    // SAFETY: allocating a zeroed struct via the sized-block allocator is safe.
     unsafe {
-        let v: *mut HewVec = crate::mem::buf_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
+        let v: *mut HewVec = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
         if v.is_null() {
             libc::abort();
         }
@@ -2798,7 +2798,7 @@ unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
             .checked_mul((*value).elem_size)
             .unwrap_or_else(|| libc::abort());
         let data = if (*value).layout.is_null() {
-            crate::mem::buf_alloc(bytes.max(1)).cast::<u8>()
+            crate::mem::buf_try_alloc(bytes.max(1)).cast::<u8>()
         } else {
             alloc(buffer_layout(bytes, (*(*value).layout).align))
         };

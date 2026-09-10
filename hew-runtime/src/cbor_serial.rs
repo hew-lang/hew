@@ -16,7 +16,7 @@
 //!
 //! ## Encoder: a container stack
 //! `hew_cbor_ser_new` allocates a builder; `hew_cbor_ser_finish` consumes it and
-//! returns a `libc::malloc`'d byte buffer (freed by the shared
+//! returns a sized-block-allocator byte buffer (freed by the shared
 //! `hew_ser_free_bytes`). Between those, the thunk frames a struct as a CBOR map
 //! keyed by the wire `@N` field tags:
 //!
@@ -443,7 +443,7 @@ pub unsafe extern "C" fn hew_cbor_ser_bytes(
     b.emit(Value::Bytes(bytes.to_vec()));
 }
 
-/// Consume the builder and return a `libc::malloc`'d copy of the CBOR bytes;
+/// Consume the builder and return a sized-block-allocator copy of the CBOR bytes;
 /// writes the length into `*out_len`. Returns null on an unbalanced / poisoned
 /// build (a codegen bug) so the caller sees a zero-length body and the decoder
 /// fails closed. Caller owns the buffer; free with `hew_ser_free_bytes`.
@@ -476,7 +476,7 @@ pub unsafe extern "C" fn hew_cbor_ser_finish(buf: *mut c_void, out_len: *mut usi
         return std::ptr::null_mut();
     }
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = crate::mem::buf_alloc(encoded.len()).cast::<u8>();
+    let dst = crate::mem::buf_try_alloc(encoded.len()).cast::<u8>();
     if dst.is_null() {
         return std::ptr::null_mut();
     }
@@ -1259,7 +1259,7 @@ pub unsafe extern "C" fn hew_cbor_de_string(reader: *mut c_void) -> *mut c_char 
     unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Read the staged value as a `bytes` field into a freshly `libc::malloc`'d
+/// Read the staged value as a `bytes` field into a freshly sized-block-allocated
 /// buffer; writes the length to `*out_len`. Returns null for an empty read.
 /// Latches failure on type mismatch. Caller owns the buffer.
 ///
@@ -1287,7 +1287,7 @@ pub unsafe extern "C" fn hew_cbor_de_bytes(reader: *mut c_void, out_len: *mut u3
         return std::ptr::null_mut();
     };
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = crate::mem::buf_alloc(bytes.len()).cast::<u8>();
+    let dst = crate::mem::buf_try_alloc(bytes.len()).cast::<u8>();
     if dst.is_null() {
         r.failed = true;
         return std::ptr::null_mut();

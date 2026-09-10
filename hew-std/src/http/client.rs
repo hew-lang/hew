@@ -507,7 +507,7 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
     // SAFETY: resp was allocated with Box::into_raw in build_response.
     let response = unsafe { Box::from_raw(resp) };
     if !response.body.is_null() {
-        // SAFETY: body was allocated with libc::malloc in str_to_malloc.
+        // SAFETY: body came from str_to_malloc's header-aware C-string allocation.
         unsafe { free_cstring(response.body) }; // CSTRING-FREE: str-open (response.body via raw_http_str_to_malloc)
     }
     if !response.headers.is_null() {
@@ -1626,12 +1626,12 @@ mod tests {
         // SAFETY: url is a valid C string.
         let result = unsafe { hew_http_get_string(url.as_ptr()) };
         assert!(!result.is_null());
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid, header-aware C string.
         let body = unsafe { CStr::from_ptr(result) }
             .to_str()
             .unwrap()
             .to_owned();
-        // SAFETY: result was malloc'd by hew_http_get_string.
+        // SAFETY: result came from hew_http_get_string's header-aware C-string allocation.
         unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
         assert_eq!(body, "body only");
         handle.join().unwrap();
@@ -1646,12 +1646,12 @@ mod tests {
         // SAFETY: all pointers are valid C strings.
         let result = unsafe { hew_http_post_string(url.as_ptr(), ct.as_ptr(), body.as_ptr()) };
         assert!(!result.is_null());
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid, header-aware C string.
         let s = unsafe { CStr::from_ptr(result) }
             .to_str()
             .unwrap()
             .to_owned();
-        // SAFETY: result was malloc'd.
+        // SAFETY: result came from the header-aware C-string allocator.
         unsafe { free_cstring(result) }; // CSTRING-FREE: str-open
         assert_eq!(s, "post body");
         handle.join().unwrap();
@@ -1851,9 +1851,9 @@ mod tests {
         assert!(!result.is_null());
         // SAFETY: headers was allocated by make_tuple_vec and its string fields are freed by hew_vec_free.
         unsafe { hew_cabi::vec::hew_vec_free(headers) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid, live managed string.
         let body = unsafe { string_as_str(result) }.to_owned();
-        // SAFETY: result was malloc'd by hew_http_request_string_hew.
+        // SAFETY: result is owned by this call and released exactly once via string_release.
         unsafe { string_release(result) };
         assert_eq!(body, "hew request string");
         handle.join().unwrap();

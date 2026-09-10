@@ -1612,7 +1612,7 @@ mod tests {
         let b = CString::new("world").unwrap();
         // SAFETY: Both args are valid NUL-terminated C strings.
         let result = unsafe { hew_string_concat(a.as_ptr(), b.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string returned by hew_string_concat.
+        // SAFETY: result is a valid header-aware string returned by hew_string_concat.
         assert_eq!(unsafe { read_and_free(result) }, "hello world");
     }
 
@@ -1622,7 +1622,7 @@ mod tests {
         let b = CString::new("").unwrap();
         // SAFETY: Both args are valid NUL-terminated C strings.
         let result = unsafe { hew_string_concat(a.as_ptr(), b.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
@@ -1631,7 +1631,7 @@ mod tests {
         let b = CString::new("world").unwrap();
         // SAFETY: Null left arg is explicitly handled; b is a valid C string.
         let result = unsafe { hew_string_concat(core::ptr::null(), b.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "world");
     }
 
@@ -1640,7 +1640,7 @@ mod tests {
         let a = CString::new("hello").unwrap();
         // SAFETY: a is a valid C string; null right arg is explicitly handled.
         let result = unsafe { hew_string_concat(a.as_ptr(), core::ptr::null()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello");
     }
 
@@ -1649,7 +1649,7 @@ mod tests {
         let s = CString::new("hello world").unwrap();
         // SAFETY: s is a valid C string; indices are within bounds.
         let result = unsafe { hew_string_slice(s.as_ptr(), 0, 5) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello");
     }
 
@@ -1657,7 +1657,7 @@ mod tests {
     fn test_string_slice_null() {
         // SAFETY: Null input is explicitly handled by hew_string_slice.
         let result = unsafe { hew_string_slice(core::ptr::null(), 0, 5) };
-        // SAFETY: result is a valid malloc'd C string (empty).
+        // SAFETY: result is a valid header-aware string (empty).
         assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
@@ -1666,7 +1666,7 @@ mod tests {
         let s = CString::new("hello").unwrap();
         // SAFETY: s is a valid C string; out-of-bounds indices are handled.
         let result = unsafe { hew_string_slice(s.as_ptr(), 10, 20) };
-        // SAFETY: result is a valid malloc'd C string (empty).
+        // SAFETY: result is a valid header-aware string (empty).
         assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
@@ -1795,7 +1795,7 @@ mod tests {
     fn test_int_to_string() {
         // SAFETY: No pointer arguments.
         let result = unsafe { hew_int_to_string(42) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "42");
     }
 
@@ -1803,7 +1803,7 @@ mod tests {
     fn test_int_to_string_negative() {
         // SAFETY: No pointer arguments.
         let result = unsafe { hew_int_to_string(-7) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "-7");
     }
 
@@ -1811,7 +1811,7 @@ mod tests {
     fn test_int_to_string_zero() {
         // SAFETY: No pointer arguments.
         let result = unsafe { hew_int_to_string(0) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "0");
     }
 
@@ -1821,9 +1821,9 @@ mod tests {
         let t = unsafe { hew_bool_to_string(true) };
         // SAFETY: No pointer arguments.
         let f = unsafe { hew_bool_to_string(false) };
-        // SAFETY: t is a valid malloc'd C string.
+        // SAFETY: t is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(t) }, "true");
-        // SAFETY: f is a valid malloc'd C string.
+        // SAFETY: f is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(f) }, "false");
     }
 
@@ -1832,7 +1832,7 @@ mod tests {
         let s = CString::new("  hello  ").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_trim(s.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello");
     }
 
@@ -1841,7 +1841,7 @@ mod tests {
         let s = CString::new("   ").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_trim(s.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
@@ -1852,7 +1852,7 @@ mod tests {
         let to = CString::new("rust").unwrap();
         // SAFETY: All args are valid NUL-terminated C strings.
         let result = unsafe { hew_string_replace(s.as_ptr(), from.as_ptr(), to.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello rust");
     }
 
@@ -1861,7 +1861,7 @@ mod tests {
         let s = CString::new("HELLO World").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_to_lowercase(s.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "hello world");
     }
 
@@ -1870,7 +1870,7 @@ mod tests {
         let s = CString::new("hello World").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_to_uppercase(s.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "HELLO WORLD");
     }
 
@@ -1879,7 +1879,7 @@ mod tests {
         let s = CString::new("ab").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_repeat(s.as_ptr(), 3) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "ababab");
     }
 
@@ -1888,7 +1888,7 @@ mod tests {
         let s = CString::new("ab").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_repeat(s.as_ptr(), 0) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "");
     }
 
@@ -1914,7 +1914,7 @@ mod tests {
         let s = CString::new("hello").unwrap();
         // SAFETY: s is a valid NUL-terminated C string.
         let result = unsafe { hew_string_reverse_utf8(s.as_ptr()) };
-        // SAFETY: result is a valid malloc'd C string.
+        // SAFETY: result is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(result) }, "olleh");
     }
 
@@ -2106,7 +2106,7 @@ mod tests {
         // SAFETY: v is a valid HewVec from hew_string_split; sep is a valid C string.
         let joined = unsafe { hew_string_join(v, sep.as_ptr()) };
         assert!(!joined.is_null());
-        // SAFETY: joined is a valid malloc'd C string.
+        // SAFETY: joined is a valid header-aware string.
         let result = unsafe { CStr::from_ptr(joined) }
             .to_str()
             .unwrap()
@@ -2166,7 +2166,7 @@ mod tests {
         let s = CString::new("héllo").unwrap();
         // SAFETY: s is a valid NUL-terminated C string; bounds in range.
         let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 1, 4) };
-        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        // SAFETY: read_and_free takes ownership of the slice's header-aware allocation.
         assert_eq!(unsafe { read_and_free(slice) }, "éll");
     }
 
@@ -2175,7 +2175,7 @@ mod tests {
         let s = CString::new("héllo").unwrap();
         // SAFETY: s is a valid NUL-terminated C string; bounds in range.
         let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 0, 5) };
-        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        // SAFETY: read_and_free takes ownership of the slice's header-aware allocation.
         assert_eq!(unsafe { read_and_free(slice) }, "héllo");
     }
 
@@ -2184,7 +2184,7 @@ mod tests {
         let s = CString::new("héllo").unwrap();
         // SAFETY: s is a valid NUL-terminated C string; bounds in range.
         let slice = unsafe { hew_string_slice_codepoints(s.as_ptr(), 2, 2) };
-        // SAFETY: read_and_free takes ownership of the malloc'd slice.
+        // SAFETY: read_and_free takes ownership of the slice's header-aware allocation.
         assert_eq!(unsafe { read_and_free(slice) }, "");
     }
 
@@ -2518,7 +2518,7 @@ mod tests {
         // SAFETY: hew_char_to_string takes only an i32; no pointers.
         let s = unsafe { hew_char_to_string(0x61) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid malloc'd C string.
+        // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "a");
     }
 
@@ -2529,7 +2529,7 @@ mod tests {
         // SAFETY: hew_char_to_string takes only an i32; no pointers.
         let s = unsafe { hew_char_to_string(0x00E9) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid malloc'd C string.
+        // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "é");
     }
 
@@ -2539,7 +2539,7 @@ mod tests {
         // SAFETY: hew_char_to_string takes only an i32; no pointers.
         let s = unsafe { hew_char_to_string(0x4E2D) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid malloc'd C string.
+        // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "中");
     }
 
@@ -2549,7 +2549,7 @@ mod tests {
         // SAFETY: hew_char_to_string takes only an i32; no pointers.
         let s = unsafe { hew_char_to_string(0x1F600) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid malloc'd C string.
+        // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "😀");
     }
 
@@ -2560,7 +2560,7 @@ mod tests {
         // SAFETY: hew_char_to_string takes only an i32; no pointers.
         let s = unsafe { hew_char_to_string(0xD800) };
         assert!(!s.is_null());
-        // SAFETY: s is a valid malloc'd C string.
+        // SAFETY: s is a valid header-aware string.
         assert_eq!(unsafe { read_and_free(s) }, "\u{FFFD}");
     }
 }

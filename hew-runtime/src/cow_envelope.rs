@@ -56,8 +56,9 @@ pub type EnvelopeAlloc = fn(usize) -> *mut c_void;
 ///
 /// # Safety
 ///
-/// `payload` must be allocated by `libc::malloc` (or be null for a zero-sized
-/// payload). Ownership transfers to the returned envelope.
+/// `payload` must be a sized-block allocation from the sized-block allocator
+/// (or null for a zero-sized payload). Ownership transfers to the returned
+/// envelope.
 pub unsafe fn new(
     payload: *mut c_void,
     payload_size: usize,
@@ -214,7 +215,7 @@ mod tests {
     }
 
     fn alloc(size: usize) -> *mut c_void {
-        crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     fn fail_on_selected_call(size: usize) -> *mut c_void {
@@ -222,14 +223,14 @@ mod tests {
         if call == FAIL_ALLOC_ON_CALL.load(Ordering::SeqCst) {
             return ptr::null_mut();
         }
-        crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     fn payload(bytes: &[u8]) -> *mut c_void {
         // SAFETY: the block owns `bytes.len()` writable bytes; the input is a
         // valid slice of that length.
         unsafe {
-            let allocation = crate::mem::buf_alloc(bytes.len()); // ALLOCATOR-PAIRING: GlobalAlloc
+            let allocation = crate::mem::buf_try_alloc(bytes.len()); // ALLOCATOR-PAIRING: GlobalAlloc
             assert!(!allocation.is_null());
             ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.cast::<u8>(), bytes.len());
             allocation

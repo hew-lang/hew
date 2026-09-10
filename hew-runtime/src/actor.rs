@@ -1180,8 +1180,8 @@ pub const HEW_PRIORITY_LOW: i32 = 2;
 /// **Contract**:
 /// - `src` points to a valid wrapper of the actor's state type
 ///   (`init_state_size` bytes).
-/// - Returns a freshly heap-allocated wrapper (`malloc`-compatible allocation
-///   so the runtime can pair it with `libc::free`) whose owned heap fields
+/// - Returns a freshly heap-allocated wrapper (a sized-block allocation the
+///   runtime releases with `buf_free`) whose owned heap fields
 ///   (`Vec`, `String`, IO handles…) are independent deep clones — no byte
 ///   aliasing with `src`.
 /// - Returns `NULL` on allocation failure. The supervisor treats null as
@@ -2645,19 +2645,19 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // 2. User code that overwrites a state field (`self.x = newHeap`) goes
     //    through drop-on-assign on `a.state`, which frees the original
     //    heap. The corresponding pointer inside `a.init_state` becomes
-    //    dangling, but is never dereferenced — only `libc::free` runs over
+    //    dangling, but is never dereferenced — only `buf_free` runs over
     //    the wrapper bytes.
     // 3. Supervisor restart never reads `a.init_state`. Each restart
     //    allocates a fresh state buffer from `InternalChildSpec.init_state`,
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
-    //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
-    //    the caller's spec bytes at registration time.
+    //    by an independent sized-block allocation + `ptr::copy_nonoverlapping`
+    //    from the caller's spec bytes at registration time.
     // SAFETY: terminal teardown owns every remaining state field.
     unsafe { drop_initialized_actor_state(a) };
     // SAFETY: all native state fields are released before publishing completion.
     unsafe { crate::actor_native::finish_native_terminal(a) };
 
-    // SAFETY: State was malloc'd by deep_copy_state.
+    // SAFETY: state came from deep_copy_state's sized-block allocation.
     unsafe {
         crate::mem::buf_free(a.state);
         crate::mem::buf_free(a.init_state);
@@ -2796,7 +2796,7 @@ pub(crate) unsafe fn free_actor_resources_wasm(actor: *mut HewActor) {
         }
     }
 
-    // SAFETY: State was malloc'd by deep_copy_state.
+    // SAFETY: state came from deep_copy_state's sized-block allocation.
     unsafe {
         crate::mem::buf_free(a.state);
         crate::mem::buf_free(a.init_state);
@@ -3046,10 +3046,10 @@ fn actor_state_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    crate::mem::buf_alloc(size)
+    crate::mem::buf_try_alloc(size)
 }
 
-/// Deep-copy `src` into a new malloc'd buffer.
+/// Deep-copy `src` into a new sized-block buffer.
 ///
 /// Returns null if `src` is null, `size` is 0, or allocation fails.
 /// On allocation failure, sets `hew_last_error` with the details.
@@ -3499,7 +3499,7 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     if arena.is_null() {
         // SAFETY: `init_state` was created above and ownership has not been transferred.
         // On the adopt path init_state is null (no allocation to release here);
-        // `cleanup_failed_spawn` will still libc::free `config.state` (the
+        // `cleanup_failed_spawn` will still `buf_free` `config.state` (the
         // adopted clone wrapper).
         unsafe { cleanup_failed_spawn(&config, init_state) };
         return ptr::null_mut();
@@ -3673,8 +3673,8 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 /// arena cap, cycle bit) and the adopted `cloned_state`.
 ///
 /// **Ownership / failure**: on success, the returned actor owns
-/// `cloned_state` (released via `state_drop_fn` + `libc::free` at teardown).
-/// On failure (null return), this function performs a raw `libc::free` of
+/// `cloned_state` (released via `state_drop_fn` + `buf_free` at teardown).
+/// On failure (null return), this function performs a `buf_free` of
 /// `cloned_state`. The caller's `state_drop_fn` is **not** invoked on the
 /// failure path, so any owned heap fields inside the wrapper are leaked.
 /// This is a known Lane A1 limitation (proper failure-path drop is Lane A3
@@ -5412,7 +5412,7 @@ fn actor_ids_to_malloc(ids: &[ActorId]) -> Result<*mut ActorId, &'static str> {
         return Err("hew_actor_drain_set: actor id list size overflow");
     };
     // SAFETY: malloc returns an allocation large enough for `ids.len()` ActorIds or null on failure.
-    let out = crate::mem::buf_alloc(bytes).cast::<ActorId>();
+    let out = crate::mem::buf_try_alloc(bytes).cast::<ActorId>();
     if out.is_null() {
         return Err("hew_actor_drain_set: failed to allocate outcome buffer");
     }
@@ -5765,7 +5765,7 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 /// see the same state pointer the runtime is about to release. State-drop
 /// is invoked on `a.state` only; the companion `a.init_state` is a byte
 /// memcpy of the same wrapper buffer (its embedded field pointers alias
-/// `a.state`'s) and is released with a raw `libc::free` of just the wrapper
+/// `a.state`'s) and is released with `buf_free` of just the wrapper
 /// bytes. Walking it through state-drop would double-free every owned field.
 /// The supervisor child spec holds its own independent deep copy used for
 /// restarts and never reads `a.init_state`.
@@ -6520,7 +6520,7 @@ pub(crate) unsafe fn ask_with_channel_pinned(
 /// data, matching the C runtime convention:
 /// `[original_data | reply_channel_ptr]`
 ///
-/// Returns the reply value (caller must free with [`libc::free`]), or
+/// Returns the reply value (caller must free with `buf_free`), or
 /// null if no reply was produced.
 ///
 /// # Safety
@@ -13295,11 +13295,11 @@ mod tests {
 
         CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
-        // Spawn with a malloc'd source so `state` is non-null: the state-drop
-        // callback only fires when finalize runs over a non-null, non-crashed
-        // state — that is the "was freed" signal.
-        // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        // Spawn with a sized-block-allocated source so `state` is non-null: the
+        // state-drop callback only fires when finalize runs over a non-null,
+        // non-crashed state — that is the "was freed" signal.
+        // SAFETY: buf_try_alloc returns a valid 8-byte allocation.
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is released immediately after.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -13437,7 +13437,7 @@ mod tests {
 
         // Non-null state so the state-drop callback is the "was finalized" signal.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is released immediately after.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -14487,7 +14487,7 @@ mod tests {
         // one refcount that transfers into the alias send.
         unsafe {
             let size = 5usize;
-            let payload = crate::mem::buf_alloc(size);
+            let payload = crate::mem::buf_try_alloc(size);
             assert!(!payload.is_null());
             libc::memcpy(payload, b"alive".as_ptr().cast(), size);
             let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
@@ -14552,7 +14552,7 @@ mod tests {
             crate::deterministic::hew_fault_inject_drop(fault_actor_id, 1);
 
             let size = 4usize;
-            let payload = crate::mem::buf_alloc(size);
+            let payload = crate::mem::buf_try_alloc(size);
             assert!(!payload.is_null());
             libc::memcpy(payload, b"drop".as_ptr().cast(), size);
             let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
@@ -14689,7 +14689,7 @@ mod tests {
                 );
 
                 let size = 5usize;
-                let payload = crate::mem::buf_alloc(size);
+                let payload = crate::mem::buf_try_alloc(size);
                 assert!(!payload.is_null());
                 libc::memcpy(payload, b"alias".as_ptr().cast(), size);
                 let env =
@@ -14764,7 +14764,7 @@ mod tests {
                 // the envelope carries one refcount transferred into the send.
                 unsafe {
                     let size = 5usize;
-                    let payload = crate::mem::buf_alloc(size);
+                    let payload = crate::mem::buf_try_alloc(size);
                     assert!(!payload.is_null());
                     libc::memcpy(payload, b"alias".as_ptr().cast(), size);
                     let env =
@@ -14871,7 +14871,8 @@ mod tests {
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'x'));
                 let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
-                let buf = crate::mem::buf_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
+                let buf =
+                    crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(
@@ -14905,7 +14906,8 @@ mod tests {
             unsafe {
                 let s = crate::string::hew_string_from_char(i32::from(b'y'));
                 let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
-                let buf = crate::mem::buf_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
+                let buf =
+                    crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
                 assert!(!buf.is_null());
                 *buf = s;
                 let env = crate::mailbox::hew_msg_envelope_new(
@@ -15597,7 +15599,7 @@ mod tests {
         // SAFETY: dst is a freshly-allocated 4-byte buffer.
         let copied = unsafe { std::slice::from_raw_parts(dst.cast::<u8>(), 4) };
         assert_eq!(copied, &src);
-        // SAFETY: dst was allocated with libc::malloc.
+        // SAFETY: dst came from deep_copy_state's sized-block allocation.
         unsafe { crate::mem::buf_free(dst) };
     }
 
@@ -15662,11 +15664,11 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
-        // Spawn with a malloc'd source so the resulting actor has a
-        // non-null `state` field (deep-copied). This ensures the
+        // Spawn with a sized-block-allocated source so the resulting actor has
+        // a non-null `state` field (deep-copied). This ensures the
         // state-drop call is not hidden by the inner is_null guard.
-        // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        // SAFETY: buf_try_alloc returns a valid 8-byte allocation.
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -15702,7 +15704,7 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies initialized bytes; src is released below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -15836,7 +15838,7 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -15937,7 +15939,7 @@ mod tests {
         STATE_DROP_AUTHORITY_COUNT.store(0, Ordering::SeqCst);
 
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes; src is freed below.
         let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -16017,7 +16019,7 @@ mod tests {
 
         // --- normal-stop path: terminate_fn must fire ---
         // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the 8 bytes.
         let stopped_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
@@ -16043,7 +16045,7 @@ mod tests {
         // --- crash path: terminate_fn must NOT fire ---
         TERMINATE_CALL_COUNT.store(0, Ordering::SeqCst);
         // SAFETY: malloc returns a valid 8-byte allocation or null; freed below.
-        let src = crate::mem::buf_alloc(8);
+        let src = crate::mem::buf_try_alloc(8);
         assert!(!src.is_null());
         // SAFETY: spawn deep-copies the bytes.
         let crashed_actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };

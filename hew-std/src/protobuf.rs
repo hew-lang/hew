@@ -427,8 +427,8 @@ pub unsafe extern "C" fn hew_proto_msg_set_string(
 
 /// Encode the message to protobuf wire format.
 ///
-/// Returns a `malloc`-allocated buffer. The caller must free it with
-/// `libc::free`. Writes the buffer length to `*out_len`. Returns null on
+/// Returns a buffer from the sized-block allocator. The caller must free it
+/// with `buf_free`. Writes the buffer length to `*out_len`. Returns null on
 /// allocation failure or if `msg` is null.
 ///
 /// # Safety

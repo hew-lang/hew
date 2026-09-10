@@ -23,7 +23,7 @@ use hew_runtime::string::{hew_char_to_string, hew_string_clone, hew_string_drop}
 /// `data` must point to a live header-aware Hew string allocation.
 #[expect(
     clippy::cast_ptr_alignment,
-    reason = "the documented string header is malloc-aligned; AtomicU32 needs four-byte alignment"
+    reason = "the documented string header sits in a 16-byte-aligned allocation; AtomicU32 needs four-byte alignment"
 )]
 unsafe fn string_owner_count(data: *mut HewString) -> u32 {
     // SAFETY: the managed handle is the header base; rc follows byte_len.

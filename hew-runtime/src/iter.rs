@@ -5,10 +5,10 @@
 //! Iterator protocol for Hew collections.
 
 // Pointer casts from the data buffer are safe because the backing storage
-// is allocated via `libc::realloc` which guarantees max alignment.
+// is grown via the sized-block allocator, which guarantees 16-byte alignment.
 #![expect(
     clippy::cast_ptr_alignment,
-    reason = "data buffer allocated via libc::realloc which guarantees max alignment"
+    reason = "data buffer grown via the sized-block allocator, which guarantees 16-byte alignment"
 )]
 
 use core::ffi::c_void;
@@ -79,7 +79,7 @@ pub unsafe extern "C" fn hew_iter_vec(vec: *const HewVec) -> *mut HewIter {
     // SAFETY: caller guarantees `vec` is valid.
     unsafe {
         let v = &*vec;
-        let iter: *mut HewIter = crate::mem::buf_alloc(core::mem::size_of::<HewIter>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
+        let iter: *mut HewIter = crate::mem::buf_try_alloc(core::mem::size_of::<HewIter>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
         if iter.is_null() {
             libc::abort();
         }

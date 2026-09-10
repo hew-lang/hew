@@ -6,8 +6,8 @@
 //! [`hew_msgpack_last_error`] exchange managed strings: the caller receives
 //! one owner and releases it with `hew_string_drop`; null is the canonical
 //! empty string. The raw byte-buffer codec functions below them are not part
-//! of the Hew ABI surface and remain `libc::malloc`-based, freed with
-//! [`hew_msgpack_free`] or `libc::free`.
+//! of the Hew ABI surface and remain sized-block-allocator-based, freed with
+//! [`hew_msgpack_free`] (which calls `buf_free`).
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
@@ -633,8 +633,8 @@ pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *const BytesTriple) -> *mut 
         .to_str()
         .unwrap_or_default()
         .to_owned();
-    // SAFETY: json_ptr was allocated by hew_msgpack_to_json (a malloc'd C string).
-    unsafe { hew_cabi::cabi::free_cstring(json_ptr) }; // CSTRING-FREE: str-open (bridges hew_msgpack_to_json's malloc'd output into a managed string)
+    // SAFETY: json_ptr came from hew_msgpack_to_json's header-aware C-string allocation.
+    unsafe { hew_cabi::cabi::free_cstring(json_ptr) }; // CSTRING-FREE: str-open (bridges hew_msgpack_to_json's header-aware C-string output into a managed string)
     string_from_str(&json)
 }
 

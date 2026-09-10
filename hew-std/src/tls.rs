@@ -1096,8 +1096,8 @@ mod tests {
         // SAFETY: non-null triples produced by this module are refcount-1
         // `hew_bytes_from_static` allocations (header-bearing, per
         // `bytes.rs::alloc_buf`). `hew_bytes_drop` is the correct release —
-        // freeing `triple.ptr` with `libc::free` would free the wrong base
-        // (the allocation header precedes `ptr`) and corrupt the allocator.
+        // freeing `triple.ptr` with `buf_free` directly would free the wrong
+        // base (the allocation header precedes `ptr`) and corrupt the heap.
         // `hew_bytes_drop` is a no-op on a null pointer.
         unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }

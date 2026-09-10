@@ -356,7 +356,7 @@ pub struct HewTask {
     pub state: AtomicI32,
     /// Error code (`None` = success).
     pub error: HewTaskError,
-    /// Task result value (set on completion, malloc'd copy).
+    /// Task result value (set on completion, sized-block-allocated copy).
     pub result: *mut c_void,
     /// Size of `result` in bytes.
     pub result_size: usize,
@@ -733,7 +733,7 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
                 unsafe { drop_fn(t.result) };
             }
         }
-        // SAFETY: result was malloc'd by hew_task_set_result.
+        // SAFETY: result came from hew_task_set_result's sized-block allocation.
         unsafe { crate::mem::buf_free(t.result) };
     }
     if !t.env_ptr.is_null() {
@@ -1356,7 +1356,7 @@ pub unsafe extern "C" fn hew_task_set_result(task: *mut HewTask, result: *mut c_
     let t = unsafe { &mut *task };
     if size > 0 && !result.is_null() {
         // SAFETY: malloc for deep copy.
-        let buf = crate::mem::buf_alloc(size);
+        let buf = crate::mem::buf_try_alloc(size);
         assert!(!buf.is_null(), "OOM allocating task result ({size} bytes)");
         // SAFETY: result points to `size` readable bytes.
         unsafe { ptr::copy_nonoverlapping(result.cast::<u8>(), buf.cast::<u8>(), size) };

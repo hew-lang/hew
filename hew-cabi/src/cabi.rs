@@ -19,7 +19,8 @@ use std::sync::{Mutex, OnceLock};
 /// produces a header-aware string. The returned pointer carries a 16-byte
 /// header at `data - CSTRING_HEADER_SIZE` and MUST be released through
 /// [`free_cstring`] / `hew_string_drop` — never bare `libc::free`, which would
-/// free `data` instead of the allocation base and corrupt the heap.
+/// free `data` instead of the allocation base, corrupt the heap, and mismatch
+/// a block the sized-block allocator owns.
 ///
 /// # Safety
 ///
@@ -34,26 +35,26 @@ pub unsafe fn malloc_cstring(src: *const u8, len: usize) -> *mut c_char {
 /// Copy a Rust `&str` into a **header-aware**, NUL-terminated C string.
 ///
 /// Returns null on allocation failure. The result must be released through
-/// [`free_cstring`] / `hew_string_drop`, never bare `libc::free`.
+/// [`free_cstring`] / `hew_string_drop`, never bare `libc::free` (this pointer
+/// is a sized-block allocation, not a raw one).
 #[must_use]
 pub fn str_to_malloc(s: &str) -> *mut c_char {
     alloc_cstring_from_str(s)
 }
 
-/// Allocate `src.len()` bytes via `libc::malloc`, copying all bytes from
-/// `src`. If `src` is empty, allocates 1 byte (a sentinel) so the returned
-/// pointer is always valid for a subsequent `libc::free`. Returns null on
-/// allocation failure.
+/// Allocate `src.len()` bytes via the sized-block allocator, copying all bytes
+/// from `src`. If `src` is empty, allocates 1 byte (a sentinel) so the
+/// returned pointer is always valid for a subsequent `buf_free`. Returns null
+/// on allocation failure.
 ///
 /// Null handling is the caller's responsibility.
 #[must_use]
 pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
     let len = src.len();
-    // Allocate at least 1 byte so malloc(0) implementation-defined behaviour
-    // is avoided and the sentinel pointer can always be freed by the caller.
-    // SAFETY: We request len.max(1) bytes from malloc; it returns a valid
-    // pointer or null.
-    let ptr = crate::mem::buf_alloc(len.max(1)).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+    // Allocate at least 1 byte so a zero-size request still yields a
+    // freeable, non-null sentinel pointer.
+    // buf_try_alloc returns a valid pointer or null.
+    let ptr = crate::mem::buf_try_alloc(len.max(1)).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
     if ptr.is_null() {
         return ptr;
     }
@@ -66,13 +67,14 @@ pub fn malloc_bytes(src: &[u8]) -> *mut u8 {
     ptr
 }
 
-/// Duplicate a NUL-terminated C string into a fresh `libc::malloc` buffer,
-/// portably. This is a drop-in replacement for `libc::strdup` that links on
-/// every target: Windows UCRT only exports `_strdup` (not `strdup`) for the
-/// MSVC toolchain, so a bare `libc::strdup` reference fails to link any binary
-/// that actually reaches the call site (see hew-lang/hew#2505). The returned
-/// pointer owns a bare-`malloc` allocation with a trailing NUL and MUST be
-/// released with `libc::free` (NOT `free_cstring`, which is header-aware).
+/// Duplicate a NUL-terminated C string into a fresh sized-block-allocator
+/// buffer, portably. This is a drop-in replacement for `libc::strdup` that
+/// links on every target: Windows UCRT only exports `_strdup` (not `strdup`)
+/// for the MSVC toolchain, so a bare `libc::strdup` reference fails to link
+/// any binary that actually reaches the call site (see hew-lang/hew#2505).
+/// The returned pointer owns a sized-block allocation with a trailing NUL and
+/// MUST be released with `buf_free` (NOT `free_cstring`, which expects
+/// `CStringHeader`, a different header).
 ///
 /// Returns null if `src` is null or on allocation failure, matching the
 /// `strdup` contract (null in → null out). Null handling is the caller's
@@ -89,11 +91,10 @@ pub unsafe fn cstr_strdup(src: *const c_char) -> *mut c_char {
     // SAFETY: caller guarantees src is a valid NUL-terminated C string.
     let len = unsafe { CStr::from_ptr(src) }.to_bytes().len();
     // Allocate len + 1 for the trailing NUL. len can be 0 (empty string), and
-    // len + 1 >= 1, so malloc(0) implementation-defined behaviour is avoided
-    // and the pointer is always freeable by libc::free.
-    // SAFETY: We request len + 1 bytes from malloc; it returns a valid pointer
-    // or null.
-    let dst = crate::mem::buf_alloc(len + 1).cast::<c_char>(); // ALLOCATOR-PAIRING: GlobalAlloc
+    // len + 1 >= 1, so the sentinel-block case is avoided and the pointer is
+    // always freeable by buf_free.
+    // buf_try_alloc returns a valid pointer or null.
+    let dst = crate::mem::buf_try_alloc(len + 1).cast::<c_char>(); // ALLOCATOR-PAIRING: GlobalAlloc
     if dst.is_null() {
         return dst;
     }
@@ -103,15 +104,15 @@ pub unsafe fn cstr_strdup(src: *const c_char) -> *mut c_char {
     dst
 }
 
-/// Allocate a 1-byte sentinel via `libc::malloc`. Use this when a zero-length
-/// allocation is needed but a non-null, freeable pointer is required (e.g. an
-/// empty body buffer). Returns null on allocation failure.
+/// Allocate a 1-byte sentinel via the sized-block allocator. Use this when a
+/// zero-length allocation is needed but a non-null, freeable pointer is
+/// required (e.g. an empty body buffer). Returns null on allocation failure.
 ///
 /// Null handling is the caller's responsibility.
 #[must_use]
 pub fn malloc_empty() -> *mut u8 {
-    // SAFETY: We request 1 byte from malloc; it returns a valid pointer or null.
-    crate::mem::buf_alloc(1).cast::<u8>() // ALLOCATOR-PAIRING: GlobalAlloc
+    // buf_try_alloc returns a valid pointer or null.
+    crate::mem::buf_try_alloc(1).cast::<u8>() // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Extract a NUL-terminated C string pointer into a `&str`, returning `None`
@@ -195,16 +196,16 @@ pub unsafe fn cstr_to_string_lossy(ptr: *const c_char) -> String {
 // A full `u64` magic makes an accidental false-accept on *corrupted* header
 // bytes astronomically unlikely (~1 in 1.8e19) versus a `u32` magic (~1 in
 // 4e9). The struct is `magic:u64 + rc:AtomicU32 + reserved:u32` = 16 bytes with
-// `align_of == 8`. `libc::malloc` guarantees alignment suitable for any
-// fundamental type (>= 8 on every supported target, including wasm32), so
-// `base` is >= 8-byte aligned and `data = base + 16` is therefore 8-byte
-// aligned — more than enough for `c_char` and for the header's own fields.
-// `bytes.rs` keeps its own 8-byte `[rc|cap]` layout because it needs a live
-// capacity field, not a magic; unifying the two headers is deferred.
+// `align_of == 8`. The sized-block allocator's blocks are 16-byte aligned
+// (`BUF_ALIGN`), so `base` is 16-byte aligned and `data = base + 16` is
+// therefore 16-byte aligned — more than enough for `c_char` and for the
+// header's own fields. `bytes.rs` keeps its own 8-byte `[rc|cap]` layout
+// because it needs a live capacity field, not a magic; unifying the two
+// headers is deferred.
 
 /// Size of the header preceding the data region, in bytes. Equals
 /// `size_of::<CStringHeader>()`; chosen so `data` (= `base + CSTRING_HEADER_SIZE`)
-/// inherits malloc's alignment guarantee (>= 8 bytes).
+/// inherits the sized-block allocator's 16-byte alignment guarantee.
 pub const CSTRING_HEADER_SIZE: usize = 16;
 
 /// Magic sentinel written into every header-aware C-string allocation and
@@ -282,9 +283,10 @@ pub fn is_managed_cstring(data: *const c_char) -> bool {
     !data.is_null() && cstring_allocation_base(data.cast_mut()).is_some()
 }
 
-/// Allocate a NUL-terminated, header-aware C string via `libc::malloc`, copying
-/// `len` bytes from `src`. The header is initialized with `rc == 1` and the
-/// magic sentinel; the returned pointer is `data = base + CSTRING_HEADER_SIZE`.
+/// Allocate a NUL-terminated, header-aware C string via the sized-block
+/// allocator, copying `len` bytes from `src`. The header is initialized with
+/// `rc == 1` and the magic sentinel; the returned pointer is
+/// `data = base + CSTRING_HEADER_SIZE`.
 ///
 /// Returns null on allocation failure **or** if the requested size would
 /// overflow / exceed `isize::MAX` (fail-closed: a wrapped size would otherwise
@@ -292,7 +294,8 @@ pub fn is_managed_cstring(data: *const c_char) -> bool {
 ///
 /// This is the header-aware replacement for [`malloc_cstring`]. The returned
 /// pointer must be freed with [`free_cstring`] (never bare `libc::free`, which
-/// would free `data` instead of `base` and corrupt the heap).
+/// would free `data` instead of `base`, corrupt the heap, and mismatch a block
+/// the sized-block allocator owns).
 ///
 /// # Safety
 ///
@@ -325,10 +328,11 @@ pub unsafe fn alloc_cstring(src: *const u8, len: usize) -> *mut c_char {
 /// `data_len` data bytes itself, **including any NUL terminator** it needs.
 ///
 /// Returns null on allocation failure **or** if the size would overflow /
-/// exceed `isize::MAX` (fail-closed). The result must be released through
-/// [`free_cstring`] — never bare `libc::free`.
+/// exceed `isize::MAX` (fail-closed).
+/// The result must be released through [`free_cstring`] — never bare
+/// `libc::free`.
 ///
-/// This is the header-aware replacement for a bare `crate::mem::buf_alloc(data_len)` in
+/// This is the header-aware replacement for a bare `crate::mem::buf_try_alloc(data_len)` in
 /// a string producer that fills its buffer incrementally (e.g. `hew_string_concat`,
 /// `hew_string_replace`), where the copy cannot be expressed as a single
 /// [`alloc_cstring`] call.
@@ -337,22 +341,23 @@ pub fn alloc_cstring_data(data_len: usize) -> *mut c_char {
     // Total = HEADER_SIZE + data_len. Compute with checked arithmetic and cap at
     // isize::MAX: a wrapped or over-large size would under-allocate and make the
     // header write overflow the buffer, and the size must be a valid isize for
-    // pointer arithmetic. Fail closed to null, consistent with the malloc-null
-    // path below.
+    // pointer arithmetic. Fail closed to null, consistent with the
+    // allocation-failure path below.
     let total = match CSTRING_HEADER_SIZE.checked_add(data_len) {
         Some(n) if isize::try_from(n).is_ok() => n,
         _ => return std::ptr::null_mut(),
     };
-    // SAFETY: total >= CSTRING_HEADER_SIZE > 0; malloc returns a valid pointer or null.
-    let base = crate::mem::buf_alloc(total).cast::<u8>(); // ALLOCATOR-PAIRING: cstring
+    // total >= CSTRING_HEADER_SIZE > 0; buf_try_alloc returns a valid
+    // pointer or null.
+    let base = crate::mem::buf_try_alloc(total).cast::<u8>(); // ALLOCATOR-PAIRING: cstring
     if base.is_null() {
         return std::ptr::null_mut();
     }
-    // Write the header. `base` is malloc-aligned (>= 8 on every target),
-    // satisfying `align_of::<CStringHeader>()` (8).
+    // Write the header. `base` is 16-byte aligned (the sized-block allocator's
+    // guarantee), satisfying `align_of::<CStringHeader>()` (8).
     #[expect(
         clippy::cast_ptr_alignment,
-        reason = "base is libc::malloc-aligned (>= 8 on every target), \
+        reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
                   satisfying CStringHeader's 8-byte alignment"
     )]
     let header = base.cast::<CStringHeader>();
@@ -402,7 +407,8 @@ unsafe fn validate_cstring_header(data: *mut c_char) -> Option<*mut u8> {
     let base = cstring_allocation_base(data)?;
     #[expect(
         clippy::cast_ptr_alignment,
-        reason = "base is libc::malloc-aligned, satisfying CStringHeader's 8-byte alignment"
+        reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+                  satisfying CStringHeader's 8-byte alignment"
     )]
     let header = base.cast::<CStringHeader>();
     // SAFETY: base is the allocation start; the header is initialized by
@@ -427,8 +433,8 @@ unsafe fn validate_cstring_header(data: *mut c_char) -> Option<*mut u8> {
 #[inline]
 #[expect(
     clippy::cast_ptr_alignment,
-    reason = "base is libc::malloc-aligned (>= 8 on every target), satisfying \
-              CStringHeader's 8-byte alignment; rc (AtomicU32) needs 4"
+    reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+              satisfying CStringHeader's 8-byte alignment; rc (AtomicU32) needs 4"
 )]
 unsafe fn cstring_rc<'a>(data: *mut c_char) -> &'a AtomicU32 {
     let Some(base) = cstring_allocation_base(data) else {
@@ -550,7 +556,7 @@ pub unsafe fn cstring_ensure_unique(data: *mut c_char) -> *mut c_char {
 ///
 /// Memory ordering matches `std::sync::Arc` / `hew-runtime/src/bytes.rs`:
 /// `fetch_sub(Release)` then, on the final release, `fence(Acquire)` before
-/// `libc::free`.
+/// `buf_free`.
 ///
 /// Registry lookup rejects a mis-provenanced or already-retired address before
 /// dereference. The magic then guards against corruption of a registered live
@@ -598,13 +604,14 @@ pub unsafe fn free_cstring(data: *mut c_char) {
     // poison remains useful to memory debuggers inspecting the final write.
     #[expect(
         clippy::cast_ptr_alignment,
-        reason = "base is libc::malloc-aligned, satisfying CStringHeader's 8-byte alignment"
+        reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+                  satisfying CStringHeader's 8-byte alignment"
     )]
     let header = base.cast::<CStringHeader>();
     // SAFETY: base/header are valid; the refcount reached zero so we hold the
     // only reference.
     unsafe { (*header).magic = CSTRING_POISON };
-    // SAFETY: base was allocated by alloc_cstring via libc::malloc.
+    // SAFETY: base was allocated by alloc_cstring via the sized-block allocator.
     unsafe { crate::mem::buf_free(base.cast()) }; // ALLOCATOR-PAIRING: cstring
 }
 
@@ -678,7 +685,7 @@ mod tests {
         // SAFETY: ptr was just allocated by str_to_malloc with a NUL terminator.
         let recovered = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
         assert_eq!(recovered, input);
-        // SAFETY: ptr was allocated with libc::malloc.
+        // SAFETY: ptr was allocated by the sized-block allocator.
         unsafe { free_ptr(ptr) };
     }
 
@@ -689,7 +696,7 @@ mod tests {
         // SAFETY: ptr was just allocated by str_to_malloc with a NUL terminator.
         let recovered = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
         assert_eq!(recovered, "");
-        // SAFETY: ptr was allocated with libc::malloc.
+        // SAFETY: ptr was allocated by the sized-block allocator.
         unsafe { free_ptr(ptr) };
     }
 
@@ -746,7 +753,7 @@ mod tests {
     fn malloc_bytes_empty_returns_nonnull_and_freeable() {
         let ptr = malloc_bytes(&[]);
         assert!(!ptr.is_null(), "empty slice must yield a non-null sentinel");
-        // SAFETY: ptr was allocated by malloc_bytes via libc::malloc.
+        // SAFETY: ptr was allocated by malloc_bytes via the sized-block allocator.
         unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
@@ -786,7 +793,7 @@ mod tests {
             !ptr.is_null(),
             "malloc_empty must return a non-null sentinel"
         );
-        // SAFETY: ptr was allocated by malloc_empty via libc::malloc.
+        // SAFETY: ptr was allocated by malloc_empty via the sized-block allocator.
         unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
@@ -920,7 +927,8 @@ mod tests {
             let base = data.cast::<u8>().sub(CSTRING_HEADER_SIZE);
             #[expect(
                 clippy::cast_ptr_alignment,
-                reason = "base is malloc-aligned, satisfying CStringHeader's alignment"
+                reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+                          satisfying CStringHeader's alignment"
             )]
             let header = base.cast::<CStringHeader>();
             assert_eq!((*header).magic, CSTRING_MAGIC, "magic sentinel missing");
@@ -1005,7 +1013,8 @@ mod tests {
             // Clobber the magic (simulating header corruption).
             #[expect(
                 clippy::cast_ptr_alignment,
-                reason = "base is malloc-aligned, satisfying CStringHeader's alignment"
+                reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+                          satisfying CStringHeader's alignment"
             )]
             let header = base.cast::<CStringHeader>();
             (*header).magic = 0;
@@ -1050,7 +1059,8 @@ mod tests {
                 let base = data.cast::<u8>().sub(CSTRING_HEADER_SIZE);
                 #[expect(
                     clippy::cast_ptr_alignment,
-                    reason = "base is malloc-aligned, satisfying CStringHeader's alignment"
+                    reason = "base is 16-byte aligned (the sized-block allocator's guarantee), \
+                              satisfying CStringHeader's alignment"
                 )]
                 let header = base.cast::<CStringHeader>();
                 (*header).magic = 0;
@@ -1289,7 +1299,7 @@ mod tests {
             src.as_ptr(),
             "the duplicate must be a distinct allocation"
         );
-        // SAFETY: dup was allocated via libc::malloc, so libc::free owns it.
+        // SAFETY: dup was allocated via the sized-block allocator, so buf_free owns it.
         unsafe { crate::mem::buf_free(dup.cast::<std::os::raw::c_void>()) };
     }
 
@@ -1305,7 +1315,7 @@ mod tests {
         );
         // SAFETY: dup is a valid NUL-terminated C string.
         assert_eq!(unsafe { CStr::from_ptr(dup) }.to_bytes().len(), 0);
-        // SAFETY: dup was allocated via libc::malloc.
+        // SAFETY: dup was allocated via the sized-block allocator.
         unsafe { crate::mem::buf_free(dup.cast::<std::os::raw::c_void>()) };
 
         // Null in -> null out, matching the strdup contract.

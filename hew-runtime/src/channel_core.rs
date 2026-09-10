@@ -1577,7 +1577,7 @@ mod tests {
         ready.join().expect("wait-ready thread");
     }
 
-    /// Mock heap-owning element: a tag plus one malloc'd 8-byte buffer. The
+    /// Mock heap-owning element: a tag plus one sized-block-allocated 8-byte buffer. The
     /// clone thunk duplicates the buffer; the drop thunk frees it. Leaks and
     /// double-frees surface under the sanitizer lanes; counts are asserted
     /// through the statics above.
@@ -1593,7 +1593,7 @@ mod tests {
     ) -> i32 {
         let s = &*src.cast::<OwnedElem>();
         let d = &mut *dst.cast::<OwnedElem>();
-        let dup = crate::mem::buf_alloc(8).cast::<u8>();
+        let dup = crate::mem::buf_try_alloc(8).cast::<u8>();
         if !s.heap.is_null() {
             std::ptr::copy_nonoverlapping(s.heap, dup, 8);
         }
@@ -1627,7 +1627,7 @@ mod tests {
     /// (the caller keeps its value; the envelope owns an independent copy).
     fn owned_envelope(tag: u64) -> Vec<u8> {
         unsafe {
-            let heap = crate::mem::buf_alloc(8).cast::<u8>();
+            let heap = crate::mem::buf_try_alloc(8).cast::<u8>();
             std::ptr::write_bytes(heap, 0xA5, 8);
             let src = OwnedElem { tag, heap };
             let mut env = vec![0u8; size_of::<OwnedElem>()];

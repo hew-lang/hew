@@ -4,11 +4,12 @@
 //! surface stays in place for float sorting until Hew can express
 //! `f64::total_cmp` parity.
 
-// The `data` field is `*mut u8` (matching C `void*`) but always allocated via
-// `realloc` which guarantees max alignment. Casts to typed pointers are safe.
+// The `data` field is `*mut u8` (matching C `void*`) but always grown via
+// `buf_realloc` which guarantees 16-byte alignment. Casts to typed pointers
+// are safe.
 #![expect(
     clippy::cast_ptr_alignment,
-    reason = "HewVec data buffer allocated via libc::realloc which guarantees max alignment"
+    reason = "HewVec data buffer grown via buf_realloc which guarantees 16-byte alignment"
 )]
 use hew_cabi::vec::HewVec;
 

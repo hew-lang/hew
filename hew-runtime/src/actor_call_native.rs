@@ -342,7 +342,7 @@ mod tests {
                     state: CallState::Waiting,
                     target: None,
                 }));
-                let payload = crate::mem::buf_alloc(size_of::<*const AtomicUsize>())
+                let payload = crate::mem::buf_try_alloc(size_of::<*const AtomicUsize>())
                     .cast::<*const AtomicUsize>();
                 payload.write(Arc::into_raw(request_drops.clone()));
                 let envelope = hew_msg_envelope_new(

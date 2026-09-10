@@ -5,8 +5,8 @@
 //! `max_output_len` to each decompression entry point so compressed input fails
 //! closed instead of expanding until OOM. A conservative starting cap is
 //! [`DEFAULT_MAX_OUTPUT_LEN`] bytes; tighten it per call site when a smaller
-//! decoded payload is expected. Raw C codec buffers are allocated with
-//! `libc::malloc` and released with [`hew_compress_free`]. The `_hew` adapters
+//! decoded payload is expected. Raw C codec buffers come from the sized-block
+//! allocator and are released with [`hew_compress_free`]. The `_hew` adapters
 //! instead return managed byte or string owners to compiled Hew code.
 use hew_runtime::bytes::BytesTriple;
 use std::io::{self, Read};
@@ -423,7 +423,7 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: ptr was allocated with libc::malloc in read_to_malloc.
+    // SAFETY: ptr came from read_to_malloc's sized-block allocation.
     unsafe { hew_cabi::mem::buf_free(ptr.cast()) }; // CSTRING-FREE: sized-block (read_to_malloc = malloc_bytes byte buffer)
 }
 
@@ -512,7 +512,7 @@ unsafe fn compress_triple(
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
     let result = bytes_triple_from_slice(slice);
-    // SAFETY: ptr was allocated by the codec function via libc::malloc.
+    // SAFETY: ptr came from the codec function's sized-block allocation.
     unsafe { hew_compress_free(ptr) };
     result
 }
@@ -560,7 +560,7 @@ unsafe fn decompress_triple(
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
     let result = bytes_triple_from_slice(slice);
-    // SAFETY: ptr was allocated by the codec function via libc::malloc.
+    // SAFETY: ptr came from the codec function's sized-block allocation.
     unsafe { hew_compress_free(ptr) };
     result
 }

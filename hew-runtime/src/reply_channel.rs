@@ -43,7 +43,7 @@ static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
 /// buffer. On the consumed leg the waiter takes the buffer and its scope-exit
 /// drop releases that heap; on the never-consumed leg (timeout/cancel/
 /// await-cancel/orphan-retire/shutdown) the channel itself must release it.
-/// This is that release: the semantic counterpart to the buffer's `libc::free`
+/// This is that release: the semantic counterpart to the buffer's `buf_free`
 /// (`alias-byte-copy-not-semantic-clone`). It receives the copied buffer
 /// (`value`) and drops `R` in place. Registered once by the ask caller (which
 /// knows `R` statically) via [`hew_reply_channel_set_reply_drop_fn`], before
@@ -66,13 +66,13 @@ pub struct HewReplyChannel {
     /// so the waiter can distinguish a mailbox-teardown null from a
     /// legitimate null reply deposited by the handler.
     pub(crate) orphaned: AtomicBool,
-    /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).
+    /// Reply payload (from [`hew_reply`]'s sized-block allocation, owned by the waiter).
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
     /// Optional typed destructor for the reply payload (`R`'s embedded heap),
     /// run on the delivered-but-never-consumed leg in
-    /// [`hew_reply_channel_free`] before `value` is `libc::free`d. Null (the
+    /// [`hew_reply_channel_free`] before `value` is `buf_free`d. Null (the
     /// default) ⇒ the reply type is bit-copy (no embedded heap) and the buffer
     /// free alone suffices — current behaviour. Stored type-erased as the bits
     /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
@@ -325,7 +325,7 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
     if FORCE_REPLY_ALLOC_FAILURE.swap(false, Ordering::AcqRel) {
         return ptr::null_mut();
     }
-    crate::mem::buf_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
+    crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Retain an additional reference to a reply channel.
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut HewReplyChannel) {
 /// No-op when `value` is null or no destructor is registered. A null
 /// `reply_drop_fn` means either a bit-copy `R` (no embedded heap to reclaim)
 /// or the legacy manual-reclaim contract used by the in-process unit tests
-/// (`strdup` + `libc::free` on the `false` leg) — in that case the caller
+/// (`cstr_strdup` + a matching `buf_free` on the `false` leg) — in that case the caller
 /// still owns `value` and the returned `false` signals it must free it.
 unsafe fn run_registered_reply_drop_on_value(ch: *mut HewReplyChannel, value: *mut c_void) {
     if value.is_null() {
@@ -648,7 +648,7 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut H
 /// never-consumed leg in [`hew_reply_channel_free`]). The producer must NOT
 /// also free `value` in that case. When **no** destructor is registered
 /// (a bit-copy `R` with no embedded heap, or the in-process unit-test contract
-/// that `strdup`s + `libc::free`s its own clone), the `false` return signals
+/// that `cstr_strdup`s + `buf_free`s its own clone), the `false` return signals
 /// the caller still owns `value` and must free it with the matching
 /// type-specific destructor — without one of these two paths, those clones
 /// leak.
@@ -755,11 +755,14 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
 ///
 /// # Allocator pairing contract
 ///
-/// Reply payloads are allocated via `libc::malloc` inside [`alloc_reply_buffer`].
-/// They **must** be freed with this function (which calls `libc::free`) — NOT
-/// with `hew_duplex_payload_free`, which uses Rust's `GlobalAlloc` and would
-/// produce **undefined behaviour** on any platform where `GlobalAlloc ≠ libc
-/// malloc` (e.g. jemalloc, mimalloc).
+/// Reply payloads come from the sized-block allocator inside
+/// [`alloc_reply_buffer`] (`buf_try_alloc`), which stamps a size header
+/// immediately before the payload. They **must** be freed with this function
+/// (which calls `buf_free`, reading that header back) — NOT with
+/// `hew_duplex_payload_free`, which reconstructs a headerless `Box<[u8]>`.
+/// Mixing the two would deallocate with the wrong `Layout` and produce
+/// **undefined behaviour**, even though both ultimately sit on the same
+/// Rust `GlobalAlloc`.
 ///
 /// Passing `ptr = null` is safe and a no-op.
 ///
@@ -814,7 +817,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
 /// Block until a reply is available, returning both value and size.
 ///
 /// Writes the reply size to `*out_size`. The caller owns the returned
-/// pointer and must free it with [`libc::free`].
+/// pointer and must free it with [`hew_reply_payload_free`].
 ///
 /// # Safety
 ///

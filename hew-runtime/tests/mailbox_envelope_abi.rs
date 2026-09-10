@@ -266,8 +266,9 @@ fn msg_node_alloc_zero_inits_new_abi_fields() {
         let node: *mut HewMsgNode = hew_mailbox_try_recv(mb);
         assert!(!node.is_null(), "hew_mailbox_try_recv returned null");
 
-        // The three new fields must be zero regardless of what libc::malloc
-        // left in those bytes — the allocator now explicitly writes 0.
+        // The three new fields must be zero regardless of what the
+        // sized-block allocator left in those bytes — the allocator now
+        // explicitly writes 0.
         assert_eq!(
             (*node).payload_class,
             0,

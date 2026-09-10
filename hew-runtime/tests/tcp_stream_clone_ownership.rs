@@ -67,7 +67,7 @@ fn open_fd_count() -> usize {
 }
 
 /// Drain all items from a `HewStream` into a flat `Vec<u8>`, freeing each
-/// malloc'd buffer. Mirrors `tcp_stream_bridge.rs::drain_bytes`.
+/// sized-block buffer. Mirrors `tcp_stream_bridge.rs::drain_bytes`.
 ///
 /// # Safety
 ///

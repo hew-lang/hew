@@ -3,8 +3,9 @@
 //! Provides AES-256-GCM seal/open helpers for compiled Hew programs.
 //! Returned `bytes` use the runtime `HewVec` allocation path. The Hew-facing
 //! entrypoints (`*_hew`) return managed strings, released with
-//! `hew_string_drop`; the raw two-pass entrypoints still return strings
-//! allocated with `libc::malloc`, freed with `free_cstring`.
+//! `hew_string_drop`; the raw two-pass entrypoints still return strings from
+//! `str_to_malloc` (the header-aware C-string allocator), freed with
+//! `free_cstring`.
 // WASM-TODO(crypto-encrypt): `std::crypto::encrypt` mirrors the sibling native-only crypto
 // modules and is excluded from the wasm runtime's ecosystem-FFI link set.
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};

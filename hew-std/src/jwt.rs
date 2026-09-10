@@ -2,9 +2,9 @@
 //!
 //! Provides HMAC-based JWT encoding, decoding, and validation for compiled Hew
 //! programs. The raw `hew_jwt_encode`/`hew_jwt_decode` entrypoints return
-//! strings allocated with `libc::malloc` and NUL-terminated; free them with
-//! [`hew_jwt_free`]. The Hew-facing `*_hew` entrypoints return managed
-//! strings, released with `hew_string_drop`.
+//! strings from `str_to_malloc` (the header-aware C-string allocator),
+//! NUL-terminated; free them with [`hew_jwt_free`]. The Hew-facing `*_hew`
+//! entrypoints return managed strings, released with `hew_string_drop`.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use jsonwebtoken::{errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation};
@@ -442,7 +442,7 @@ pub unsafe extern "C" fn hew_jwt_free(s: *mut c_char) {
     if s.is_null() {
         return;
     }
-    // SAFETY: s was allocated with libc::malloc and has not been freed.
+    // SAFETY: s came from the header-aware C-string allocator and has not been freed.
     unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc output)
 }
 

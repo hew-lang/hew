@@ -643,7 +643,7 @@ pub unsafe extern "C" fn hew_http_request_body_string(
         crate::http::client::set_http_last_error("http.request.body: body is not valid UTF-8");
         std::ptr::null_mut()
     };
-    // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
+    // SAFETY: ptr came from hew_http_request_body's sized-block allocation.
     unsafe { hew_cabi::mem::buf_free(ptr.cast()) };
     result
 }
@@ -1830,7 +1830,7 @@ mod tests {
         let received = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         let received_str = std::str::from_utf8(received).unwrap();
         assert_eq!(received_str, "{\"key\":\"value\"}");
-        // SAFETY: body_ptr was malloc'd.
+        // SAFETY: body_ptr came from hew_http_request_body's sized-block allocation.
         unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = hew_http_request_body malloc_bytes)
 
         let ct_name = ManagedString::new("Content-Type");
@@ -2275,7 +2275,7 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 0);
-        // SAFETY: body_ptr was malloc'd.
+        // SAFETY: body_ptr came from the sized-block allocator.
         unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
         let text = ManagedString::new("ok");
@@ -2368,7 +2368,7 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         let elapsed = start.elapsed();
         if !body_ptr.is_null() {
-            // SAFETY: body_ptr was malloc'd.
+            // SAFETY: body_ptr came from the sized-block allocator.
             unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
             let text = ManagedString::new("late");
             // SAFETY: req is valid; text is a live managed string.
@@ -2420,10 +2420,10 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 2048);
-        // SAFETY: body_ptr points to `out_len` bytes allocated by libc::malloc.
+        // SAFETY: body_ptr points to `out_len` bytes from the sized-block allocator.
         let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         assert_eq!(body, vec![b'a'; 2048].as_slice());
-        // SAFETY: body_ptr was malloc'd.
+        // SAFETY: body_ptr came from the sized-block allocator.
         unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
         let text = ManagedString::new("ok");

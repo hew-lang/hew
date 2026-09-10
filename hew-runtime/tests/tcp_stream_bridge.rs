@@ -40,7 +40,7 @@ fn make_bridge_pair() -> (i32, TcpStream) {
 }
 
 /// Drain all items from a `HewStream` into a flat Vec<u8>, freeing each
-/// malloc'd buffer returned by `hew_stream_next_sized`.
+/// sized-block buffer returned by `hew_stream_next_sized`.
 ///
 /// # Safety
 ///

@@ -41,7 +41,7 @@ static FORCE_REPLY_ALLOC_FAILURE: AtomicUsize = AtomicUsize::new(0);
 /// leg the cooperative ask loop takes the buffer and its scope-exit drop
 /// releases that heap; on the never-consumed leg (timeout/cancel/orphan-retire)
 /// the channel itself releases it via this destructor, run on the copied buffer
-/// before `libc::free`. Registered once by the ask caller via
+/// before `buf_free`. Registered once by the ask caller via
 /// [`hew_reply_channel_set_reply_drop_fn`]; `None` for a bit-copy `R`.
 pub type HewReplyDropFn = unsafe extern "C" fn(*mut c_void);
 
@@ -55,13 +55,13 @@ pub type HewReplyDropFn = unsafe extern "C" fn(*mut c_void);
 pub struct WasmReplyChannel {
     /// Manual reference count shared by the waiting side and the in-flight reply.
     refs: usize,
-    /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).
+    /// Reply payload (from [`hew_reply`]'s sized-block allocation, owned by the waiter).
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
     /// Optional typed destructor for the reply payload (`R`'s embedded heap),
     /// run on the delivered-but-never-consumed leg in
-    /// [`hew_reply_channel_free`] before `value` is `libc::free`d. `None` (the
+    /// [`hew_reply_channel_free`] before `value` is `buf_free`d. `None` (the
     /// default) ⇒ bit-copy reply, buffer free alone suffices. Set once by the
     /// ask caller before submit; single-threaded so a plain field suffices (no
     /// atomic, mirroring the other WASM channel fields).
@@ -166,7 +166,7 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
         return ptr::null_mut();
     }
     // SAFETY: delegates to libc allocator for the requested reply payload size.
-    crate::mem::buf_alloc(size)
+    crate::mem::buf_try_alloc(size)
 }
 
 /// Retain an additional reference to a WASM reply channel.
@@ -391,7 +391,7 @@ pub(crate) unsafe fn reply_ready(ch: *mut WasmReplyChannel) -> bool {
 
 /// Read the reply value from the channel.
 ///
-/// Returns the reply pointer (caller must free with [`libc::free`]),
+/// Returns the reply pointer (caller must free with `buf_free`),
 /// or null if no reply was deposited.
 ///
 /// # Safety
@@ -551,7 +551,7 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut WasmReplyChannel) {
 /// reply arrives, the deadline expires, or the run queue drains.
 ///
 /// The caller owns the returned pointer and must free it with
-/// [`libc::free`].
+/// `buf_free`.
 ///
 /// # Safety
 ///
@@ -607,7 +607,7 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
 /// activation at a time until the reply arrives or the run queue drains.
 ///
 /// The caller owns the returned pointer and must free it with
-/// [`libc::free`].
+/// `buf_free`.
 ///
 /// # Safety
 ///
@@ -1085,7 +1085,7 @@ mod tests {
         assert_eq!(winner, 0);
         // Clean up value + channel.
         // SAFETY: ch is still live; reply_take transfers ownership of the
-        // malloc'd reply buffer — free it before releasing the channel.
+        // sized-block-allocated reply buffer — free it before releasing the channel.
         unsafe {
             let val = reply_take(ch);
             if !val.is_null() {
@@ -1126,7 +1126,7 @@ mod tests {
         assert_eq!(winner, 0, "should pick lowest-index ready channel");
         // Clean up.
         // SAFETY: channels are live; reply_take transfers ownership of the
-        // malloc'd reply buffer — free each before releasing its channel.
+        // sized-block-allocated reply buffer — free each before releasing its channel.
         unsafe {
             let val0 = reply_take(ch0);
             if !val0.is_null() {

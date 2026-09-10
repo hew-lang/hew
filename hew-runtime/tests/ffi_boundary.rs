@@ -104,9 +104,9 @@ unsafe fn read_foreign_cstr<'a>(p: *const c_char) -> &'a str {
 /// (`[CStringHeader][data]`, data pointer = `base+16`). Such results MUST be
 /// released through the public `hew_string_drop` consumer (which recovers the
 /// base via `data-16`, validates the magic sentinel, and skips static strings)
-/// — never via bare `libc::free`, which would interior-free `base+16` and
-/// corrupt the heap. Genuinely raw `libc::malloc` results (e.g.
-/// `hew_reply_wait` payloads) keep bare `libc::free`.
+/// — never via `buf_free`, which would treat `base+16` as the sized-block
+/// header and corrupt the heap. Sized-block allocator payloads (e.g.
+/// `hew_reply_wait` results) are freed with `buf_free` instead.
 unsafe fn free_hew_string(p: *mut HewString) {
     unsafe { hew_string_drop(p) };
 }

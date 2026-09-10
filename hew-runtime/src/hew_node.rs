@@ -1193,7 +1193,7 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
     }
 
     // SAFETY: malloc for reply buffer.
-    let result = crate::mem::buf_alloc(reply_data.len());
+    let result = crate::mem::buf_try_alloc(reply_data.len());
     if result.is_null() {
         return ptr::null_mut();
     }
@@ -1588,7 +1588,7 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
         ));
         return;
     }
-    // The reconstructed value lives in a malloc'd buffer of `struct_size` bytes
+    // The reconstructed value lives in a sized-block-allocated buffer of `struct_size` bytes
     // (the in-memory struct size, NOT the wire length). hew_actor_send_by_id
     // deep-copies `struct_size` bytes into the mailbox, MOVING the owned heap
     // fields (strings/bytes) into the mailbox copy — exactly the move semantics
@@ -1605,7 +1605,7 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
             struct_size,
         )
     };
-    // SAFETY: value came from decode_payload (libc::malloc).
+    // SAFETY: value came from decode_payload's sized-block allocation.
     unsafe { crate::mem::buf_free(value) };
 }
 
@@ -1727,7 +1727,7 @@ fn handle_inbound_ask(
     // Free the reconstructed request shell now the ask copied it into the mailbox
     // (owned fields moved into the mailbox copy, matching local-send semantics).
     if let Some((value, _)) = decoded_request {
-        // SAFETY: value came from decode_payload (libc::malloc).
+        // SAFETY: value came from decode_payload's sized-block allocation.
         unsafe { crate::mem::buf_free(value) };
     }
 
@@ -1760,7 +1760,7 @@ fn handle_inbound_ask(
         // `(target dispatch, request msg_type)` — the same target actor type that
         // just produced the reply, so a colliding `msg_type` on another actor
         // type cannot select the wrong reply codec.
-        // SAFETY: reply_ptr came from hew_reply which malloc'd the reply struct.
+        // SAFETY: reply_ptr came from hew_reply's sized-block allocation of the reply struct.
         let size = unsafe { crate::actor::hew_reply_data_size(reply_ptr) };
         if size > 0 {
             let mut out_len: usize = 0;
@@ -1771,7 +1771,7 @@ fn handle_inbound_ask(
             let bytes = unsafe {
                 crate::xnode_serial::encode_reply(dispatch, msg_type, reply_ptr, &raw mut out_len)
             };
-            // SAFETY: reply_ptr was malloc'd by hew_reply; free after encoding.
+            // SAFETY: reply_ptr came from hew_reply's sized-block allocation; free after encoding.
             // NOTE (robustness gap): `reply_ptr` is a flat memcpy of the actor's
             // reply value.  If the reply type has owned string/bytes fields, their
             // heap allocations are bit-copied into this buffer.  `encode_reply`
@@ -1801,11 +1801,11 @@ fn handle_inbound_ask(
             }
             // SAFETY: bytes is valid for out_len bytes (from encode_reply).
             let v = unsafe { std::slice::from_raw_parts(bytes, out_len) }.to_vec();
-            // SAFETY: bytes came from encode_reply (libc::malloc).
+            // SAFETY: bytes came from encode_reply's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
             v
         } else {
-            // SAFETY: reply_ptr was malloc'd by hew_reply.
+            // SAFETY: reply_ptr came from hew_reply's sized-block allocation.
             unsafe { crate::mem::buf_free(reply_ptr) };
             Vec::new()
         }
@@ -2644,7 +2644,7 @@ pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
     }
 
     if !node.bind_addr_owned.is_null() {
-        // SAFETY: bind_addr_owned was allocated via cstr_strdup (libc::malloc).
+        // SAFETY: bind_addr_owned was allocated via cstr_strdup's sized-block allocation.
         unsafe { crate::mem::buf_free(node.bind_addr_owned.cast::<c_void>()) };
         node.bind_addr_owned = ptr::null_mut();
         node.bind_addr = ptr::null();
@@ -2944,7 +2944,7 @@ pub unsafe extern "C" fn hew_node_send_location(
     .is_none()
     {
         if let Some((bytes, _)) = serialized {
-            // SAFETY: bytes came from encode_payload (libc::malloc).
+            // SAFETY: bytes came from encode_payload's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
         }
         return -1;
@@ -2969,7 +2969,7 @@ pub unsafe extern "C" fn hew_node_send_location(
     };
     if let Some((bytes, _)) = serialized {
         // hew_connmgr_send copies the bytes into its envelope; free our copy.
-        // SAFETY: bytes came from encode_payload (libc::malloc).
+        // SAFETY: bytes came from encode_payload's sized-block allocation.
         unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
     }
     rc
@@ -6282,7 +6282,7 @@ fn setup_remote_ask(
                 set_last_error(format!("hew_node_api_ask: {err}"));
                 reply_table().remove(request_id);
                 if let Some((b, _)) = serialized_req {
-                    // SAFETY: b came from encode_payload (libc::malloc).
+                    // SAFETY: b came from encode_payload's sized-block allocation.
                     unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
                 }
                 return RemoteAskSetupResult::Error(AskError::EncodeFailed);
@@ -6290,7 +6290,7 @@ fn setup_remote_ask(
         };
         // The envelope copied the request bytes; free our serialized copy.
         if let Some((b, _)) = serialized_req {
-            // SAFETY: b came from encode_payload (libc::malloc).
+            // SAFETY: b came from encode_payload's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
         }
 
@@ -6381,7 +6381,7 @@ fn finish_remote_ask_outcome(
         // The reconstructed struct size must match the codegen reply slot. A
         // mismatch is a codec/layout drift — fail closed rather than hand the
         // caller a wrong-sized buffer.
-        // SAFETY: value came from decode_reply (libc::malloc).
+        // SAFETY: value came from decode_reply's sized-block allocation.
         unsafe { crate::mem::buf_free(value) };
         return ask_null(AskError::PayloadSizeMismatch);
     }
@@ -7062,8 +7062,8 @@ mod tests {
             }
             return std::ptr::null_mut();
         }
-        // SAFETY: malloc a u32-sized value the caller owns via libc::free.
-        let dst = crate::mem::buf_alloc(std::mem::size_of::<u32>()).cast::<u32>();
+        // SAFETY: allocate a u32-sized value the caller owns via buf_free.
+        let dst = crate::mem::buf_try_alloc(std::mem::size_of::<u32>()).cast::<u32>();
         if dst.is_null() {
             return std::ptr::null_mut();
         }
@@ -7876,9 +7876,9 @@ mod tests {
             )
         };
         assert!(!reply_ptr.is_null(), "two-process echo ask returned null");
-        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
-        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
+        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
         unsafe { crate::mem::buf_free(reply_ptr) };
         assert_eq!(
             reply_value, 42,
@@ -10264,7 +10264,7 @@ mod tests {
         // Exact match still succeeds (non-null, owned buffer the caller frees).
         let ok = remote_reply_data_to_ptr(&[1u8, 2, 3, 4], 4);
         assert!(!ok.is_null(), "exact-size reply payload must succeed");
-        // SAFETY: ok was malloc'd by remote_reply_data_to_ptr; free it once.
+        // SAFETY: ok came from remote_reply_data_to_ptr's sized-block allocation; free it once.
         unsafe { crate::mem::buf_free(ok) };
     }
 
@@ -11180,7 +11180,7 @@ mod tests {
         // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
         let send_value: u32 = 21;
         let target = remote_pid_for_node(&node2, actor_id);
-        // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
+        // SAFETY: send_value is a valid u32 on the stack; reply is sized-block-allocated, freed below.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
                 &raw const target,
@@ -11197,14 +11197,14 @@ mod tests {
             !reply_ptr.is_null(),
             "remote ask should return a non-null reply"
         );
-        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
         assert_eq!(
             reply_value,
             send_value * 2,
             "echo-double should return 21 * 2 = 42"
         );
-        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
+        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
         unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
@@ -11312,14 +11312,14 @@ mod tests {
             !reply_ptr.is_null(),
             "resumed async ask should bind a non-null reply"
         );
-        // SAFETY: reply_ptr was malloc'd by the finish path; valid for a u32 read.
+        // SAFETY: reply_ptr came from the finish path's sized-block allocation; valid for a u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
         assert_eq!(
             reply_value,
             send_value * 2,
             "echo-double should return 21 * 2 = 42"
         );
-        // SAFETY: reply_ptr was malloc'd and is ours to free.
+        // SAFETY: reply_ptr came from the sized-block allocator and is ours to free.
         unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actors and nodes were allocated in this test and are valid.
@@ -12489,7 +12489,7 @@ mod tests {
             )
         };
         assert!(!reply_ptr.is_null(), "remote ask must succeed");
-        // SAFETY: reply was malloc'd by hew_reply; we own it after the ask.
+        // SAFETY: reply came from hew_reply's sized-block allocation; we own it after the ask.
         unsafe { crate::mem::buf_free(reply_ptr) };
 
         // After the ask completes the handler thread exits, dropping InboundAskGuard.

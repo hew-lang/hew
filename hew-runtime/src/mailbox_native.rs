@@ -330,7 +330,7 @@ mod tests {
             // channel references remain live until their owners release them.
             unsafe {
                 let payload =
-                    crate::mem::buf_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
+                    crate::mem::buf_try_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
                 payload.write(source);
                 let channel = crate::reply_channel::native::hew_reply_channel_new_native(
                     waker.descriptor(),
@@ -393,7 +393,7 @@ mod tests {
             // SAFETY: the unpublished wrapper shallowly aliases the source's Arc.
             unsafe {
                 let payload =
-                    crate::mem::buf_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
+                    crate::mem::buf_try_alloc(size_of_val(&source)).cast::<*const AtomicUsize>();
                 payload.write(source);
                 let wait = hew_actor_send_wait_new(
                     crate::lifetime::local_handles::HewLocalPidId::INVALID,

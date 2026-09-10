@@ -1431,8 +1431,8 @@ pub unsafe extern "C" fn hew_stream_next_sized(
         }
         // For empty items, allocate 1 byte so the pointer is non-null.
         let alloc_len = if len == 0 { 1 } else { len };
-        // SAFETY: libc::malloc returns a valid aligned pointer or null.
-        let buf = crate::mem::buf_alloc(alloc_len); // ALLOCATOR-PAIRING: GlobalAlloc  // CSTRING-ALLOC: sized-block (hew_stream_next_sized item buffer)
+        // buf_try_alloc returns a valid, aligned pointer or null.
+        let buf = crate::mem::buf_try_alloc(alloc_len); // ALLOCATOR-PAIRING: GlobalAlloc  // CSTRING-ALLOC: sized-block (hew_stream_next_sized item buffer)
         if buf.is_null() {
             return ptr::null_mut();
         }
@@ -1454,7 +1454,7 @@ pub unsafe extern "C" fn hew_stream_next_sized(
 ///
 /// On success the item bytes are copied into `*buf` and the byte count is
 /// returned (>= 0).  If the item is larger than `*buf_cap`, the buffer is
-/// grown via `libc::realloc`, and both `*buf` and `*buf_cap` are updated so
+/// grown via `buf_realloc`, and both `*buf` and `*buf_cap` are updated so
 /// the caller can reuse the (possibly larger) buffer on subsequent calls.
 ///
 /// Returns -1 on EOF (stream exhausted) or if `stream`, `buf`, or `buf_cap`
@@ -1524,8 +1524,8 @@ pub unsafe extern "C" fn hew_stream_next_view(
 /// caller can later pass to [`hew_stream_cancel_pending_read`] to withdraw
 /// the registration. When an item arrives (or the stream reaches EOF), the
 /// runtime invokes `callback(userdata, item_ptr)` where `item_ptr` is a
-/// `libc::malloc`-allocated copy of the item bytes (the callback MUST free
-/// it via `libc::free`) or null for EOF. This is the bare-bytes adapter
+/// sized-block-allocator copy of the item bytes (the callback MUST free
+/// it via `buf_free`) or null for EOF. This is the bare-bytes adapter
 /// ownership contract — distinct from [`hew_stream_next`], which on the
 /// `Stream<string>::recv` surface returns a managed `*mut HewString` the
 /// MIR drop spine frees via `hew_string_drop`.
@@ -1669,7 +1669,7 @@ pub unsafe extern "C" fn hew_stream_poll(
         // the park thread per the function-level Safety contract.
         let item = unsafe { (*stream).inner.next() };
 
-        // Marshal the item into a malloc'd buffer (same ABI as
+        // Marshal the item into a sized-block buffer (same ABI as
         // hew_stream_next) before taking the state lock so we minimise
         // the critical section.
         let item_ptr: *mut c_void = match item {
@@ -1678,7 +1678,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 let len = bytes.len();
                 // SAFETY: Bounds — malloc(len+1) returns a pointer to at
                 // least len+1 bytes or null; null is handled below.
-                let buf = crate::mem::buf_alloc(len + 1); // ALLOCATOR-PAIRING: GlobalAlloc  // CSTRING-ALLOC: sized-block (hew_stream_poll item buffer)
+                let buf = crate::mem::buf_try_alloc(len + 1); // ALLOCATOR-PAIRING: GlobalAlloc  // CSTRING-ALLOC: sized-block (hew_stream_poll item buffer)
                 if buf.is_null() {
                     ptr::null_mut()
                 } else {
@@ -1709,7 +1709,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 // pending_state slot.
                 if !item_ptr.is_null() {
                     // SAFETY: Provenance + Failure mode — item_ptr was
-                    // malloc'd by libc::malloc above; null is excluded
+                    // allocated via the sized-block allocator above; null is excluded
                     // by the if-guard. Ownership transfers to free here.
                     unsafe { crate::mem::buf_free(item_ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
                 }
@@ -1743,7 +1743,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 // park thread itself transitions Pending → Done. Treat
                 // as a no-op (defensive).
                 if !item_ptr.is_null() {
-                    // SAFETY: same as Cancelled branch — malloc'd above,
+                    // SAFETY: same as Cancelled branch — allocated via the sized-block allocator above,
                     // non-null guarded, ownership transferred to free.
                     unsafe { crate::mem::buf_free(item_ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
                 }
@@ -3085,7 +3085,7 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    /// Read all items from a stream via the sized FFI, freeing each malloc'd buffer.
+    /// Read all items from a stream via the sized FFI, freeing each sized-block buffer.
     ///
     /// # Safety
     ///
@@ -3101,7 +3101,7 @@ mod tests {
             }
             // SAFETY: ptr is valid for `size` bytes per hew_stream_next_sized contract.
             let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
-            // SAFETY: ptr was malloc'd by hew_stream_next_sized.
+            // SAFETY: ptr was allocated by hew_stream_next_sized's sized-block allocation.
             unsafe { crate::mem::buf_free(ptr) }; // ALLOCATOR-PAIRING: GlobalAlloc
             items.push(bytes);
         }
@@ -3428,7 +3428,7 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer is large enough.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = crate::mem::buf_alloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 64;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 5);
@@ -3448,7 +3448,7 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer will be grown.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = crate::mem::buf_alloc(2).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(2).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 2;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, i64::try_from(data.len()).unwrap());
@@ -3507,7 +3507,7 @@ mod tests {
         // SAFETY: empty stream hits EOF immediately.
         unsafe {
             let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
-            let mut buf: *mut u8 = crate::mem::buf_alloc(16).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(16).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 16;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, -1, "EOF must return -1");
@@ -3523,7 +3523,7 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer is exactly the right size.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = crate::mem::buf_alloc(4).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(4).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 4;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 4);
@@ -3551,7 +3551,7 @@ mod tests {
             hew_sink_write(sink, b_data.as_ptr().cast(), b_data.len());
             hew_sink_close(sink);
 
-            let mut buf: *mut u8 = crate::mem::buf_alloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 64;
             let original_buf = buf;
 
@@ -3589,7 +3589,7 @@ mod tests {
         // SAFETY: stream + buffer are valid.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = crate::mem::buf_alloc(1).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+            let mut buf: *mut u8 = crate::mem::buf_try_alloc(1).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
             let mut cap: usize = 1;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 1);
@@ -4920,12 +4920,12 @@ mod tests {
         if item.is_null() {
             sink.last_was_null.store(1, TestOrdering::Release);
         } else {
-            // SAFETY: item is the malloc'd buffer; we just peek the first byte.
+            // SAFETY: item is the sized-block buffer; we just peek the first byte.
             let first = unsafe { *(item as *const u8) };
             sink.last_first_byte
                 .store(first as usize, TestOrdering::Release);
             // The callback owns the buffer.
-            // SAFETY: item was malloc'd by hew_stream_poll's park thread.
+            // SAFETY: item came from hew_stream_poll's park thread's sized-block allocation.
             unsafe { crate::mem::buf_free(item) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
         sink.fired.fetch_add(1, TestOrdering::Release);
@@ -5900,7 +5900,7 @@ mod tests {
         // SAFETY: thunk contract — dst holds a writable memcpy of src.
         let d = unsafe { &mut *dst.cast::<StOwnedElem>() };
         // SAFETY: plain allocation; freed by st_owned_drop.
-        let dup = crate::mem::buf_alloc(8).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
+        let dup = crate::mem::buf_try_alloc(8).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
         if !s.heap.is_null() {
             // SAFETY: both buffers are 8 bytes.
             unsafe { std::ptr::copy_nonoverlapping(s.heap, dup, 8) };
@@ -5914,7 +5914,7 @@ mod tests {
         // SAFETY: thunk contract — slot is a live element being released.
         let e = unsafe { &mut *slot.cast::<StOwnedElem>() };
         if !e.heap.is_null() {
-            // SAFETY: heap was malloc'd by st_owned_clone / the test body.
+            // SAFETY: heap was allocated via the sized-block allocator by st_owned_clone / the test body.
             unsafe { crate::mem::buf_free(e.heap.cast()) };
             e.heap = ptr::null_mut();
         }
@@ -5949,7 +5949,7 @@ mod tests {
 
             let layout = st_owned_layout();
             for tag in [21u64, 22u64] {
-                let heap = crate::mem::buf_alloc(8).cast::<u8>();
+                let heap = crate::mem::buf_try_alloc(8).cast::<u8>();
                 let value = StOwnedElem { tag, heap };
                 hew_stream_send_layout(sink, std::ptr::addr_of!(value).cast(), &raw const layout);
                 crate::mem::buf_free(value.heap.cast());

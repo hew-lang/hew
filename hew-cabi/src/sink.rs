@@ -465,26 +465,33 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// Proves the OLD allocator path (raw `libc::malloc`, no header) causes `free_cstring`
-    /// to abort. Run in a subprocess so the SIGABRT does not take down the test runner.
+    /// Proves a pointer lacking `CStringHeader`'s magic sentinel — what the OLD
+    /// raw-`libc::malloc` `hew_stream_last_error` allocator produced — causes
+    /// `free_cstring` to abort. Run in a subprocess so the SIGABRT does not
+    /// take down the test runner.
     ///
     /// This is the falsification probe: it demonstrates that the fix is not
     /// redundant and that the previous raw-malloc path was the actual hazard.
     #[test]
     fn free_cstring_aborts_on_raw_malloc_provenance() {
         if std::env::var("HEW_SINK_RUN_ABORT_PROBE").is_ok() {
-            // Simulate the OLD hew_stream_last_error allocator: a raw libc::malloc
-            // result with no header sentinel, as free_cstring expects.
+            // Simulate the OLD hew_stream_last_error allocator's output: a
+            // pointer with no CStringHeader sentinel, as free_cstring expects.
+            // Allocated via the sized-block allocator here (raw libc calls
+            // aren't used anymore) — the hazard is the missing CStringHeader,
+            // not which allocator produced the pointer.
             let msg = b"simulated old-path error\0";
-            // SAFETY: allocating len bytes via raw malloc, exactly as the old code did.
-            let ptr = crate::mem::buf_alloc(msg.len()).cast::<std::ffi::c_char>();
+            // SAFETY: allocating len bytes via the sized-block allocator;
+            // buf_try_alloc returns a valid pointer or null.
+            let ptr = crate::mem::buf_try_alloc(msg.len()).cast::<std::ffi::c_char>();
             assert!(!ptr.is_null());
             // SAFETY: ptr is freshly allocated with msg.len() bytes.
             unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), ptr.cast::<u8>(), msg.len()) };
             // free_cstring will read base = ptr - CSTRING_HEADER_SIZE, find no magic
             // sentinel, print a diagnostic, and call libc::abort. This must not return.
-            // SAFETY: ptr was just malloc'd; we are intentionally passing a headerless
-            // pointer to prove free_cstring detects the mismatch and aborts.
+            // SAFETY: ptr was just allocated via the sized-block allocator; we are intentionally
+            // passing a pointer without CStringHeader's header to prove
+            // free_cstring detects the mismatch and aborts.
             unsafe { crate::cabi::free_cstring(ptr) };
             // If we reach here the abort did NOT fire — exit cleanly so the parent fails.
             std::process::exit(0);
@@ -502,8 +509,8 @@ mod tests {
             .expect("spawn abort probe");
         assert!(
             !status.status.success(),
-            "free_cstring on a raw-malloc (headerless) pointer must abort (subprocess \
-             should not exit 0); stdout={:?} stderr={:?}",
+            "free_cstring on a pointer without CStringHeader's sentinel must abort \
+             (subprocess should not exit 0); stdout={:?} stderr={:?}",
             String::from_utf8_lossy(&status.stdout),
             String::from_utf8_lossy(&status.stderr),
         );

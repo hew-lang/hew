@@ -5765,7 +5765,7 @@ mod tests {
             "reply delivery must release the queued sender-side retain"
         );
 
-        // SAFETY: reply_take returns a malloc'd pointer or null.
+        // SAFETY: reply_take returns a sized-block-allocated pointer or null.
         let reply = unsafe { crate::reply_channel_wasm::reply_take(ch) };
         assert!(!reply.is_null());
         // SAFETY: reply points to an i32 allocated by hew_reply above.
@@ -9276,7 +9276,7 @@ mod tests {
             !reply.is_null(),
             "ask must succeed even when the handler parks in the sleep queue before replying"
         );
-        // SAFETY: reply was malloc'd by hew_reply; caller takes ownership.
+        // SAFETY: reply came from hew_reply's sized-block allocation; caller takes ownership.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), 7, "reply value must match");
             crate::mem::buf_free(reply);

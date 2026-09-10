@@ -6876,7 +6876,7 @@ mod tests {
         assert!(!mailbox.is_null());
         // `call_terminate_fn` skips a null-state actor, so give it real state.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let state = crate::mem::buf_alloc(8);
+        let state = crate::mem::buf_try_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();
@@ -7270,9 +7270,9 @@ mod tests {
         // SAFETY: fresh mailbox owned by the actor; `hew_actor_free` reclaims it.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
-        // SAFETY: malloc returns a valid 8-byte allocation or null. The free
-        // path reclaims this with `libc::free`.
-        let state = crate::mem::buf_alloc(8);
+        // SAFETY: buf_try_alloc returns a valid 8-byte allocation. The free
+        // path reclaims this with `buf_free`.
+        let state = crate::mem::buf_try_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();

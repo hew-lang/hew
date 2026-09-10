@@ -23,10 +23,10 @@
 //!
 //! On Linux the Rust `System` allocator forwards to `libc::malloc` for
 //! alignments up to 16, so a plain family swap that got a pair wrong would be
-//! invisible to ASan and would only surface on Windows. Because these blocks
+//! invisible to `ASan` and would only surface on Windows. Because these blocks
 //! carry a header, the returned pointer is *not* an allocation base: a stray
 //! `libc::free` on it, or a header read on a libc block, is an invalid free
-//! that ASan reports on Linux. The header is what makes `make core-safety` an
+//! that `ASan` reports on Linux. The header is what makes `make core-safety` an
 //! oracle for this migration.
 //!
 //! # Layout contract
@@ -75,6 +75,11 @@ fn block_layout(size: usize) -> Option<Layout> {
 /// `ptr` must be a non-null pointer returned by [`buf_alloc`] or
 /// [`buf_realloc`] and still live.
 #[inline]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "the block is allocated with align BUF_ALIGN (16) >= align_of::<usize>(), \
+              and the header sits at its base"
+)]
 unsafe fn payload_size(ptr: *mut c_void) -> usize {
     // SAFETY: caller guarantees ptr came from this module, so the 16 bytes
     // before it are the header and are suitably aligned for `usize`.
@@ -91,6 +96,10 @@ unsafe fn payload_size(ptr: *mut c_void) -> usize {
 ///
 /// The result must be released with [`buf_free`], never `libc::free`.
 #[must_use]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "the block is allocated with align BUF_ALIGN (16) >= align_of::<usize>()"
+)]
 pub fn buf_try_alloc(size: usize) -> *mut c_void {
     let size = size.max(1);
     let Some(layout) = block_layout(size) else {
@@ -133,6 +142,10 @@ pub fn buf_alloc(size: usize) -> *mut c_void {
 /// `ptr`, if non-null, must have come from [`buf_alloc`] or [`buf_realloc`]
 /// and must not have been released. It is invalid after this call.
 #[must_use]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "realloc preserves the block's align BUF_ALIGN (16) >= align_of::<usize>()"
+)]
 pub unsafe fn buf_realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
     if ptr.is_null() {
         return buf_alloc(new_size);

@@ -92,7 +92,7 @@ unsafe fn string_alloc_nonnull(source: *const u8, len: usize) -> *mut HewString 
     }
 
     // SAFETY: `total` is non-zero and fits pointer-offset arithmetic.
-    let allocation = crate::mem::buf_alloc(total).cast::<HewStringHeader>();
+    let allocation = crate::mem::buf_try_alloc(total).cast::<HewStringHeader>();
     if allocation.is_null() {
         std::process::abort();
     }
@@ -223,7 +223,7 @@ pub unsafe fn cstring_from_string_copy(
         std::process::abort();
     };
     // SAFETY: `size` is positive and was checked for arithmetic overflow.
-    let out = crate::mem::buf_alloc(size).cast::<c_char>();
+    let out = crate::mem::buf_try_alloc(size).cast::<c_char>();
     if out.is_null() {
         std::process::abort();
     }

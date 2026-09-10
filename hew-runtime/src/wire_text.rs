@@ -897,7 +897,7 @@ pub unsafe extern "C" fn hew_wire_cbor_to_text(
 /// Parse JSON/YAML text into the CBOR bytes the binary decode walk expects.
 ///
 /// `text` is the untrusted input; `descriptor` is the type's tag↔name schema;
-/// `format` selects JSON or YAML. On success, returns a `libc::malloc`'d CBOR
+/// `format` selects JSON or YAML. On success, returns a sized-block-allocator CBOR
 /// buffer (freed by the shared `hew_ser_free_bytes`) and writes its length to
 /// `*out_len`. On ANY failure — parse error, shape mismatch, over-nesting,
 /// malformed descriptor — returns null, writes 0 to `*out_len`, and stores a
@@ -953,7 +953,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
         return core::ptr::null_mut();
     }
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = crate::mem::buf_alloc(encoded.len()).cast::<u8>();
+    let dst = crate::mem::buf_try_alloc(encoded.len()).cast::<u8>();
     if dst.is_null() {
         write_err(out_err, "out of memory encoding CBOR");
         return core::ptr::null_mut();
@@ -967,7 +967,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
     dst
 }
 
-/// Store a malloc'd copy of `msg` into `*out_err` (if non-null) so the caller can
+/// Store a header-aware C-string copy (via `malloc_cstring`) of `msg` into `*out_err` (if non-null) so the caller can
 /// construct `Err(string)`. A NUL in the message is impossible (all messages are
 /// static or formatted from numbers/names) but `malloc_cstring` would truncate
 /// it harmlessly.
@@ -1074,9 +1074,9 @@ mod tests {
             TextToCbor::Err(msg)
         } else {
             assert!(out_err.is_null(), "success path must not set an error");
-            // SAFETY: ptr points to out_len bytes from libc::malloc.
+            // SAFETY: ptr points to out_len bytes from the sized-block allocator.
             let bytes = unsafe { core::slice::from_raw_parts(ptr, out_len) }.to_vec();
-            // SAFETY: ptr is a libc::malloc buffer (the CBOR bytes), freed once.
+            // SAFETY: ptr is a sized-block buffer (the CBOR bytes), freed once.
             unsafe { crate::mem::buf_free(ptr.cast()) };
             TextToCbor::Ok(bytes)
         }

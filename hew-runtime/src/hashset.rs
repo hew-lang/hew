@@ -263,9 +263,9 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
         crate::set_last_error("hew_hashset_new_with_layout: inner map allocation failed");
         std::process::abort();
     }
-    // SAFETY: allocating with libc::malloc for the outer HewLayoutHashSet struct.
+    // SAFETY: allocating the outer HewLayoutHashSet struct via the sized-block allocator.
     let set: *mut HewLayoutHashSet =
-        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::mem::buf_try_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if set.is_null() {
         // Free the successfully-allocated inner map before aborting.
         // SAFETY: map was returned by hew_hashmap_new_with_layout.
@@ -273,7 +273,7 @@ pub unsafe extern "C" fn hew_hashset_new_with_layout(
         crate::set_last_error("hew_hashset_new_with_layout: struct allocation failed");
         std::process::abort();
     }
-    // SAFETY: set is a fresh libc::malloc'd allocation sized for HewLayoutHashSet.
+    // SAFETY: set is a fresh sized-block allocation sized for HewLayoutHashSet.
     unsafe { (*set).map = map };
     set
 }
@@ -544,10 +544,10 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
         crate::set_last_error("hew_hashset_clone_layout: inner map clone failed");
         std::process::abort();
     }
-    // SAFETY: allocating with libc::malloc for the outer HewLayoutHashSet struct,
-    // matching the allocator used by hew_hashset_new_with_layout.
+    // SAFETY: allocating the outer HewLayoutHashSet struct via the sized-block
+    // allocator, matching the allocator used by hew_hashset_new_with_layout.
     let cloned: *mut HewLayoutHashSet =
-        crate::mem::buf_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::mem::buf_try_alloc(core::mem::size_of::<HewLayoutHashSet>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
     if cloned.is_null() {
         // Free the successfully-cloned inner map before aborting.
         // SAFETY: cloned_map was returned by hew_hashmap_clone_layout.
@@ -555,7 +555,7 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
         crate::set_last_error("hew_hashset_clone_layout: struct allocation failed");
         std::process::abort();
     }
-    // SAFETY: cloned is a fresh libc::malloc'd allocation sized for HewLayoutHashSet.
+    // SAFETY: cloned is a fresh sized-block allocation sized for HewLayoutHashSet.
     unsafe { (*cloned).map = cloned_map };
     cloned
 }
@@ -607,7 +607,7 @@ unsafe fn release_set(set: *mut HewLayoutHashSet, deferred: bool) {
     }
     // SAFETY: set non-null; map was constructed via hew_hashmap_new_with_layout.
     let map = unsafe { (*set).map };
-    // SAFETY: set was allocated with libc::malloc in hew_hashset_new_with_layout.
+    // SAFETY: set was allocated via the sized-block allocator in hew_hashset_new_with_layout.
     unsafe { crate::mem::buf_free(set.cast()) };
     // SAFETY: the set uniquely owned its backing map.
     unsafe { release_map(map, deferred) };

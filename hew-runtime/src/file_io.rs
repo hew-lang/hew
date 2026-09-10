@@ -1138,7 +1138,7 @@ mod tests {
         // the runtime LAST_ERROR (hew_last_error) and the cabi LAST_ERROR
         // (hew_stream_last_error). Previously, set_last_error_with_errno("", 0)
         // left the cabi LAST_ERROR as Some("") — causing hew_stream_last_error()
-        // to return a malloc'd empty string instead of NULL, violating the
+        // to return a sized-block-allocated empty string instead of NULL, violating the
         // "NULL if none" contract. And hew_last_error() retained the stale
         // message because the runtime LAST_ERROR was not cleared at all.
         use hew_cabi::sink::hew_stream_last_error;

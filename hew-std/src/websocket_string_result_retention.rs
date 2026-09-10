@@ -60,7 +60,7 @@ fn message_text_result_is_transferred_and_message_survives_release() {
         "message state must remain usable after caller result releases"
     );
 
-    // SAFETY: `message` is the sole live Box and owns its malloc'd payload.
+    // SAFETY: `message` is the sole live Box and owns its payload from the sized-block allocator.
     unsafe { hew_ws_message_free(message) };
 }
 

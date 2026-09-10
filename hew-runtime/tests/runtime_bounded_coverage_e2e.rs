@@ -312,8 +312,9 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
         // `hew_supervisor_get_child_wait` then reads `children[0]` and, on
         // the slow (condvar) path, does so under the restart-notify mutex,
         // which is the formally synchronised access.  On the fast path the
-        // h-b chain from `wait_restart`'s mutex reacquire still holds, but
-        // using `get_child_wait` makes the intended synchronization explicit.
+        // h-b chain from `test_wait_for_restart`'s mutex reacquire still
+        // holds, but using `get_child_wait` makes the intended
+        // synchronization explicit.
         let restarted_child = wait_for_child(sup, 0, Duration::from_secs(5));
         // Compare actor IDs rather than pointer addresses: the allocator may
         // reuse the same heap address for the replacement actor, so pointer

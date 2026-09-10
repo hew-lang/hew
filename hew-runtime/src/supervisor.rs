@@ -11109,8 +11109,8 @@ pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervis
 /// Block until the supervisor's restart counter reaches at least `target`, or
 /// `timeout_ms` milliseconds elapse.
 ///
-/// Returns the current restart count on success, or `0` on timeout / null
-/// pointer. The counter is cumulative and never resets.
+/// Returns the current restart count on success, or `0` on timeout. The
+/// counter is cumulative and never resets.
 ///
 /// Test-support only — reads the same `restart_notify` counter/Condvar the
 /// contextless blocking `await_restart` path

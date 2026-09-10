@@ -47,7 +47,7 @@ use hew_runtime::supervisor::{
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
 // HANG CEILING, not expected duration. These bound the logical-event waits
-// (`wait_for_down_count`, `wait_restart`, `wait_for_circuit_state`) — each
+// (`wait_for_down_count`, `test_wait_for_restart`, `wait_for_circuit_state`) — each
 // returns the instant its event lands, so a fast quiet run pays ~0.2s and only a
 // genuine never-arriving event reaches the ceiling. The supervisor crash/restart
 // dispatch runs on worker threads that are starved under `cargo llvm-cov`

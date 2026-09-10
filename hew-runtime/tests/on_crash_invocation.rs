@@ -392,7 +392,7 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
         crash_child(child);
 
         // The handler fires; then the Kill return short-circuits the restart.
-        // No restart cycle should occur — wait_restart times out at 0.
+        // No restart cycle should occur — test_wait_for_restart times out at 0.
         let count = test_wait_for_restart(sup.as_ptr(), 1, 1500);
         assert_eq!(
             count, 0,

@@ -3853,7 +3853,7 @@ mod supervisor_escalation_tests {
             assert_ne!(
                 (*restarted_twice).id,
                 second_id,
-                "get_child_wait should publish the restarted child without wait_restart setup"
+                "get_child_wait should publish the restarted child without test_wait_for_restart setup"
             );
 
             hew_supervisor_stop(sup);

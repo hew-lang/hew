@@ -9,9 +9,10 @@
 //!
 //! The supervisor handle is owned by `TestSupervisor` so its Drop runs
 //! the canonical stop teardown. The supervisor's FFI surface (add child
-//! spec, `wait_restart`, etc.) still uses raw `extern "C"` calls because
-//! those are inherently bound to `HewChildSpec` and the runtime-owned
-//! child actor pointers.
+//! spec, `set_restart_notify`, etc.) still uses raw `extern "C"` calls
+//! because those are inherently bound to `HewChildSpec` and the
+//! runtime-owned child actor pointers; restart completion itself is
+//! observed through the Rust-only `test_wait_for_restart`.
 
 #![allow(
     clippy::undocumented_unsafe_blocks,

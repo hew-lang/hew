@@ -15,6 +15,17 @@
 //! over Rust's `GlobalAlloc`. The arena keeps its per-actor-dispatch role
 //! unchanged; this is a *new* general allocator alongside it.
 //!
+//! # Relationship to the sized-block family (`buf_alloc`)
+//!
+//! These three take `(size, align)` at both ends, which suits generated
+//! container lowering: the compiler threads the matching layout through every
+//! free edge. Runtime buffers whose release site holds only a pointer -- a
+//! mailbox payload, a reply value, an actor state wrapper -- use
+//! [`buf_alloc`] / [`buf_realloc`] / [`buf_free`], re-exported here from
+//! `hew-cabi`, which record the size in a header before the payload. Both
+//! families are faces of the one Rust global allocator (D463); neither is a
+//! fallback for the other.
+//!
 //! # `ALLOCATOR-PAIRING`: `GlobalAlloc`
 //!
 //! `hew_alloc` / `hew_realloc` / `hew_dealloc` all route through
@@ -67,6 +78,8 @@
 
 use std::alloc::{alloc, dealloc, realloc, Layout};
 use std::ptr;
+
+pub use hew_cabi::mem::{buf_alloc, buf_free, buf_realloc, buf_try_alloc, BUF_ALIGN};
 
 /// Reconstruct the allocation [`Layout`] for a `(size, align)` pair.
 ///

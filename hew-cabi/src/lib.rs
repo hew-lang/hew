@@ -16,6 +16,7 @@ pub mod cabi;
 pub mod callable;
 pub mod host_error;
 pub mod map;
+pub mod mem;
 pub mod sink;
 pub mod string;
 pub mod value;

@@ -900,14 +900,8 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             container,
             start,
             end,
-            inclusive,
         } => {
-            let kind = if *inclusive {
-                "vec-slice-inclusive"
-            } else {
-                "vec-slice"
-            };
-            writeln!(out, "{pad}  {kind}").expect("write to string");
+            writeln!(out, "{pad}  vec-slice").expect("write to string");
             dump_expr(out, container, indent + 4);
             if let Some(s) = start {
                 dump_expr(out, s, indent + 4);

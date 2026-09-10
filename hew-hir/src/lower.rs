@@ -17235,6 +17235,37 @@ impl LowerCtx {
         }
     }
 
+    /// Turn an inclusive slice bound into the exclusive one HIR carries.
+    ///
+    /// `xs[a..=b]` is `xs[a..b + 1]`; the added checked arithmetic traps on
+    /// overflow, and the bounds check downstream is then the single one the
+    /// exclusive form already performs.
+    fn exclusive_slice_bound(&mut self, bound: HirExpr, span: &Span) -> HirExpr {
+        let ty = bound.ty.clone();
+        let one = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ty.clone(),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Integer(1)),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(bound),
+                right: Box::new(one),
+            },
+            span: span.clone(),
+        }
+    }
+
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
@@ -18739,15 +18770,19 @@ impl LowerCtx {
                     let lowered_start = start
                         .as_ref()
                         .map(|s| Box::new(self.lower_expr(s, IntentKind::Read)));
-                    let lowered_end = end
-                        .as_ref()
-                        .map(|e| Box::new(self.lower_expr(e, IntentKind::Read)));
+                    let lowered_end = end.as_ref().map(|e| {
+                        let bound = self.lower_expr(e, IntentKind::Read);
+                        Box::new(if *inclusive {
+                            self.exclusive_slice_bound(bound, &e.1)
+                        } else {
+                            bound
+                        })
+                    });
                     (
                         HirExprKind::Slice {
                             container: Box::new(container),
                             start: lowered_start,
                             end: lowered_end,
-                            inclusive: *inclusive,
                         },
                         result_ty,
                     )
@@ -30182,7 +30217,6 @@ fn collect_captures_walk(
             container,
             start,
             end,
-            inclusive: _,
         } => {
             collect_captures_walk(container, param_ids, seen, captures, self_id);
             if let Some(s) = start {
@@ -30459,7 +30493,6 @@ fn collect_general_closure_captures_walk(
             container,
             start,
             end,
-            inclusive: _,
         } => {
             collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
             if let Some(s) = start {

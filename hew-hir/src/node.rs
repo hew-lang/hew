@@ -1637,22 +1637,6 @@ pub enum HirExprKind {
         /// The index expression (type `i64`).
         index: Box<HirExpr>,
     },
-    /// `xs[a..b]` / `xs[a..=b]` / `xs[..b]` / `xs[a..]` / `xs[..]` —
-    /// range-slice on a `Vec<T>` container (C-3). The expression type is
-    /// `Vec<T>` (a freshly-allocated copy populated from `[start, end)`).
-    ///
-    /// Open endpoints (`start: None`, `end: None`) survive into HIR and
-    /// are desugared at MIR lowering: open `start` becomes the constant
-    /// `0`, open `end` becomes `hew_vec_len(container)`. The inclusive
-    /// flag (`a..=b`) is also desugared in MIR via `IntArithChecked(Add)`
-    /// on `b + 1` with a `TrapKind::IntegerOverflow` trap on overflow.
-    /// MIR additionally inserts a bounds-check pair (`start <= end` and
-    /// `end <= len(container)`) before calling
-    /// `CallRuntimeAbi(hew_vec_slice_range_T)`.
-    ///
-    /// LESSONS: `checker-authority` (P0) — produced only after the
-    /// checker has confirmed the receiver is `Vec<T>` and the endpoints
-    /// are integer-typed.
     /// `xs[i]` where the checker decided the element is bound as a loan of
     /// the slot the container still owns (D432). The result carries no
     /// ownership obligation and cannot outlive the container's loan.
@@ -1660,15 +1644,26 @@ pub enum HirExprKind {
         container: Box<HirExpr>,
         index: Box<HirExpr>,
     },
+    /// `xs[a..b]` / `xs[..b]` / `xs[a..]` / `xs[..]` — range-slice on a
+    /// `string`, `bytes` or `Vec<T>` container. The expression type is the
+    /// container's (a freshly-allocated copy populated from `[start, end)`).
+    ///
+    /// The bounds are always exclusive: lowering rewrites `xs[a..=b]` to
+    /// `xs[a..b + 1]`, so the added `Binary` carries the overflow trap and
+    /// downstream stages see one range shape. Open endpoints survive into HIR
+    /// and are desugared during semantic lowering: open `start` becomes the
+    /// constant `0`, open `end` selects the container's own open-ended runtime
+    /// operation so the container is evaluated exactly once.
+    ///
+    /// Produced only after the checker has confirmed the receiver is
+    /// sliceable and the endpoints are integer-typed.
     Slice {
-        /// The container expression (type `Vec<T>`).
+        /// The container expression.
         container: Box<HirExpr>,
         /// Lower bound (inclusive). `None` for `xs[..b]` / `xs[..]`.
         start: Option<Box<HirExpr>>,
-        /// Upper bound. `None` for `xs[a..]` / `xs[..]`.
+        /// Upper bound (exclusive). `None` for `xs[a..]` / `xs[..]`.
         end: Option<Box<HirExpr>>,
-        /// `true` for `xs[a..=b]`. MIR adds 1 to `end` with overflow trap.
-        inclusive: bool,
     },
     /// `lhs is rhs` — identity comparison on handle-typed or machine-typed
     /// operands. The checker (D-2) validates that both operands are allowable

@@ -852,7 +852,6 @@ impl Verifier {
                 container,
                 start,
                 end,
-                inclusive: _,
             } => {
                 self.expr(container);
                 if let Some(s) = start {

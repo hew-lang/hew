@@ -5545,12 +5545,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             // `x[a..b]` / `x[a..]` / `x[..b]` / `x[..]` over `string`, `bytes`
             // and `Vec<T>`. An absent start is the literal zero; an absent end
             // routes to the receiver's own open-ended family so the container
-            // expression is evaluated exactly once.
+            // expression is evaluated exactly once. HIR has already rewritten
+            // `x[a..=b]` to the exclusive `x[a..b + 1]`.
             HirExprKind::Slice {
                 container,
                 start,
                 end,
-                inclusive: false,
             } => {
                 let container_ty = self.ty(&container.ty);
                 let (ranged, open) = if container_ty == ResolvedTy::String {

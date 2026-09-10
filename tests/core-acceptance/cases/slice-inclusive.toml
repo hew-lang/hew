@@ -1,0 +1,11 @@
+[[case]]
+id = "slice-inclusive"
+intent = "Inclusive range slices over Vec, string and bytes share the exclusive form's bounds contract, with the exclusive form beside each as a control."
+source = "cases/slice-inclusive.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "inclusive slice len: 3\nexclusive slice len: 2\nopen start len: 2\ninclusive last: 30\nstring inclusive: ell\nstring exclusive: el\nbytes inclusive len: 2\n"
+stderr = ""
+exit = 0

@@ -795,7 +795,7 @@ fn captured_binding_move_out_source() -> String {
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var total = 0;\n\
-         \x20   let f = || {{\n\
+         \x20   var f = capture(var total) || {{\n\
          \x20       match b {{\n\
          \x20           Box.Full(v) => {{ var w = v; total = w.len(); w = seed(); }}\n\
          \x20           Box.Empty => {{}}\n\
@@ -934,14 +934,20 @@ fn nested_enum_borrow_only_is_valid() {
     assert_scribbled_run_exit("nested_enum_borrow", &nested_enum_borrow_only_source(), 3);
 }
 
-/// (F2 item 2) A projected-payload move-out of a closure-captured binding is
-/// rejected fail-closed with the captured-binding diagnostic.
+/// (F2 item 2) A projected-payload move-out of a closure-captured binding
+/// compiles and runs clean: `capture(...)` names an independent immutable
+/// snapshot per binding (HEW-SPEC-2026 closure syntax), so the closure's copy
+/// of `b` owns its own payload and moving `v` out of it cannot alias the
+/// outer scope's `b`. This superseded the prior fail-closed rejection from
+/// before the named-capture redesign. `total` is materialised through the
+/// closure's own private field (same as `closure_captured_var_writeback`),
+/// so `main`'s outer `total` stays 0 after `f()` runs.
 #[test]
-fn captured_binding_move_out_is_rejected() {
-    assert_compile_fails(
+fn captured_binding_move_out_is_valid() {
+    assert_scribbled_run_exit(
         "captured_binding_move",
         &captured_binding_move_out_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a closure-captured binding",
+        0,
     );
 }
 

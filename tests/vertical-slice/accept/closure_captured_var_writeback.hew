@@ -14,7 +14,7 @@
 // stays 0.
 fn main() {
     var total: i64 = 0;
-    let acc = |n: i64| {
+    var acc = capture(var total) |n: i64| {
         total = total + n;
         total
     };

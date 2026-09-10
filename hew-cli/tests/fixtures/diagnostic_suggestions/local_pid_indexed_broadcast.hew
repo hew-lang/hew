@@ -4,6 +4,6 @@ actor Client {
 
 fn broadcast(clients: Vec<LocalPid<Client>>) {
     for i in 0..clients.len() {
-        clients[i].deliver();
+        let _ = clients[i].deliver();
     }
 }

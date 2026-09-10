@@ -1,0 +1,16 @@
+actor Client {
+    receive fn deliver() {}
+}
+
+fn broadcast(clients: Vec<LocalPid<Client>>) {
+    for client in clients {
+        let _ = client.deliver();
+    }
+}
+
+fn main() {
+    let a = spawn Client;
+    let b = spawn Client;
+    broadcast([a, b]);
+    println("broadcast done");
+}

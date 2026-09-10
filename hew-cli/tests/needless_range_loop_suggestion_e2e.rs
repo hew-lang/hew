@@ -76,13 +76,28 @@ fn build_and_run(name: &str, dir: &Path, stem: &str) {
     );
 }
 
+/// `Vec<LocalPid<T>>` direct iteration is supported (D444: both `for x in xs`
+/// and `xs[i]` borrow each element), so the lint has no reason to withhold the
+/// suggestion for a `LocalPid` element type.
 #[test]
-fn local_pid_range_loop_has_no_uncompilable_direct_iteration_suggestion() {
+fn local_pid_range_loop_suggests_direct_iteration() {
     let stderr = check_stderr("local_pid_indexed_broadcast.hew");
     assert!(
-        !stderr.contains(DIRECT_ITERATION_HELP),
-        "the lint must not suggest unsupported VecIter ownership semantics:\n{stderr}"
+        stderr.contains(DIRECT_ITERATION_HELP),
+        "direct iteration over Vec<LocalPid<T>> compiles, so the lint must fire:\n{stderr}"
     );
+}
+
+/// The suggested rewrite for the `LocalPid` fixture above, written out, is a
+/// program the compiler accepts and runs.
+#[test]
+fn local_pid_direct_iteration_compiles_and_runs() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suggestion-truth-")
+        .tempdir_in(repo_root())
+        .expect("temp dir");
+    build_and_run("local_pid_direct.hew", dir.path(), "local_pid_direct");
 }
 
 #[test]

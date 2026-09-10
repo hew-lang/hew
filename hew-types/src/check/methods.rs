@@ -12,7 +12,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
-use crate::runtime_call::{IntArithKind, IntBitOp, IntMethodWidth};
+use crate::runtime_call::{FloatMethodOp, IntArithKind, IntBitOp, IntMethodWidth};
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
@@ -7882,6 +7882,65 @@ impl Checker {
                     );
                     Ty::Error
                 }
+            }
+            // `f64` bit/classification methods. `abs` reuses the existing
+            // `MathIntrinsic::AbsF64` family (the same `llvm.fabs` `math.abs`
+            // already calls); the rest are new `RuntimeCallFamily::FloatMethod`
+            // rows. Scoped to `f64`: `RuntimeValueKind` has no `F32` kind yet.
+            (resolved, method)
+                if resolved.materialize_literal_defaults() == Ty::F64
+                    && matches!(
+                        method,
+                        "to_bits"
+                            | "is_nan"
+                            | "is_finite"
+                            | "is_infinite"
+                            | "is_sign_negative"
+                            | "abs"
+                    ) =>
+            {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.check_arity(args, 0, &format!("`{method}`"), span);
+                let (family, ret_ty) = match method {
+                    "to_bits" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(FloatMethodOp::ToBits),
+                        Ty::U64,
+                    ),
+                    "is_nan" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(FloatMethodOp::IsNan),
+                        Ty::Bool,
+                    ),
+                    "is_finite" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsFinite,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "is_infinite" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsInfinite,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "is_sign_negative" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsSignNegative,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "abs" => (
+                        crate::runtime_call::RuntimeCallFamily::MathIntrinsic(
+                            crate::runtime_call::MathIntrinsic::AbsF64,
+                        ),
+                        Ty::F64,
+                    ),
+                    _ => unreachable!("method matched the guard above"),
+                };
+                self.record_runtime_method_family_rewrite(span, family);
+                ret_ty
             }
             // Integer bit-manipulation methods: each lowers to one LLVM
             // intrinsic (ctpop/ctlz/cttz/bswap/bitreverse/fshl/fshr) carried

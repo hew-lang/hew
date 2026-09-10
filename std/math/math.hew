@@ -235,3 +235,13 @@ pub fn copysign(x: f64, y: f64) -> f64 {
 pub fn powi(x: f64, n: i32) -> f64 {
     0.0
 }
+
+/// Reinterpret the bits of `bits` as an `f64` (the inverse of `x.to_bits()`).
+///
+/// Spelled as a module function rather than the static call `f64.from_bits`:
+/// the checker does not admit a bare builtin type name as a call receiver
+/// today.
+#[intrinsic("math.from_bits")]
+pub fn from_bits(bits: u64) -> f64 {
+    0.0
+}

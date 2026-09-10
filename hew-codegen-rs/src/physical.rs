@@ -80,7 +80,7 @@ use hew_runtime::internal::types::{
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
 use hew_types::runtime_call::{
-    collection_type_arguments, IntArithKind, IntBitOp, IntMethodWidth, MathIntrinsic,
+    collection_type_arguments, FloatMethodOp, IntArithKind, IntBitOp, IntMethodWidth, MathIntrinsic,
 };
 use hew_types::{
     EntryExitAction, EntryIntegerType, ResolvedTy, RuntimeCallFamily, ValueCapability,
@@ -4265,6 +4265,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
+            RuntimeCallFamily::FloatMethod(op) => {
+                return self.emit_float_method(op, transfers, required_result()?, normal, failure);
+            }
             RuntimeCallFamily::Tcp(op) => {
                 self.emit_tcp_operation(op, transfers, result)?;
             }
@@ -5204,6 +5207,25 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         failure: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use MathIntrinsic as M;
+        if kind == M::FromBits {
+            if failure.is_some() {
+                return Err(CodegenError::FailClosed(
+                    "infallible math intrinsic carries a failure edge".into(),
+                ));
+            }
+            let bits = transfers
+                .first()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("physical `from_bits` lacks its operand".into())
+                })
+                .and_then(|transfer| self.load(argument_source(transfer), "math.argument"))?;
+            let value = self
+                .builder
+                .build_bit_cast(bits, self.ctx.f64_type(), "math.from_bits")
+                .llvm_ctx("reinterpret bits as f64")?;
+            self.store(result, value)?;
+            return self.emit_result_edge(Some(result), normal);
+        }
         // Libm-only operations: LLVM has no core intrinsic for these on any
         // supported LLVM version, so codegen declares and calls the C symbol
         // directly. The executable already links libm transitively (the
@@ -5262,6 +5284,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 M::Powi => "llvm.powi",
                 M::Log1p | M::Expm1 | M::Cbrt | M::Hypot => {
                     unreachable!("libm-only kinds are handled by the `libm_symbol` branch above")
+                }
+                M::FromBits => {
+                    unreachable!("FromBits returns from this function before reaching this match")
                 }
             };
             // `powi` is parameterized over both the float type and the
@@ -5508,6 +5533,157 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         Ok(self
             .runtime_call_value(declaration, &[lhs.into(), rhs.into()], "int_arith.result")?
             .into_int_value())
+    }
+
+    /// `f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).
+    /// Every op here is an ordinary builder instruction (bitcast, fcmp
+    /// against itself or against +-infinity, an integer sign test on the
+    /// bitcast pattern) — none of these need a declared LLVM intrinsic.
+    fn emit_float_method(
+        &self,
+        op: FloatMethodOp,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        if failure.is_some() {
+            return Err(CodegenError::FailClosed(
+                "infallible float method carries a failure edge".into(),
+            ));
+        }
+        let receiver = transfers
+            .first()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("physical float method lacks its receiver".into())
+            })
+            .and_then(|transfer| self.load(argument_source(transfer), "float_method.argument"))?
+            .into_float_value();
+        // Bool storage is `i8`, not LLVM's native `i1`; widen every predicate
+        // result before storing it (matching e.g. `bytes.is_empty`'s
+        // `build_int_z_extend` above).
+        let bool_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
+        let value: BasicValueEnum<'ctx> = match op {
+            FloatMethodOp::ToBits => self
+                .builder
+                .build_bit_cast(receiver, self.ctx.i64_type(), "float_method.to_bits")
+                .llvm_ctx("reinterpret f64 bits as u64")?,
+            FloatMethodOp::IsNan => {
+                let truth = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::UNO,
+                        receiver,
+                        receiver,
+                        "float_method.is_nan",
+                    )
+                    .llvm_ctx("test for NaN")?;
+                self.builder
+                    .build_int_z_extend(truth, bool_ty, "float_method.is_nan.bool")
+                    .llvm_ctx("widen is_nan result")?
+                    .into()
+            }
+            FloatMethodOp::IsInfinite => {
+                let f64_ty = self.ctx.f64_type();
+                let pos_inf = f64_ty.const_float(f64::INFINITY);
+                let neg_inf = f64_ty.const_float(f64::NEG_INFINITY);
+                let is_pos = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OEQ,
+                        receiver,
+                        pos_inf,
+                        "float_method.is_pos_inf",
+                    )
+                    .llvm_ctx("test for positive infinity")?;
+                let is_neg = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OEQ,
+                        receiver,
+                        neg_inf,
+                        "float_method.is_neg_inf",
+                    )
+                    .llvm_ctx("test for negative infinity")?;
+                let truth = self
+                    .builder
+                    .build_or(is_pos, is_neg, "float_method.is_infinite")
+                    .llvm_ctx("combine infinity tests")?;
+                self.builder
+                    .build_int_z_extend(truth, bool_ty, "float_method.is_infinite.bool")
+                    .llvm_ctx("widen is_infinite result")?
+                    .into()
+            }
+            FloatMethodOp::IsFinite => {
+                let f64_ty = self.ctx.f64_type();
+                let pos_inf = f64_ty.const_float(f64::INFINITY);
+                let neg_inf = f64_ty.const_float(f64::NEG_INFINITY);
+                // Ordered (non-NaN) and not equal to either infinity.
+                let ordered = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::ORD,
+                        receiver,
+                        receiver,
+                        "float_method.ordered",
+                    )
+                    .llvm_ctx("test for non-NaN")?;
+                let not_pos_inf = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::ONE,
+                        receiver,
+                        pos_inf,
+                        "float_method.not_pos_inf",
+                    )
+                    .llvm_ctx("test against positive infinity")?;
+                let not_neg_inf = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::ONE,
+                        receiver,
+                        neg_inf,
+                        "float_method.not_neg_inf",
+                    )
+                    .llvm_ctx("test against negative infinity")?;
+                let both = self
+                    .builder
+                    .build_and(not_pos_inf, not_neg_inf, "float_method.not_infinite")
+                    .llvm_ctx("combine infinity exclusions")?;
+                let truth = self
+                    .builder
+                    .build_and(ordered, both, "float_method.is_finite")
+                    .llvm_ctx("combine finiteness tests")?;
+                self.builder
+                    .build_int_z_extend(truth, bool_ty, "float_method.is_finite.bool")
+                    .llvm_ctx("widen is_finite result")?
+                    .into()
+            }
+            FloatMethodOp::IsSignNegative => {
+                // The raw sign bit, not a value classification: a negative
+                // NaN's sign bit is still set, matching Rust's semantics.
+                let bits = self
+                    .builder
+                    .build_bit_cast(receiver, self.ctx.i64_type(), "float_method.sign_bits")
+                    .llvm_ctx("reinterpret f64 bits as i64 for the sign test")?
+                    .into_int_value();
+                let truth = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        bits,
+                        self.ctx.i64_type().const_zero(),
+                        "float_method.is_sign_negative",
+                    )
+                    .llvm_ctx("test the sign bit")?;
+                self.builder
+                    .build_int_z_extend(truth, bool_ty, "float_method.is_sign_negative.bool")
+                    .llvm_ctx("widen is_sign_negative result")?
+                    .into()
+            }
+        };
+        self.store(result, value)?;
+        self.emit_result_edge(Some(result), normal)
     }
 
     /// Declare (if needed) and call a single-operand LLVM intrinsic

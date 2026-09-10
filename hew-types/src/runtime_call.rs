@@ -1199,6 +1199,14 @@ pub enum MathIntrinsic {
     /// `i64`; widening `n` to `i64` in source would silently truncate at the
     /// call site instead of at the declared signature.
     Powi,
+    /// `f64.from_bits(u64) -> f64`: reinterpret the bit pattern (`bitcast`,
+    /// not a real LLVM intrinsic call — codegen special-cases it like the
+    /// libm symbols above). Spelled `math.from_bits`, not the primitive
+    /// type-path call `f64.from_bits` the brief for this looked for: the
+    /// checker does not admit a bare builtin type name (`f64`, `i32`, …) as
+    /// a call receiver today (`error: type f64 cannot be used as a value`),
+    /// and adding that surface is out of scope for one function.
+    FromBits,
 }
 
 impl MathIntrinsic {}
@@ -1231,6 +1239,19 @@ pub enum IntMethodWidth {
     I64,
     U32,
     U64,
+}
+
+/// `f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).
+/// Scoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the
+/// `IntMethodWidth` gap for the narrower integer widths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+pub enum FloatMethodOp {
+    #[default]
+    ToBits,
+    IsNan,
+    IsFinite,
+    IsInfinite,
+    IsSignNegative,
 }
 
 /// Non-trapping integer arithmetic: `x.wrapping_add(y)` and its siblings.
@@ -1472,6 +1493,9 @@ pub enum RuntimeCallFamily {
     // Non-trapping integer arithmetic (`x.wrapping_add(y)`, `x.saturating_sub(y)`).
     // Same shape as `IntMethod`.
     IntArith(IntArithKind, IntMethodWidth),
+    // `f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).
+    // Same shape as `IntMethod`.
+    FloatMethod(FloatMethodOp),
 
     // --- Node operations ---------------------------------------------------
     // The `Node::*` variants are pre-staged Terminator::Call callee identities.
@@ -4229,6 +4253,96 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::MathIntrinsic(MathIntrinsic::FromBits) => RuntimeOpRow {
+                symbol: "from_bits",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::F64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::FloatMethod(FloatMethodOp::ToBits) => RuntimeOpRow {
+                symbol: "to_bits",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::FloatMethod(FloatMethodOp::IsNan) => RuntimeOpRow {
+                symbol: "is_nan",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::FloatMethod(FloatMethodOp::IsFinite) => RuntimeOpRow {
+                symbol: "is_finite",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::FloatMethod(FloatMethodOp::IsInfinite) => RuntimeOpRow {
+                symbol: "is_infinite",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::FloatMethod(FloatMethodOp::IsSignNegative) => RuntimeOpRow {
+                symbol: "is_sign_negative",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::F64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Bool),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -9519,6 +9633,7 @@ impl RuntimeCallFamily {
             | F::MathIntrinsic(_)
             | F::IntMethod(_, _)
             | F::IntArith(_, _)
+            | F::FloatMethod(_)
             | F::MetricCounterRegister
             | F::MetricCounterInc
             | F::MetricCounterAdd
@@ -10200,6 +10315,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
             F::IntArith(_, _) => out.extend(IntArithKind::iter().flat_map(|kind| {
                 IntMethodWidth::iter().map(move |width| F::IntArith(kind, width))
             })),
+            F::FloatMethod(_) => out.extend(FloatMethodOp::iter().map(F::FloatMethod)),
             F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
             F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
             F::VecContainsScalar(_) => out.extend(all_vec_contains_scalar_families()),

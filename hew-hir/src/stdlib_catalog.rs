@@ -2398,6 +2398,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
             intrinsic: "math.powi",
         },
     ),
+    direct(
+        "math.from_bits",
+        BuiltinClass::ClassB,
+        U64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.from_bits",
+        },
+    ),
     // Class B: random module runtime shims.
     direct(
         "random.seed",

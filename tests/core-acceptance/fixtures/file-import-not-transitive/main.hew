@@ -1,0 +1,8 @@
+//! A file import publishes into the importing file only. The root imported
+//! `b.hew`, not `c.hew`, so `from_c` is not a name it can call.
+
+import "b.hew";
+
+fn main() {
+    println(from_c());
+}

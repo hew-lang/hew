@@ -1,0 +1,11 @@
+//! One directory module reached by both its package-qualified spelling
+//! (`probe.lib`, from this file) and its directory-relative one (`lib`, from
+//! `src/mid.hew`) is one module: the entry file's own private call keeps its
+//! target, and both importers see the same declaration.
+
+import probe.lib;
+import probe.mid;
+
+fn main() {
+    println(lib.describe() + "/" + mid.through_relative_path());
+}

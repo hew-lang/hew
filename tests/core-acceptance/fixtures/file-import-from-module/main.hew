@@ -1,0 +1,8 @@
+//! A file import declared inside a module, not the root: `sub` sees
+//! `helper.hew`'s names and the root reaches them through `sub`.
+
+import sub;
+
+fn main() {
+    println(sub.entry());
+}

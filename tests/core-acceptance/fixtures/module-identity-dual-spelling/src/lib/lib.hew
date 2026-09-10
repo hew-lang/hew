@@ -1,0 +1,3 @@
+fn tag() -> string { "lib" }
+
+pub fn describe() -> string { tag() }

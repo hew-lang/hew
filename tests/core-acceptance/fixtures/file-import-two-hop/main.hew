@@ -1,0 +1,8 @@
+//! A file import that itself file-imports another file: `b.hew` sees `c.hew`'s
+//! names because it imported them, and the root sees `b.hew`'s.
+
+import "b.hew";
+
+fn main() {
+    println(from_b());
+}

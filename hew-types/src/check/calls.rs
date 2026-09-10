@@ -2504,11 +2504,24 @@ impl Checker {
             );
             return Ty::Error;
         }
+        // An import binding published into ANOTHER file's namespace is a key
+        // this file cannot write, so it is never a fix. Its declaration is
+        // still offered, which is what names the module to import.
+        let foreign_bindings: HashSet<&str> = self
+            .import_fn_name_aliases
+            .keys()
+            .filter(|(module, index, _)| {
+                (module.as_deref(), *index)
+                    != (self.current_module.as_deref(), self.current_module_idx)
+            })
+            .map(|(_, _, binding)| binding.as_str())
+            .collect();
         let mut similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs
                 .keys()
                 .map(String::as_str)
+                .filter(|key| !foreign_bindings.contains(key))
                 .chain(self.env.all_names()),
         );
         similar.extend(module_qualified_intrinsic_spellings(&func_name));

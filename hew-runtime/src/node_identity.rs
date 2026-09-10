@@ -3,6 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use hew_cabi::string::{string_from_str, HewString};
 use sha2::{Digest, Sha256};
 
 const NODE_ID_DOMAIN: &[u8] = b"hew-node-id-v1\0";
@@ -196,6 +197,205 @@ pub struct HewRemotePid {
     pub incarnation: u32,
     /// Must be zero.
     pub reserved: u32,
+}
+
+// C-ABI field and display accessors for `HewNodeId`, `HewLocation` and
+// `HewRemotePid`. Hew's `#[extern_symbol(...)]` builtins call these directly
+// (see `std/builtins.hew`'s `RemotePid<T>`, `Location` and `NodeId` impls),
+// so each symbol name below is load-bearing.
+
+/// Return the node identity carried by a location.
+///
+/// Fails closed to the zero node identity when `location` is null.
+///
+/// # Safety
+///
+/// `location` must point to a readable `HewLocation`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_location_node_id(location: *const HewLocation) -> HewNodeId {
+    if location.is_null() {
+        return HewNodeId::default();
+    }
+    // SAFETY: caller guarantees `location` is readable.
+    let location = unsafe { *location };
+    location.node
+}
+
+/// Return the node-local actor slot carried by a location.
+///
+/// Fails closed to `0` when `location` is null.
+///
+/// # Safety
+///
+/// `location` must point to a readable `HewLocation`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_location_slot(location: *const HewLocation) -> u64 {
+    if location.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `location` is readable.
+    let location = unsafe { *location };
+    location.slot
+}
+
+/// Return the node-session incarnation carried by a location.
+///
+/// Fails closed to `0` when `location` is null.
+///
+/// # Safety
+///
+/// `location` must point to a readable `HewLocation`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_location_incarnation(location: *const HewLocation) -> u32 {
+    if location.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `location` is readable.
+    let location = unsafe { *location };
+    location.incarnation
+}
+
+/// Format a location as `<node-hex>/<slot>@<incarnation>`, returned as an
+/// owned managed string. Reproduces
+/// [`crate::hew_node::hew_location_format`]'s text exactly.
+///
+/// Returns a null pointer when `location` is null - null is the managed
+/// carrier's canonical empty string, matching the existing formatters'
+/// fail-closed behaviour on a null input.
+///
+/// # Safety
+///
+/// `location` must point to a readable `HewLocation`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_location_display(location: *const HewLocation) -> *mut HewString {
+    if location.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees `location` is readable.
+    let location = unsafe { *location };
+    string_from_str(&format!(
+        "{:016x}{:016x}/{}@{}",
+        location.node.hi, location.node.lo, location.slot, location.incarnation
+    ))
+}
+
+/// Return the complete carried actor location.
+///
+/// Fails closed to the zero location when `pid` is null.
+///
+/// # Safety
+///
+/// `pid` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_pid_location(pid: *const HewRemotePid) -> HewLocation {
+    if pid.is_null() {
+        return HewLocation::default();
+    }
+    // SAFETY: caller guarantees `pid` is readable.
+    let pid = unsafe { *pid };
+    HewLocation {
+        node: pid.node,
+        slot: pid.slot,
+        incarnation: pid.incarnation,
+        reserved: pid.reserved,
+    }
+}
+
+/// Return the stable node identity carried by a remote pid.
+///
+/// Fails closed to the zero node identity when `pid` is null.
+///
+/// # Safety
+///
+/// `pid` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_pid_node_id(pid: *const HewRemotePid) -> HewNodeId {
+    if pid.is_null() {
+        return HewNodeId::default();
+    }
+    // SAFETY: caller guarantees `pid` is readable.
+    let pid = unsafe { *pid };
+    pid.node
+}
+
+/// Return the node-local actor slot carried by a remote pid.
+///
+/// Fails closed to `0` when `pid` is null.
+///
+/// # Safety
+///
+/// `pid` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_pid_slot(pid: *const HewRemotePid) -> u64 {
+    if pid.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `pid` is readable.
+    let pid = unsafe { *pid };
+    pid.slot
+}
+
+/// Return the node-session incarnation carried by a remote pid.
+///
+/// Fails closed to `0` when `pid` is null.
+///
+/// # Safety
+///
+/// `pid` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_pid_incarnation(pid: *const HewRemotePid) -> u32 {
+    if pid.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `pid` is readable.
+    let pid = unsafe { *pid };
+    pid.incarnation
+}
+
+/// Format a remote pid as `<node-hex>/<slot>@<incarnation>`, returned as an
+/// owned managed string. Reproduces
+/// [`crate::hew_node::hew_location_format`]'s text exactly (`HewLocation` and
+/// `HewRemotePid` share the same carried layout and display shape).
+///
+/// Returns a null pointer when `pid` is null - null is the managed carrier's
+/// canonical empty string, matching the existing formatters' fail-closed
+/// behaviour on a null input.
+///
+/// # Safety
+///
+/// `pid` must point to a readable `HewRemotePid`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_remote_pid_display(pid: *const HewRemotePid) -> *mut HewString {
+    if pid.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees `pid` is readable.
+    let pid = unsafe { *pid };
+    string_from_str(&format!(
+        "{:016x}{:016x}/{}@{}",
+        pid.node.hi, pid.node.lo, pid.slot, pid.incarnation
+    ))
+}
+
+/// Format a node identity as 32 lowercase hexadecimal digits, returned as an
+/// owned managed string. Reproduces [`crate::hew_node::hew_node_id_format`]'s
+/// text exactly.
+///
+/// Returns a null pointer when `node` is null - null is the managed
+/// carrier's canonical empty string, matching the existing formatters'
+/// fail-closed behaviour on a null input.
+///
+/// # Safety
+///
+/// `node` must point to a readable `HewNodeId`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_id_display(node: *const HewNodeId) -> *mut HewString {
+    if node.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller guarantees `node` is readable.
+    let node = unsafe { *node };
+    string_from_str(&format!("{:016x}{:016x}", node.hi, node.lo))
 }
 
 /// Immutable carried actor location.
@@ -865,6 +1065,121 @@ mod tests {
             Location::try_from(raw),
             Err(InvalidLocation::NonZeroReserved)
         );
+    }
+
+    fn sample_location() -> HewLocation {
+        HewLocation {
+            node: HewNodeId {
+                hi: 0x0123_4567_89ab_cdef,
+                lo: 0xfedc_ba98_7654_3210,
+            },
+            slot: 7,
+            incarnation: 3,
+            reserved: 0,
+        }
+    }
+
+    fn sample_remote_pid() -> HewRemotePid {
+        let location = sample_location();
+        HewRemotePid {
+            node: location.node,
+            slot: location.slot,
+            incarnation: location.incarnation,
+            reserved: location.reserved,
+        }
+    }
+
+    fn owned_string_text(value: *mut HewString) -> String {
+        assert!(!value.is_null());
+        // SAFETY: the accessor under test returned a live owned managed
+        // string; `string_as_str` borrows it without transferring ownership.
+        let text = unsafe { hew_cabi::string::string_as_str(value) }.to_owned();
+        // SAFETY: this test holds the sole reference; drop the allocation.
+        unsafe { hew_cabi::string::string_release(value) };
+        text
+    }
+
+    #[test]
+    fn location_field_accessors_read_the_exact_fields() {
+        let location = sample_location();
+        assert_eq!(unsafe { hew_location_node_id(&location) }, location.node);
+        assert_eq!(unsafe { hew_location_slot(&location) }, location.slot);
+        assert_eq!(
+            unsafe { hew_location_incarnation(&location) },
+            location.incarnation
+        );
+    }
+
+    #[test]
+    fn location_field_accessors_fail_closed_on_null() {
+        assert_eq!(
+            unsafe { hew_location_node_id(std::ptr::null()) },
+            HewNodeId::default()
+        );
+        assert_eq!(unsafe { hew_location_slot(std::ptr::null()) }, 0);
+        assert_eq!(unsafe { hew_location_incarnation(std::ptr::null()) }, 0);
+        assert!(unsafe { hew_location_display(std::ptr::null()) }.is_null());
+    }
+
+    #[test]
+    fn remote_pid_field_accessors_read_the_exact_fields() {
+        let pid = sample_remote_pid();
+        assert_eq!(unsafe { hew_remote_pid_location(&pid) }, sample_location());
+        assert_eq!(unsafe { hew_remote_pid_node_id(&pid) }, pid.node);
+        assert_eq!(unsafe { hew_remote_pid_slot(&pid) }, pid.slot);
+        assert_eq!(unsafe { hew_remote_pid_incarnation(&pid) }, pid.incarnation);
+    }
+
+    #[test]
+    fn remote_pid_field_accessors_fail_closed_on_null() {
+        assert_eq!(
+            unsafe { hew_remote_pid_location(std::ptr::null()) },
+            HewLocation::default()
+        );
+        assert_eq!(
+            unsafe { hew_remote_pid_node_id(std::ptr::null()) },
+            HewNodeId::default()
+        );
+        assert_eq!(unsafe { hew_remote_pid_slot(std::ptr::null()) }, 0);
+        assert_eq!(unsafe { hew_remote_pid_incarnation(std::ptr::null()) }, 0);
+        assert!(unsafe { hew_remote_pid_display(std::ptr::null()) }.is_null());
+    }
+
+    #[test]
+    fn display_accessors_match_the_existing_formatters_exactly() {
+        let location = sample_location();
+        let pid = sample_remote_pid();
+        let expected_node = "0123456789abcdeffedcba9876543210".to_string();
+        let expected_location = "0123456789abcdeffedcba9876543210/7@3".to_string();
+
+        assert_eq!(
+            owned_string_text(unsafe { hew_node_id_display(&location.node) }),
+            expected_node,
+        );
+        assert_eq!(
+            owned_string_text(unsafe { hew_location_display(&location) }),
+            expected_location,
+        );
+        assert_eq!(
+            owned_string_text(unsafe { hew_remote_pid_display(&pid) }),
+            expected_location,
+        );
+
+        // Cross-check against the pre-existing `hew_node.rs` formatters this
+        // display text is required to reproduce exactly.
+        let via_hew_node_format = unsafe {
+            let raw = crate::hew_node::hew_node_id_format(&location.node);
+            assert!(!raw.is_null());
+            let text = std::ffi::CStr::from_ptr(raw).to_str().unwrap().to_owned();
+            crate::cabi::free_cstring(raw);
+            text
+        };
+        assert_eq!(via_hew_node_format, expected_node);
+    }
+
+    #[test]
+    fn node_id_display_fails_closed_on_null() {
+        assert!(unsafe { hew_node_id_display(std::ptr::null()) }.is_null());
     }
 
     #[test]

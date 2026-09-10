@@ -2591,70 +2591,90 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::String,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_node_id_display",
+        },
     ),
     direct(
         "hew_location_node_id",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_location_node_id",
+        },
     ),
     direct(
         "hew_location_slot",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_location_slot",
+        },
     ),
     direct(
         "hew_location_incarnation",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U32,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_location_incarnation",
+        },
     ),
     direct(
         "hew_location_display",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::String,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_location_display",
+        },
     ),
     direct(
         "hew_remote_pid_location",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_location",
+        },
     ),
     direct(
         "hew_remote_pid_node_id",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_node_id",
+        },
     ),
     direct(
         "hew_remote_pid_slot",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_slot",
+        },
     ),
     direct(
         "hew_remote_pid_incarnation",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::U32,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_incarnation",
+        },
     ),
     direct(
         "hew_remote_pid_display",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],
         BuiltinTy::String,
-        BuiltinLinkage::CalleeNameDispatchOnly,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_remote_pid_display",
+        },
     ),
     // Active-mode `conn.attach(handler)` dispatch symbol.
     //

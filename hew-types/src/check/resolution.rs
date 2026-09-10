@@ -85,6 +85,8 @@ impl Checker {
             "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
             "std.builtins.LocalPid" => Some(BuiltinType::LocalPid),
             "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
+            "std.builtins.NodeId" => Some(BuiltinType::NodeId),
+            "std.builtins.Location" => Some(BuiltinType::Location),
             _ => crate::lookup_builtin_type(name),
         }?;
         let Some((surface_owner, _)) = name.rsplit_once('.') else {

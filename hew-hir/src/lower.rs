@@ -10560,7 +10560,15 @@ impl LowerCtx {
                     ..entry.clone()
                 },
             );
-            if let Some(symbol) = builtin.linkage.runtime_symbol() {
+            // A shim whose runtime symbol IS its catalog name has no second
+            // callee identity to alias; inserting one here would overwrite the
+            // family-carrying row above and drop the call back to a bare
+            // catalog endpoint.
+            if let Some(symbol) = builtin
+                .linkage
+                .runtime_symbol()
+                .filter(|symbol| *symbol != builtin.name)
+            {
                 self.fn_registry.insert(symbol.to_string(), entry);
             }
         }

@@ -10111,6 +10111,21 @@
     },
     {
       "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_location_display( *const HewLocation) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_location_display( *const HewLocation) -> *mut HewString"
+      },
+      "symbol": "hew_location_display"
+    },
+    {
+      "availability": [
         "native"
       ],
       "classification": "non-declarable",
@@ -10121,6 +10136,51 @@
         "native": "fn hew_location_format( *const HewRemotePid) -> *mut c_char"
       },
       "symbol": "hew_location_format"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_location_incarnation( *const HewLocation) -> u32",
+        "wasm32-wasip1": "fn hew_location_incarnation( *const HewLocation) -> u32"
+      },
+      "symbol": "hew_location_incarnation"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_location_node_id( *const HewLocation) -> HewNodeId",
+        "wasm32-wasip1": "fn hew_location_node_id( *const HewLocation) -> HewNodeId"
+      },
+      "symbol": "hew_location_node_id"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_location_slot( *const HewLocation) -> u64",
+        "wasm32-wasip1": "fn hew_location_slot( *const HewLocation) -> u64"
+      },
+      "symbol": "hew_location_slot"
     },
     {
       "availability": [
@@ -11536,6 +11596,21 @@
         "native": "fn hew_node_free( *mut HewNode)"
       },
       "symbol": "hew_node_free"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_id_display( *const HewNodeId) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_node_id_display( *const HewNodeId) -> *mut HewString"
+      },
+      "symbol": "hew_node_id_display"
     },
     {
       "availability": [
@@ -13952,6 +14027,81 @@
         "wasm32-wasip1": "fn hew_registry_unregister( *const c_char) -> i32"
       },
       "symbol": "hew_registry_unregister"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_pid_display( *const HewRemotePid) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_remote_pid_display( *const HewRemotePid) -> *mut HewString"
+      },
+      "symbol": "hew_remote_pid_display"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_pid_incarnation( *const HewRemotePid) -> u32",
+        "wasm32-wasip1": "fn hew_remote_pid_incarnation( *const HewRemotePid) -> u32"
+      },
+      "symbol": "hew_remote_pid_incarnation"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_pid_location( *const HewRemotePid) -> HewLocation",
+        "wasm32-wasip1": "fn hew_remote_pid_location( *const HewRemotePid) -> HewLocation"
+      },
+      "symbol": "hew_remote_pid_location"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_pid_node_id( *const HewRemotePid) -> HewNodeId",
+        "wasm32-wasip1": "fn hew_remote_pid_node_id( *const HewRemotePid) -> HewNodeId"
+      },
+      "symbol": "hew_remote_pid_node_id"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_remote_pid_slot( *const HewRemotePid) -> u64",
+        "wasm32-wasip1": "fn hew_remote_pid_slot( *const HewRemotePid) -> u64"
+      },
+      "symbol": "hew_remote_pid_slot"
     },
     {
       "availability": [

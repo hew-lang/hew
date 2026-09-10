@@ -1246,10 +1246,22 @@ fn reusable_callable_parameter_invocation_compiles_native_and_wasm() {
 #[test]
 fn callable_storage_return_and_capture_stay_fail_closed_on_both_targets() {
     require_codegen();
-    for (shape, source) in [
-        ("stored", STORED_CALLABLE_PARAM_SOURCE),
-        ("returned", RETURNED_CALLABLE_PARAM_SOURCE),
-        ("captured", CAPTURED_CALLABLE_PARAM_SOURCE),
+    for (shape, source, expected) in [
+        (
+            "stored",
+            STORED_CALLABLE_PARAM_SOURCE,
+            "cannot consume a value through borrowed parameter `f`",
+        ),
+        (
+            "returned",
+            RETURNED_CALLABLE_PARAM_SOURCE,
+            "cannot consume a value through borrowed parameter `f`",
+        ),
+        (
+            "captured",
+            CAPTURED_CALLABLE_PARAM_SOURCE,
+            "capture `f` has no independent snapshot operation",
+        ),
     ] {
         for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))]
         {
@@ -1261,7 +1273,7 @@ fn callable_storage_return_and_capture_stay_fail_closed_on_both_targets() {
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
-                stderr.contains("live owned call-carrier `fn(i64) -> i64`"),
+                stderr.contains(expected),
                 "the {shape} mutation must retain the owned-carrier rejection ({target_name}):\n{}",
                 describe_output(&output)
             );

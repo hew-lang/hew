@@ -370,7 +370,8 @@ fn failed_nested_callable_clone_rolls_back_completed_fields_and_preserves_output
         let ctx = Context::create();
         let llvm = environment_llvm(&ctx, &physical);
         let engine = engine(&llvm, optimized);
-        let drop = llvm.get_function("hew_vec_free_owned").unwrap();
+        // The captured vector is ordinary data, so its release joins the walker.
+        let drop = llvm.get_function("hew_vec_free_owned_walk").unwrap();
         engine.add_global_mapping(&drop, counted_vector_drop as *const () as usize);
         // SAFETY: the test installs one deliberately failing nested copy callback.
         // The generated outer callback owns rollback and must preserve output.

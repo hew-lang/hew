@@ -25,6 +25,11 @@
 //! collection carries a cursor and gives up one element per step, so a later
 //! runtime bulk-cleanup pass can drive the same items in quanta. This lane
 //! always drives it to empty.
+//!
+//! A release never suspends, so the worklist is thread-local: descriptor drop
+//! thunks are plain `extern "C"` functions with no coroutine lowering, and a
+//! resource `close` whose body suspends is driven to completion by
+//! `hew_coro_run_root` on the calling thread before the drop glue returns.
 
 use std::cell::{Cell, RefCell};
 

@@ -8297,12 +8297,14 @@ mod tests {
                 // clones only the key.
                 RuntimeCallFamily::Map(Map::Insert),
                 "hew_hashmap_insert_take_layout",
-                Some("hew_hashmap_free_layout"),
+                // The fixture's keys and values are ordinary data, so its
+                // release joins the walker rather than nesting.
+                Some("hew_hashmap_free_layout_walk"),
             ),
             (
                 RuntimeCallFamily::Set(Set::Insert),
                 "hew_hashset_insert_clone_layout",
-                Some("hew_hashset_free_layout"),
+                Some("hew_hashset_free_layout_walk"),
             ),
         ];
         for (family, symbol, release) in cases {

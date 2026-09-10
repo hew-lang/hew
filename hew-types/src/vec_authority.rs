@@ -450,11 +450,10 @@ pub fn resolve_runtime_symbol(
 
     // A `Ptr`-token element (a heap-boxed indirect enum node, a `LocalPid`
     // handle, a closure/function value, ...) never selects the owned Vec
-    // family, even when an upstream owned-admissibility check reports it as
-    // owned. A recursive `indirect enum` element satisfies every shape
-    // `vec_owned_element_admissible` requires (registered record/enum kind and
-    // no unowned-container field) because that admissibility check
-    // is blind to indirection — but its runtime representation is a bare
+    // family, even when the element's value class reports an ownership
+    // obligation. A recursive `indirect enum` element classes `CowValue` —
+    // the class rule reads the declaration's members, not its indirection —
+    // but its runtime representation is a bare
     // pointer slot built by `hew_vec_new_ptr`, not the owned family's
     // `HewValueLayout`-descriptor buffer. Honouring `is_owned` here would
     // route `push`/`pop`/`get`/... to `hew_vec_*_owned` against a buffer the
@@ -777,10 +776,10 @@ mod tests {
 
     #[test]
     fn ptr_token_element_never_selects_owned_family_even_if_reported_owned() {
-        // Pins the exact latent-bug shape from CAP-01: `vec_owned_element_
-        // admissible` is blind to indirection, so a recursive `indirect enum`
+        // Pins the exact latent-bug shape from CAP-01: the value class is
+        // blind to indirection, so a recursive `indirect enum`
         // element (e.g. `indirect enum RedisReply { Array(Vec<RedisReply>);
-        // ... }`) can report `is_owned: true` even though `classify_element`
+        // ... }`) reports `is_owned: true` even though `classify_element`
         // correctly tokens it `Ptr` — its Vec buffer is one heap-boxed
         // pointer per slot, built by `hew_vec_new_ptr`, never the owned
         // family's element-layout descriptor. `resolve_runtime_symbol` MUST

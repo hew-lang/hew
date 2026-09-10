@@ -4,35 +4,20 @@ use super::types::{VecCursorMode, VecIterationMode};
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::type_facts::CloneKind;
+use crate::value_class::{ClassError, ValueClass};
 use crate::BuiltinType;
 
-/// Active declarations and the heap depth at which each was entered.
-/// A repeated declaration is finite only if its own cycle crossed a container.
-#[derive(Default)]
-pub(super) struct CollectionClonePath {
-    active: HashMap<String, usize>,
-    container_depth: usize,
-}
-
-impl CollectionClonePath {
-    /// Enter a declaration, or return whether an existing cycle is indirect.
-    pub(super) fn enter(&mut self, name: &str) -> Option<bool> {
-        if let Some(depth) = self.active.get(name) {
-            return Some(self.container_depth > *depth);
-        }
-        self.active.insert(name.to_string(), self.container_depth);
-        None
-    }
-
-    pub(super) fn leave(&mut self, name: &str) {
-        self.active.remove(name);
-    }
-
-    pub(super) fn through_container<T>(&mut self, walk: impl FnOnce(&mut Self) -> T) -> T {
-        self.container_depth += 1;
-        let result = walk(self);
-        self.container_depth -= 1;
-        result
+/// How one value class reads in a diagnostic, so a refusal names the rule that
+/// produced it rather than the shape the checker happened to walk.
+fn class_description(class: ValueClass) -> &'static str {
+    match class {
+        ValueClass::BitCopy => "a bit-copyable value",
+        ValueClass::View => "a non-owning view",
+        ValueClass::CowValue => "a heap value",
+        ValueClass::PersistentShare => "a shared value with no clone slot",
+        ValueClass::AffineResource => "a resource with no copy operation",
+        ValueClass::Linear => "a linear value that must be consumed",
     }
 }
 
@@ -913,231 +898,95 @@ impl Checker {
             .unwrap_or_default()
     }
 
-    /// Cross a descriptor-backed buffer while retaining the active type path.
-    /// Inline members below this edge may close an earlier cycle, but a cycle
-    /// entered entirely below the edge still needs its own heap indirection.
-    fn vec_iter_container_element_clone_blocker(
-        &self,
-        elem: &Ty,
-        visiting: &mut CollectionClonePath,
-    ) -> Option<String> {
-        visiting.through_container(|visiting| self.vec_iter_clone_blocker(elem, visiting))
-    }
-
-    /// Return the first leaf that prevents `VecIter::next` from cloning an
-    /// element into an independent owner.
+    /// The §1.1 value class and clone kind of a collection element type.
     ///
-    /// This is a positive structural proof over the exact descriptor-backed
-    /// classes the runtime clone choke supports. Drop-only closure pairs,
-    /// opaque/resource/linear handles, raw pointers, tasks, and unresolved
-    /// layouts fail closed. Nested Vec/HashMap/HashSet values recurse through
-    /// their own clone descriptors; Rc/Weak are retainable owners.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the positive clone-totality proof deliberately enumerates every Ty shape in one exhaustive match"
-    )]
-    fn vec_iter_clone_blocker(
+    /// This is the one authority behind every element question the checker
+    /// asks: whether a type may be a `Vec`, `HashMap`, `HashSet` or array
+    /// element, whether it can be copied out of one, and whether the element
+    /// carries an ownership obligation the collection has to release. It is
+    /// the same rule SIR reads for ownership and physical MIR reads for the
+    /// clone and destroy actions, so the checker and the backend cannot
+    /// disagree about one element type.
+    ///
+    /// # Errors
+    ///
+    /// Returns the class rule's own refusal. A type the boundary cannot render
+    /// as a [`ResolvedTy`] has no class either, and reports as
+    /// [`ClassError::UnknownDeclaration`] on its spelling.
+    pub(super) fn element_value_facts(
         &self,
         ty: &Ty,
-        visiting: &mut CollectionClonePath,
-    ) -> Option<String> {
+    ) -> Result<(ValueClass, CloneKind), ClassError> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        // User resource/linear markers are semantic ownership authority. A
-        // marker may sit on an otherwise bit-copy layout, so this must precede
-        // the Copy-layout fast path below.
-        if let Ty::Named { name, .. } = &resolved {
-            if self.registry.is_resource(name) || self.registry.is_linear(name) {
-                return Some(format!("resource/linear value `{name}`"));
-            }
-        }
-        if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
-            return None;
-        }
-        match &resolved {
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.vec_iter_clone_blocker(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.vec_iter_clone_blocker(elem, visiting),
-            Ty::Function { .. } | Ty::Closure { .. } => {
-                Some(format!("closure value `{}`", resolved.user_facing()))
-            }
-            Ty::Pointer { .. } | Ty::Borrow { .. } | Ty::TraitObject { .. } | Ty::Task(_) => {
-                Some(format!("opaque pointer value `{}`", resolved.user_facing()))
-            }
-            Ty::CancellationToken => Some("resource handle `CancellationToken`".to_string()),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                // Local actor handles copy an incarnation token; they never
-                // own the actor or clone its state and protocol parameter.
-                if *builtin == Some(BuiltinType::LocalPid) && args.len() == 1 {
-                    return None;
-                }
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.is_user_opaque_type_name(name)
-                {
-                    return Some(format!("opaque/resource handle `{name}`"));
-                }
-                if builtin.is_some_and(|kind| {
-                    matches!(
-                        kind.marker(),
-                        crate::builtin_type::BuiltinTypeMarker::Resource
-                            | crate::builtin_type::BuiltinTypeMarker::Linear
-                    )
-                }) {
-                    return Some(format!("resource handle `{}`", resolved.user_facing()));
-                }
-                // `Instant`, `Unit` and `Duration` were named beside this
-                // marker read because they carried marker `None` while §1.1
-                // classed them `BitCopy`. The markers are corrected, so the
-                // marker read answers for them and the second list is deleted.
-                if builtin.is_some_and(|kind| {
-                    kind.marker() == crate::builtin_type::BuiltinTypeMarker::BitCopy
-                }) {
-                    return None;
-                }
-                match builtin {
-                    Some(BuiltinType::Rc | BuiltinType::Weak) if args.len() == 1 => return None,
-                    Some(BuiltinType::Vec | BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.vec_iter_container_element_clone_blocker(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        return args.iter().find_map(|arg| {
-                            self.vec_iter_container_element_clone_blocker(arg, visiting)
-                        });
-                    }
-                    Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
-                        return args
-                            .iter()
-                            .find_map(|arg| self.vec_iter_clone_blocker(arg, visiting));
-                    }
-                    _ => {}
-                }
+        let rendered =
+            ResolvedTy::from_ty(&resolved).map_err(|_| ClassError::UnknownDeclaration {
+                name: resolved.user_facing().to_string(),
+            })?;
+        crate::value_class::classify_ty(
+            &rendered,
+            &crate::value_class::ClassContext::new(&self.class_declarations()),
+        )
+    }
 
-                if self.is_type_param_in_scope(name)
-                    && self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-                {
-                    return None;
-                }
-                // A genuine function type parameter is not a concrete layout
-                // verdict yet.  Generic bodies are checked once, before HIR
-                // records their concrete monomorphisations, so rejecting an
-                // unbounded `T` here would also reject supported call sites
-                // such as `count<i64>(Vec<i64>)`.  Defer this one shape to
-                // MIR's per-monomorphisation clone-totality gate, where `T`
-                // has been substituted and the complete record/enum layout
-                // registries are available.  A same-named ordinary nominal
-                // does not satisfy `is_type_param_in_scope` and still fails
-                // closed through the lookup below.
-                if args.is_empty() && self.is_type_param_in_scope(name) {
-                    return None;
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return Some(format!("unregistered value layout `{name}`"));
-                };
-                if !matches!(
-                    type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                ) {
-                    return Some(format!("non-value type `{name}`"));
-                }
-                // Resolve aliases to the declaration identity before checking
-                // whether this repeated type cycle crossed a heap container.
-                let visit_key = type_def.name.clone();
-                if let Some(indirected) = visiting.enter(&visit_key) {
-                    return (!indirected).then(|| format!("recursive value layout `{visit_key}`"));
-                }
-                // An `indirect enum` boxes every value, so a recursive
-                // occurrence reached through its variants crosses heap
-                // indirection exactly as a `Vec` element does.
-                let walk = |visiting: &mut CollectionClonePath| {
-                    type_def
-                        .fields
-                        .values()
-                        .map(|field_ty| {
-                            Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
-                        })
-                        .find_map(|field_ty| self.vec_iter_clone_blocker(&field_ty, visiting))
-                        .or_else(|| {
-                            self.tuple_record_constructor_fields(name, &type_def)
-                                .iter()
-                                .find_map(|field_ty| {
-                                    let field_ty = Self::instantiate_type_def_member(
-                                        field_ty,
-                                        &type_def.type_params,
-                                        args,
-                                    );
-                                    self.vec_iter_clone_blocker(&field_ty, visiting)
-                                })
-                        })
-                        .or_else(|| {
-                            type_def
-                                .variants
-                                .values()
-                                .find_map(|variant| match variant {
-                                    VariantDef::Unit => None,
-                                    VariantDef::Tuple(fields) => {
-                                        fields.iter().find_map(|field_ty| {
-                                            let field_ty = Self::instantiate_type_def_member(
-                                                field_ty,
-                                                &type_def.type_params,
-                                                args,
-                                            );
-                                            self.vec_iter_clone_blocker(&field_ty, visiting)
-                                        })
-                                    }
-                                    VariantDef::Struct(fields) => {
-                                        fields.iter().find_map(|(_, field_ty)| {
-                                            let field_ty = Self::instantiate_type_def_member(
-                                                field_ty,
-                                                &type_def.type_params,
-                                                args,
-                                            );
-                                            self.vec_iter_clone_blocker(&field_ty, visiting)
-                                        })
-                                    }
-                                })
-                        })
-                };
-                let blocker = if type_def.is_indirect {
-                    visiting.through_container(walk)
-                } else {
-                    walk(visiting)
-                };
-                visiting.leave(&visit_key);
-                blocker
+    /// Why this type cannot be a collection element at all, if it cannot.
+    ///
+    /// A type with a class is storable: `BitCopy` rides the plain layout
+    /// family and every other class the owned-element descriptor, whose clone
+    /// and destroy actions come from the same class row. So the only refusals
+    /// left are the class rule's own: a compiler-internal name that is never
+    /// the type of a value, a callable whose declared copy capability
+    /// contradicts what it captures, a declaration whose members reach it at a
+    /// growing instantiation, and a spelling with no declaration behind it. An
+    /// abstract parameter is substituted before the element ABI is chosen, so
+    /// it refuses nothing here.
+    pub(super) fn element_admission_refusal(&self, ty: &Ty) -> Option<String> {
+        match self.element_value_facts(ty) {
+            Ok(_) | Err(ClassError::TypeParam { .. }) => None,
+            Err(error @ ClassError::RecursiveInstantiation { .. }) => {
+                Some(format!("E_LIMIT_CLASS_RECURSION: {error}"))
             }
-            Ty::Var(_) | Ty::AssocType { .. } => {
-                Some(format!("unresolved element `{}`", resolved.user_facing()))
-            }
-            // Error recovery already has a source diagnostic. List every
-            // supported leaf explicitly: this match is the positive proof for
-            // clone-out admission, so a future `Ty` variant must choose an
-            // operation instead of inheriting a catch-all "cloneable" answer.
-            Ty::String
-            | Ty::Bytes
-            | Ty::Error
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-            | Ty::Duration
-            | Ty::Unit
-            | Ty::Never
-            | Ty::IntLiteral
-            | Ty::FloatLiteral => None,
+            Err(error) => Some(error.to_string()),
+        }
+    }
+
+    /// Does this element carry an ownership obligation the collection must
+    /// release, so its slots ride the owned-element descriptor ABI?
+    ///
+    /// A `BitCopy` element is bits in the buffer and a `View` borrows storage
+    /// it does not own; every other class owns something. A class the rule
+    /// refuses owns nothing this collection can be asked to release, and the
+    /// refusal itself is reported by the admission site.
+    pub(super) fn element_owns_heap(&self, ty: &Ty) -> bool {
+        matches!(
+            self.element_value_facts(ty),
+            Ok((class, _)) if !matches!(class, ValueClass::BitCopy | ValueClass::View)
+        )
+    }
+
+    /// Why this element type cannot be copied out of a collection, if it
+    /// cannot.
+    ///
+    /// One authority: the element's §1.1 clone kind
+    /// ([`crate::value_class::classify_ty`]). `xs[i]`, a range slice, a
+    /// `HashMap` value read, cloning iteration and `Vec.clone` all copy an
+    /// element into an independent owner, so they admit exactly the element
+    /// types the class table gives a copy path. An abstract parameter has no
+    /// class until the instance service substitutes it and MIR's
+    /// per-monomorphisation clone check answers there, so it blocks nothing
+    /// here.
+    pub(super) fn element_clone_blocker(&self, ty: &Ty) -> Option<String> {
+        match self.element_value_facts(ty) {
+            Ok((class, CloneKind::None)) => Some(format!(
+                "`{}`, {}",
+                self.subst
+                    .resolve(ty)
+                    .materialize_literal_defaults()
+                    .user_facing(),
+                class_description(class)
+            )),
+            Ok(_) => None,
+            Err(ClassError::TypeParam { .. }) => None,
+            Err(error) => Some(error.to_string()),
         }
     }
 
@@ -1157,12 +1006,7 @@ impl Checker {
         if matches!(resolved, Ty::Error) {
             return None;
         }
-        let mut visiting = CollectionClonePath::default();
-        if self.clone_proven_element(&resolved)
-            && self
-                .vec_iter_clone_blocker(&resolved, &mut visiting)
-                .is_none()
-        {
+        if self.clone_proven_element(&resolved) && self.element_clone_blocker(&resolved).is_none() {
             return Some(VecCursorMode::Clone);
         }
         let _ = span;
@@ -1209,12 +1053,7 @@ impl Checker {
         if matches!(resolved, Ty::Error) {
             return None;
         }
-        let mut visiting = CollectionClonePath::default();
-        if self.clone_proven_element(&resolved)
-            && self
-                .vec_iter_clone_blocker(&resolved, &mut visiting)
-                .is_none()
-        {
+        if self.clone_proven_element(&resolved) && self.element_clone_blocker(&resolved).is_none() {
             return Some(VecIterationMode::Clone);
         }
         let _ = span;
@@ -1223,7 +1062,7 @@ impl Checker {
 
     /// Whether every type-parameter occurrence in `ty` carries a `Clone` bound.
     ///
-    /// [`Self::vec_iter_clone_blocker`] deliberately admits an unbounded
+    /// [`Self::element_clone_blocker`] deliberately admits an unbounded
     /// parameter and defers it to MIR's per-monomorphisation clone check; that
     /// is right for admitting call sites and wrong for choosing a copy mode,
     /// because the template's loop shape is fixed before its instantiations are
@@ -1255,8 +1094,7 @@ impl Checker {
         if matches!(resolved, Ty::Error) {
             return false;
         }
-        let mut visiting = CollectionClonePath::default();
-        let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
+        let Some(blocker) = self.element_clone_blocker(&resolved) else {
             return true;
         };
         self.report_error(
@@ -1264,8 +1102,8 @@ impl Checker {
             span,
             format!(
                 "`Vec<{}>` cannot be range-sliced: a slice copies each element into an \
-                 independent `Vec`, but {blocker} has no semantic clone/retain operation; \
-                 use an owning removal such as `pop()` to move the elements out instead",
+                 independent `Vec`, but {blocker} has no copy operation; use an owning \
+                 removal such as `pop()` to move the elements out instead",
                 resolved.user_facing()
             ),
         );
@@ -1299,16 +1137,15 @@ impl Checker {
                 });
             return true;
         }
-        let mut visiting = CollectionClonePath::default();
-        if let Some(blocker) = self.vec_iter_clone_blocker(ty, &mut visiting) {
+        if let Some(blocker) = self.element_clone_blocker(ty) {
             let resolved = resolved.materialize_literal_defaults();
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`{operation}` copies each value out of the map, but value type `{}` \
-                     contains {blocker} which has no semantic clone/retain operation; read it \
-                     with `get(k)`, which borrows, or move it out with `remove(k)`",
+                    "`{operation}` copies each value out of the map, but value type `{}` is \
+                     {blocker} with no copy operation; read it with `get(k)`, which borrows, \
+                     or move it out with `remove(k)`",
                     resolved.user_facing(),
                 ),
             );

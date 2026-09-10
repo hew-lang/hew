@@ -761,12 +761,12 @@ impl Checker {
                 // same deferral the element-typed method resolution takes (#2737).
                 && !self.vec_element_contains_abstract_type_param(&elem_ty)
             {
-                let is_copy = self.vec_element_has_copy_layout(&elem_ty);
-                // W5.016: admit a non-Copy record/enum element with a
-                // synthesizable owned thunk path (constructed through the owned
-                // ABI). Stays fail-closed for elements with no thunk path.
-                if !is_copy && !self.vec_owned_element_admissible(&elem_ty) {
-                    let reason = self.vec_element_rejection_reason(&elem_ty);
+                // The element's value class decides: a `BitCopy` element takes
+                // the plain layout family, every other class the owned-element
+                // descriptor whose clone and destroy actions come from the same
+                // class row. Only a type the class rule refuses outright has no
+                // element ABI at all.
+                if let Some(reason) = self.element_admission_refusal(&elem_ty) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -1809,14 +1809,9 @@ impl Checker {
                     == Some(crate::vec_authority::VecElementToken::Layout)
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
-                    let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
-                    // W5.016: a non-Copy record/enum element with a synthesizable
-                    // owned clone/drop thunk path constructs through
-                    // `hew_vec_new_with_elem_layout` (the owned ABI), so do not
-                    // reject it here. Stays fail-closed for elements with no
-                    // thunk path (e.g. a record carrying a `Vec` field).
-                    if !is_copy && !self.vec_owned_element_admissible(&resolved_elem) {
-                        let reason = self.vec_element_rejection_reason(&resolved_elem);
+                    // Same single authority as the expected-type constructor
+                    // path above: the element's value class.
+                    if let Some(reason) = self.element_admission_refusal(&resolved_elem) {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             span,

@@ -1194,47 +1194,23 @@ impl Checker {
                 );
             }
         }
-        // Owned (non-Copy) elements are cloned per slot at runtime (N independent
-        // owned copies, source dropped once at block exit — matching `vec![x; n]`
-        // semantics). Array-repeat clonability is now identical to Vec-storage
-        // admissibility: both route the per-slot clone through the same
-        // `hew_vec_push_owned` deep copy-in (the HIR desugar reuses the Vec push
-        // path and no longer materialises an aliasing temp). Gate on the single
-        // authority: `string`/`bytes` always admit (push_str / push_bytes copy
-        // independently); an owned record/enum admits exactly when it is
-        // cloneable via `vec_owned_element_admissible` — which admits a
-        // record/enum transitively holding collections or Rc/Weak handles and
-        // keeps a closure-field element rejected. Anything else fails closed
-        // with a clear diagnostic rather than a silent double-free.
-        if !self.vec_element_has_copy_layout(&elem_ty) {
+        // An array repeat copies the element into every slot, so it admits
+        // exactly the element types the value class gives a copy path — the
+        // same answer `xs[i]`, a range slice and cloning iteration get. A
+        // trait object and a `Receiver` are drop-only in the class table
+        // (`CloneKind::None`), so they refuse here without a second rule.
+        if let Some(blocker) = self.element_clone_blocker(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
-            // Drop-only descriptor elements have only the MOVE-in path. An
-            // array repeat would need clone-in for every slot, which is
-            // forbidden.
-            let descriptor_drop_only = matches!(resolved_elem, Ty::TraitObject { .. })
-                || matches!(
-                    resolved_elem,
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        ..
-                    }
-                );
-            let clonable = !descriptor_drop_only
-                && (matches!(resolved_elem, Ty::String | Ty::Bytes)
-                    || self.vec_owned_element_admissible(&elem_ty));
-            if !clonable {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`[{elem}; N]` array repeat requires the element type to be Clone, \
-                         but `{elem}` has no clone path (not a string, bytes, or record/enum \
-                         with a synthesised clone thunk); use an explicit loop with `.clone()` \
-                         or a Copy element type",
-                        elem = resolved_elem.user_facing()
-                    ),
-                );
-            }
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`[{elem}; N]` array repeat copies the element into every slot, but \
+                     {blocker} has no copy operation; use an explicit loop that builds each \
+                     element, or a Copy element type",
+                    elem = resolved_elem.user_facing()
+                ),
+            );
         }
         self.make_vec_type(elem_ty, span)
     }

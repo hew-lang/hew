@@ -4,7 +4,6 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::admissibility::CollectionClonePath;
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
@@ -5022,7 +5021,7 @@ impl Checker {
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
             abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
-            is_owned: !is_copy_layout && self.vec_owned_element_admissible(&elem_ty),
+            is_owned: self.element_owns_heap(&elem_ty),
             is_copy_layout,
             is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
             is_abstract,
@@ -5076,7 +5075,9 @@ impl Checker {
                 bitcopy_supported,
             } => {
                 if bitcopy_supported {
-                    let why = self.vec_element_rejection_reason(elem_ty);
+                    let why = self.element_admission_refusal(elem_ty).unwrap_or_else(|| {
+                        "its value class carries no copy operation this method needs".to_string()
+                    });
                     format!(
                         "`{}` cannot be a `Vec` element for `Vec.{}`: {why} \
                          (runtime symbol `{expected_symbol}`)",
@@ -5881,94 +5882,6 @@ impl Checker {
         );
     }
 
-    /// Decide whether a non-Copy `Vec<T>` element type may route through the
-    /// W5.016 owned-element ABI (`hew_vec_*_owned`).
-    ///
-    /// Admissible when the element is a user record or enum whose concrete
-    /// fields have clone/drop thunks. Tuple
-    /// elements are NOT yet admitted here: their `__hew_tuple_*_inplace` thunk
-    /// synthesis lands in a later slice; until then they stay fail-closed.
-    ///
-    /// Stays fail-closed for every element that lacks a thunk path: an element
-    /// containing a `Vec`/`HashMap`/`HashSet` field (general container-in-
-    /// container clone/drop is a separate lane) and any non-record/enum nominal.
-    /// Explain why a non-`Copy` Vec element type was rejected at construction,
-    /// for use in the fail-closed diagnostic. Returns a clause that completes
-    /// "element type `X` cannot be a Vec element: {clause}". Only called on the
-    /// non-`Copy` + not-admissible path, so the element genuinely lacks a Vec
-    /// lowering today.
-    ///
-    /// Distinguishes the common self-recursive / container-in-container case
-    /// (`enum R { Array(Vec<R>); ... }`) — which IS owned but needs the
-    /// recursive owned-thunk synthesis that is a separate follow-on — from a
-    /// generically unsupported element shape, so the message does not
-    /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
-    /// owned enum.
-    pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
-        if matches!(elem_ty, Ty::Tuple(_)) {
-            if self.vec_element_contains_function(elem_ty, &mut HashSet::new()) {
-                return "it contains a function value, whose closure environment cannot be \
-                        cloned by the owned-element Vec runtime"
-                    .to_string();
-            }
-            if self.vec_element_contains_unowned_container(
-                elem_ty,
-                &HashSet::new(),
-                &mut HashSet::new(),
-            ) {
-                return "it contains a `Vec`/`HashMap`/`HashSet` field, which cannot be \
-                        cloned from inside a nested tuple element"
-                    .to_string();
-            }
-        }
-        if let Ty::Named {
-            name,
-            builtin,
-            args,
-        } = elem_ty
-        {
-            if builtin.is_none() {
-                if let Some(type_def) = self.type_defs.get(name) {
-                    if matches!(type_def.kind, TypeDefKind::Machine) {
-                        if !args.is_empty() {
-                            return "a generic machine instantiation has no \
-                                    per-instantiation layout (machines canonicalize to one \
-                                    bare-named declaration layout); only monomorphic \
-                                    machine values can ride the owned-element queue witness"
-                                .to_string();
-                        }
-                        // Monomorphic machine: valid as a channel/queue element
-                        // but not as a Vec element — there is no
-                        // `__hew_machine_*_inplace` Vec thunk synthesis path
-                        // today. Use a channel to pass machine snapshots.
-                        return "machine values cannot be `Vec` elements; \
-                                use a channel (`Sender<M>`/`Receiver<M>`) to \
-                                pass machine snapshots between actors"
-                            .to_string();
-                    }
-                    let is_record_or_enum = matches!(
-                        type_def.kind,
-                        TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                    );
-                    if is_record_or_enum
-                        && !self.record_enum_collection_fields_clonable(
-                            elem_ty,
-                            &mut CollectionClonePath::default(),
-                        )
-                    {
-                        return "it contains a `Vec`/`HashMap`/`HashSet` field whose \
-                                element type has no clone/drop thunk path for the \
-                                owned-element Vec runtime (a function/closure, machine, \
-                                opaque, or `Rc` leaf, or a mutually recursive type with \
-                                no container indirection)"
-                            .to_string();
-                    }
-                }
-            }
-        }
-        "it has no clone/drop thunk path for the owned-element Vec runtime".to_string()
-    }
-
     /// Channel/stream element admission for the layout-witness queue path
     /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
     /// admissible when the codegen element witness can describe it:
@@ -5976,18 +5889,17 @@ impl Checker {
     /// - `string` / `bytes` — content-encoded queue envelopes;
     /// - Copy-eligible primitives and `BitCopy` records ([`primitive_copy_layout`]
     ///   resolves a fixed width) — Plain raw-representation envelopes;
-    /// - heap-owning record/enum/tuple value types the owned-element Vec
-    ///   thunk path admits ([`Self::vec_owned_element_admissible`] — the SAME
-    ///   authority codegen's witness synthesis delegates to, so the checker
-    ///   and the witness can never disagree about one element type);
+    /// - heap-owning value types the §1.1 class rule gives an ownership
+    ///   obligation ([`Checker::element_owns_heap`] — the same class the
+    ///   backend reads for the element's clone and destroy actions, so the
+    ///   checker and the witness cannot disagree about one element type);
     /// - monomorphic machine values — machines are tagged-union value types
     ///   whose state-variant layout is registered in `type_defs.variants`,
     ///   so the owned-element queue witness can describe them (with the same
     ///   no-unowned-container requirement as enum channel elements).
     ///   Generic machine instantiations are excluded (the substrate
     ///   canonicalizes to one bare-named layout; per-instantiation witnesses
-    ///   do not exist). Machine admission lives HERE, not in
-    ///   `vec_owned_element_admissible`, so `Vec<machine>` stays fail-closed.
+    ///   do not exist).
     ///
     /// Everything else fails closed: builtin container/handle nominals
     /// (`Vec`/`HashMap`/streams/channels/pids), closures, and any type
@@ -6022,7 +5934,7 @@ impl Checker {
                         }
                         // Monomorphic: apply the same no-unowned-container
                         // requirement as for enum channel elements.
-                        return !self.vec_element_contains_unowned_container(
+                        return !self.queue_element_holds_collection(
                             elem_ty,
                             &HashSet::new(),
                             &mut HashSet::new(),
@@ -6038,10 +5950,9 @@ impl Checker {
             // witness: their ownership lives in a runtime context the queue
             // cannot clone or drop. This stays in lockstep with
             // `queue_elem_rejection_reason`, which rejects every `builtin:
-            // Some(_)`. `vec_owned_element_admissible` now admits nested-
-            // container Vec ELEMENTS for copy-in push (#1722), but that is a
-            // Vec-storage property, not a queue property, and must not leak
-            // here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
+            // Some(_)`. A nested-container Vec ELEMENT is admitted for
+            // copy-in push, but that is a Vec-storage property, not a queue
+            // property, and must not leak here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
             // variants (not `Ty::Named`), so they remain queue-admissible via
             // the `_` arm's `primitive_copy_layout` check.
             Ty::Named {
@@ -6066,12 +5977,8 @@ impl Checker {
     /// path fail-closed until the mailbox drop path recurses through collection
     /// fields.
     fn queue_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.vec_owned_element_admissible(elem_ty)
-            && !self.vec_element_contains_unowned_container(
-                elem_ty,
-                &HashSet::new(),
-                &mut HashSet::new(),
-            )
+        self.element_owns_heap(elem_ty)
+            && !self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new())
     }
 
     /// Explain why a channel/stream element type was rejected by
@@ -6090,321 +5997,26 @@ impl Checker {
         if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
             return "function values cannot be queue elements".to_string();
         }
-        self.vec_element_rejection_reason(elem_ty)
-    }
-
-    pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.vec_owned_element_admissible_on_path(elem_ty, &mut CollectionClonePath::default())
-    }
-
-    /// [`Self::vec_owned_element_admissible`] carrying the record/enum names
-    /// already on the active walk. A nested element reached across a container
-    /// edge continues the SAME walk instead of restarting it, so a group that
-    /// recurses only through container indirection (`A` holds `Vec<B>`, `B`
-    /// holds `Vec<A>`) closes its name cycle and terminates.
-    fn vec_owned_element_admissible_on_path(
-        &self,
-        elem_ty: &Ty,
-        visiting: &mut CollectionClonePath,
-    ) -> bool {
-        match elem_ty {
-            // A trait-object slot owns its heap-promoted concrete box. The
-            // descriptor is deliberately drop-only: push and consuming
-            // iteration move the two-word fat pointer, while clone-dependent
-            // surfaces remain refused.
-            Ty::TraitObject { .. } => true,
-            Ty::Array(element, _) => self.vec_collection_arg_clonable(element, visiting),
-            // Tuple element: a tuple with at least one owned (non-Copy) field
-            // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
-            // all-Copy tuple is `Copy` and never reaches this admissibility
-            // check (it takes the BitCopy `_layout` path). Nested tuples recurse
-            // through the same authority; container and closure leaves still
-            // fail closed.
-            Ty::Tuple(elems) => {
-                // A tuple starts no nominal recursion walk of its own, so a
-                // container-bearing tuple field must prove its own path.
-                elems
-                    .iter()
-                    .all(|e| self.vec_tuple_owned_field_admissible(e))
-                    && !self.vec_element_contains_unowned_container(
-                        elem_ty,
-                        &HashSet::new(),
-                        &mut HashSet::new(),
-                    )
-            }
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } => {
-                // Nested collection elements (Vec<T> / HashMap / HashSet) route
-                // through the owned descriptor with COPY-IN, exactly like an
-                // owned record: each pushed collection is deep-cloned so the
-                // outer Vec is its sole owner, and released via the per-element
-                // drop_fn. A closure-pair `Vec<fn>` /
-                // `Vec<closure>` element keeps its existing pointer/closure-
-                // pairs ABI (separate lane, #1722 out-of-scope) — never copy-in.
-                // The owned-vs-managed clone selection is congruent by
-                // construction: codegen's `collection_elem_clone_drop_syms` and
-                // the inner Vec's own constructor both consult
-                // `resolved_ty_element_owns_heap_for_owned_vec`, so the clone
-                // primitive can never disagree with the inner Vec's ABI.
-                match builtin {
-                    Some(BuiltinType::Option | BuiltinType::Result) => {
-                        return args
-                            .iter()
-                            .all(|argument| self.vec_collection_arg_clonable(argument, visiting));
-                    }
-                    Some(BuiltinType::HashMap | BuiltinType::HashSet) => return true,
-                    Some(BuiltinType::Vec) => {
-                        if args
-                            .first()
-                            .is_some_and(|e| matches!(e, Ty::Function { .. } | Ty::Closure { .. }))
-                        {
-                            return false;
-                        }
-                        return true;
-                    }
-                    // Sender is cloneable while Receiver is deliberately
-                    // drop-only. Both need descriptor-backed Vec storage;
-                    // copy/clone surfaces reject Receiver separately.
-                    Some(
-                        BuiltinType::Rc
-                        | BuiltinType::Weak
-                        | BuiltinType::Sender
-                        | BuiltinType::Receiver,
-                    ) => {
-                        return args.len() == 1;
-                    }
-                    // Other builtin nominals are not user records/enums and
-                    // have no owned-Vec thunk path.
-                    Some(_) => return false,
-                    // User-defined record/enum: fall through to the logic below.
-                    None => {}
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return false;
-                };
-                // Only record/struct/enum value types have synthesizable
-                // inplace thunks. Machine types are NOT admitted here —
-                // machine values are valid as CHANNEL/QUEUE elements (where
-                // `queue_elem_admissible` handles them directly), but
-                // `Vec<machine>` has no Vec-construction thunk path and must
-                // refuse at compile time with a named diagnostic. Admitting
-                // Machine here would let `Vec<SomeMachine>` compile and then
-                // panic at runtime; keeping it out preserves fail-closed
-                // parity with the base (614e0bed).
-                if !matches!(
-                    type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                ) {
-                    return false;
-                }
-                // A record/enum transitively holding a `Vec`/`HashMap`/`HashSet`
-                // field is admissible when every such collection field is
-                // CLONABLE by the synthesized in-place thunk — each field's
-                // element type is a copy primitive, `string`/`bytes`, a
-                // recursion edge back to a record/enum already on this walk (the
-                // `enum R { A(Vec<R>); ... }` Redis-reply shape and its mutual
-                // twin), or a nested admissible owned element. The record/enum's
-                // `__hew_record_drop_inplace_<R>` / `__hew_enum_*_inplace_<E>`
-                // thunk recurses through each collection field via the
-                // owned-collection ABI (`hew_vec_{clone,free}_owned`,
-                // `hew_{hashmap,hashset}_{clone,free}_layout`); the copy-in
-                // `.push` deep-clone AND the scope-exit drop of the pushed source
-                // are proven by the owned-element leak oracles. A field holding
-                // an UNCLONABLE collection element (function/closure, machine,
-                // opaque, `Rc`) fails the per-arg clonability check and keeps the
-                // record fail-closed. Re-entry is permitted only when that
-                // repeated declaration's own cycle crossed a container value
-                // buffer; inline cycles are rejected here before lowering.
-                self.record_enum_collection_fields_clonable(elem_ty, visiting)
-            }
-            _ => false,
+        if self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new()) {
+            return "it holds a `Vec`/`HashMap`/`HashSet` field, and the mailbox envelope \
+                    has no per-message release for one"
+                .to_string();
         }
+        self.element_admission_refusal(elem_ty)
+            .unwrap_or_else(|| "it has no value class the queue witness can describe".to_string())
     }
 
-    /// Prove collection fields with the active declaration path. Each repeated
-    /// type cycle needs an intervening Vec/map-value buffer; an unrelated
-    /// outer buffer cannot make an inner inline cycle finite. Key capability
-    /// checks are unchanged and never introduce an indirection witness here.
-    fn record_enum_collection_fields_clonable(
-        &self,
-        ty: &Ty,
-        visiting: &mut CollectionClonePath,
-    ) -> bool {
-        match ty {
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } => {
-                match builtin {
-                    Some(BuiltinType::Vec) if args.len() == 1 => {
-                        return self.vec_collection_arg_clonable(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.record_enum_collection_fields_clonable(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        // A map's KEY participates in the inline key layout;
-                        // only its value is stored behind the heap buffer.
-                        return self.record_enum_collection_fields_clonable(&args[0], visiting)
-                            && self.vec_collection_arg_clonable(&args[1], visiting);
-                    }
-                    Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet) => {
-                        return false;
-                    }
-                    // Other builtins (Option/Result/Rc/handles) carry their own
-                    // ABI; recurse only through their type arguments.
-                    Some(_) => {
-                        return args
-                            .iter()
-                            .all(|a| self.record_enum_collection_fields_clonable(a, visiting));
-                    }
-                    None => {}
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    // An unresolved nominal will produce its own type error;
-                    // this structural proof cannot assume a clone/drop thunk.
-                    return false;
-                };
-                let visit_key = type_def.name.clone();
-                if let Some(indirected) = visiting.enter(&visit_key) {
-                    return indirected;
-                }
-                let ok = type_def.fields.values().all(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                }) && type_def.variants.values().all(|variant| match variant {
-                    VariantDef::Unit => true,
-                    VariantDef::Tuple(tys) => tys.iter().all(|field_ty| {
-                        let field_ty = Self::instantiate_type_def_member(
-                            field_ty,
-                            &type_def.type_params,
-                            args,
-                        );
-                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                    }),
-                    VariantDef::Struct(fields) => fields.iter().all(|(_, t)| {
-                        let field_ty =
-                            Self::instantiate_type_def_member(t, &type_def.type_params, args);
-                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                    }),
-                });
-                visiting.leave(&visit_key);
-                ok
-            }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|e| self.record_enum_collection_fields_clonable(e, visiting)),
-            Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.record_enum_collection_fields_clonable(inner, visiting)
-            }
-            // Primitives, `string`, `bytes`, function/closure surface types carry
-            // no builtin-collection field of their own — a function/closure as a
-            // record field is rejected upstream (`vec_element_contains_function`);
-            // here it holds no container to clone.
-            _ => true,
-        }
-    }
-
-    /// A container value slot adds one indirection to the current path. Keep
-    /// that witness through entry records and other inline members until the
-    /// repeated declaration is reached; capability checks still visit leaves.
-    fn vec_collection_arg_clonable(&self, a: &Ty, visiting: &mut CollectionClonePath) -> bool {
-        let resolved = self.subst.resolve(a).materialize_literal_defaults();
-        visiting.through_container(|visiting| {
-            matches!(&resolved, Ty::String | Ty::Bytes)
-                || crate::check::admissibility::primitive_copy_layout(&resolved, &self.type_defs)
-                    .is_some()
-                || self.vec_owned_element_admissible_on_path(&resolved, visiting)
-        })
-    }
-
-    fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
-            Ty::String | Ty::Bytes => true,
-            Ty::Array(element, _) => self.vec_tuple_owned_field_admissible(element),
-            Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender),
-                args,
-                ..
-            } => args.len() == 1,
-            Ty::Named { builtin: None, .. } => {
-                crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some()
-                    || self.vec_owned_element_admissible(ty)
-            }
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Slice(_)
-            | Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => false,
-            _ => crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some(),
-        }
-    }
-
-    fn vec_element_contains_function(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Function { .. } | Ty::Closure { .. } => true,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .any(|elem| self.vec_element_contains_function(elem, visiting)),
-            Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_function(inner, visiting)
-            }
-            Ty::Named {
-                name,
-                builtin: None,
-                args,
-            } => {
-                if args
-                    .iter()
-                    .any(|arg| self.vec_element_contains_function(arg, visiting))
-                {
-                    return true;
-                }
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let result = self.type_defs.get(name).is_some_and(|td| {
-                    td.fields
-                        .values()
-                        .any(|fty| self.vec_element_contains_function(fty, visiting))
-                        || td.variants.values().any(|variant| match variant {
-                            VariantDef::Unit => false,
-                            VariantDef::Tuple(tys) => tys
-                                .iter()
-                                .any(|t| self.vec_element_contains_function(t, visiting)),
-                            VariantDef::Struct(fields) => fields
-                                .iter()
-                                .any(|(_, t)| self.vec_element_contains_function(t, visiting)),
-                        })
-                });
-                visiting.remove(name);
-                result
-            }
-            Ty::Named { args, .. } => args
-                .iter()
-                .any(|arg| self.vec_element_contains_function(arg, visiting)),
-            _ => false,
-        }
-    }
-
-    /// True when `ty` (or a transitive record/enum member) is — or contains a
-    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`). Such a
-    /// member has no `__hew_*_inplace` thunk path, so an owned-Vec element that
-    /// transitively reaches one must stay fail-closed. The recursive enum's
-    /// own self-edge through a `Vec` (`Array(Vec<RedisReply>)`) is the one
-    /// admitted exception — here we only reject unowned-container fields, not
-    /// the self-recursive edge.
-    pub(super) fn vec_element_contains_unowned_container(
+    /// True when `ty` (or a transitive record/enum member) is — or holds a
+    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`).
+    ///
+    /// This is a MAILBOX rule, not a value-class one: the envelope deep-copies
+    /// an element in but has no per-message release that recurses through a
+    /// collection field, so a collection-bearing message would leak the field
+    /// on every send. Vec storage admits the same shape (the collection's own
+    /// destroy action releases it); the queue does not, until the mailbox
+    /// release path recurses. The recursive enum's own self-edge through a
+    /// `Vec` (`Array(Vec<RedisReply>)`) is the one admitted exception.
+    fn queue_element_holds_collection(
         &self,
         ty: &Ty,
         roots: &HashSet<String>,
@@ -6435,7 +6047,7 @@ impl Checker {
                     // ABI; recurse only through their type arguments.
                     return args
                         .iter()
-                        .any(|a| self.vec_element_contains_unowned_container(a, roots, visiting));
+                        .any(|a| self.queue_element_holds_collection(a, roots, visiting));
                 }
                 if !visiting.insert(name.clone()) {
                     // Self-recursive edge on a user type: the recursion through a
@@ -6444,26 +6056,27 @@ impl Checker {
                     return false;
                 }
                 let result = self.type_defs.get(name).is_some_and(|td| {
-                    td.fields.values().any(|fty| {
-                        self.vec_element_contains_unowned_container(fty, roots, visiting)
-                    }) || td.variants.values().any(|variant| match variant {
-                        VariantDef::Unit => false,
-                        VariantDef::Tuple(tys) => tys.iter().any(|t| {
-                            self.vec_element_contains_unowned_container(t, roots, visiting)
-                        }),
-                        VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
-                            self.vec_element_contains_unowned_container(t, roots, visiting)
-                        }),
-                    })
+                    td.fields
+                        .values()
+                        .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))
+                        || td.variants.values().any(|variant| match variant {
+                            VariantDef::Unit => false,
+                            VariantDef::Tuple(tys) => tys
+                                .iter()
+                                .any(|t| self.queue_element_holds_collection(t, roots, visiting)),
+                            VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
+                                self.queue_element_holds_collection(t, roots, visiting)
+                            }),
+                        })
                 });
                 visiting.remove(name);
                 result
             }
             Ty::Tuple(elems) => elems
                 .iter()
-                .any(|e| self.vec_element_contains_unowned_container(e, roots, visiting)),
+                .any(|e| self.queue_element_holds_collection(e, roots, visiting)),
             Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_unowned_container(inner, roots, visiting)
+                self.queue_element_holds_collection(inner, roots, visiting)
             }
             _ => false,
         }
@@ -6673,7 +6286,7 @@ impl Checker {
                     let eligibility =
                         crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
-                    let is_owned_admissible = self.vec_owned_element_admissible(&resolved_elem);
+                    let is_owned_admissible = self.element_owns_heap(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                         && (is_copy || is_owned_admissible)
                     {

@@ -8711,7 +8711,21 @@ impl LowerCtx {
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
-            canonical_std_source_type_identities: HashSet::new(),
+            // The checker registers both lifecycle owners' declarations at
+            // bootstrap, with or without an import, so their canonical source
+            // identities are known before any module graph is walked. Without
+            // them a prelude-only spelling such as `CrashInfo` resolves to a
+            // canonical name with no representation authority, and its
+            // declaration facts are then looked up under a name nothing
+            // declares.
+            canonical_std_source_type_identities: hew_types::SOURCE_OWNED_LIFECYCLE_OWNERS
+                .iter()
+                .flat_map(|owner| {
+                    owner.declares.iter().map(|builtin| {
+                        format!("{}.{}", owner.canonical_path, builtin.canonical_name())
+                    })
+                })
+                .collect(),
             checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
             current_module_idx: 0,
             current_item_ordinal: 0,
@@ -22521,7 +22535,19 @@ impl LowerCtx {
         // spellings live in `lookup_builtin_type`; an arbitrary
         // `foo.Receiver` must never inherit the bare `Receiver` registration.
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
-            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+            // A builtin classified by its own std declaration only has facts
+            // under its canonical source identity. The prelude publishes the
+            // bare spelling without an import alias, so mint that identity here
+            // rather than handing the catalog's bare presentation name on.
+            let canonical = registration
+                .builtin
+                .classifies_by_declaration()
+                .then(|| hew_types::canonical_source_owned_lifecycle_name(registration.builtin))
+                .flatten();
+            match canonical {
+                Some(canonical) => ResolvedTy::named_builtin(canonical, registration.builtin, args),
+                None => ResolvedTy::named_builtin(registration.name(), registration.builtin, args),
+            }
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
             Self::resolved_source_builtin_ty(name, builtin, args)
         } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {

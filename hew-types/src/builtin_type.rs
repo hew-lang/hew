@@ -488,6 +488,15 @@ impl BuiltinType {
     /// a named/glob/aliased import must publish that spelling, or the program
     /// must use the imported owner's qualified spelling.  The no-search-path
     /// inline-test bootstrap is the sole prelude exception.
+    /// Whether this builtin's value class is the aggregate rule over its own
+    /// std declaration rather than a flat row. Such a builtin only has facts
+    /// under its canonical source identity, so a bare spelling fails closed.
+    /// Paired with the matching arm in `value_class::classify`.
+    #[must_use]
+    pub const fn classifies_by_declaration(self) -> bool {
+        matches!(self, Self::CrashInfo | Self::CrashNotification)
+    }
+
     #[must_use]
     pub const fn requires_source_import(self) -> bool {
         matches!(
@@ -824,6 +833,16 @@ pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
         .requires_source_import()
         .then_some(builtin)
         .filter(|_| owner.is_none_or(|owner| owner.declares.contains(&builtin)))
+}
+
+/// The canonical source identity of a builtin whose owner declares it, such as
+/// `std.failure.CrashInfo`. A builtin no owner declares has none.
+#[must_use]
+pub fn canonical_source_owned_lifecycle_name(builtin: BuiltinType) -> Option<String> {
+    SOURCE_OWNED_LIFECYCLE_OWNERS
+        .iter()
+        .find(|owner| owner.declares.contains(&builtin))
+        .map(|owner| format!("{}.{}", owner.canonical_path, builtin.canonical_name()))
 }
 
 /// Whether `name` and `builtin` jointly identify an exact source-owned

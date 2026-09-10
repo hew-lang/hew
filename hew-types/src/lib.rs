@@ -51,9 +51,9 @@ pub use actor_protocol::{
     ActorProtocolCollision, ActorProtocolDescriptor, ReceiveFailureDisplay,
 };
 pub use builtin_type::{
-    builtin_types, has_builtin_associated_item_identity, lookup_builtin_type,
-    lookup_source_owned_lifecycle_type, source_owned_lifecycle_owner, BuiltinType, BuiltinTypeInfo,
-    SourceOwnedLifecycleOwner, SOURCE_OWNED_LIFECYCLE_OWNERS,
+    builtin_types, canonical_source_owned_lifecycle_name, has_builtin_associated_item_identity,
+    lookup_builtin_type, lookup_source_owned_lifecycle_type, source_owned_lifecycle_owner,
+    BuiltinType, BuiltinTypeInfo, SourceOwnedLifecycleOwner, SOURCE_OWNED_LIFECYCLE_OWNERS,
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,

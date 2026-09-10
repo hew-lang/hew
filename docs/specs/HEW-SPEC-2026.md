@@ -318,11 +318,25 @@ These limitations do not establish sandbox or cross-platform execution parity.
 Actors are instantiated using the `spawn` keyword with constructor arguments matching the actor's `init` block parameters:
 
 ```hew
-// Spawn with named field arguments
-let counter = spawn Counter(count: 0);
+actor Counter {
+    var count: i64,
+    receive fn value() -> i64 { count }
+}
 
-// Spawn with no arguments (if actor has no-arg init or no init block)
-let worker = spawn WorkerActor();
+actor WorkerActor {
+    receive fn ping() {}
+}
+
+fn main() {
+    // Spawn with named field arguments
+    let counter = spawn Counter(count: 0);
+
+    // Spawn with no arguments (if actor has no-arg init or no init block)
+    let worker = spawn WorkerActor();
+
+    close(counter);
+    close(worker);
+}
 ```
 
 > **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor syntax, which uses `actor |params| { body }`.
@@ -382,16 +396,21 @@ shutdown.
 Lambda actors provide lightweight, inline actor definitions:
 
 ```hew
-// Basic lambda actor
-let worker = actor |msg: i64| {
-    println(msg * 2);
-};
+fn main() {
+    // Basic lambda actor
+    let worker = actor |msg: i64| {
+        println(msg * 2);
+    };
 
-// With state capture (move semantics)
-let factor = 2;
-let multiplier = actor move |x: i64| {
-    println(x * factor);
-};
+    // With state capture (move semantics)
+    let factor = 2;
+    let multiplier = actor move |x: i64| {
+        println(x * factor);
+    };
+
+    close(worker);
+    close(multiplier);
+}
 ```
 
 **Syntax:**
@@ -554,9 +573,11 @@ Explicit variant-pattern let-else remains available for other patterns.
 The `?` operator propagates errors from `Result` and `Option` types:
 
 ```hew
-fn read_file(path: string) -> Result<string, string> {
-    let handle = open(path)?;  // Early return on error
-    let content = read(handle)?;
+import std.fs;
+
+fn read_file(path: string) -> Result<string, fs.IoError> {
+    let content = fs.read(path)?;  // Early return on error
+    fs.write("copy.txt", content)?;
     Ok(content)
 }
 ```
@@ -854,10 +875,13 @@ Rust's approach is overkill for single-threaded code. Pony's capability system i
 `let` and `var` are **binding modes**, not ownership annotations:
 
 ```hew
-let x = 5;       // immutable binding - cannot reassign x
-var y = 5;       // mutable binding - can reassign y
-y = 10;          // ok
-// x = 10;       // compile error: cannot reassign immutable binding
+fn main() {
+    let x = 5;       // immutable binding - cannot reassign x
+    var y = 5;       // mutable binding - can reassign y
+    y = 10;          // ok
+    // x = 10;       // compile error: cannot reassign immutable binding
+    println(f"{x} {y}");
+}
 ```
 
 The closest analogue is Swift's `let`/`var` paired with `mutating func`: the
@@ -873,11 +897,15 @@ type Point {
     y: i64,
 }
 
-var p = Point { x: 0, y: 0 };
-p.x = 10;        // OK — p is var-bound, so field mutation is allowed
+fn main() {
+    var p = Point { x: 0, y: 0 };
+    p.x = 10;        // OK — p is var-bound, so field mutation is allowed
 
-let q = Point { x: 0, y: 0 };
-// q.x = 10;     // compile error — q is let-bound
+    let q = Point { x: 0, y: 0 };
+    // q.x = 10;     // compile error — q is let-bound
+
+    println(f"{p.x} {q.x}");
+}
 ```
 
 **Type field syntax:**
@@ -1060,6 +1088,10 @@ closure capabilities and private mutable captures.
 #### 3.4.6 What IS Allowed (Within an Actor)
 
 ```hew
+fn process(items: Vec<i64>) {
+    let _ = items.len();
+}
+
 actor Example {
     var data: Vec<i64> = Vec.new(),
 
@@ -1136,21 +1168,25 @@ pub type Connection {
     internal_state: i64,   // named fields are separated by commas
 }
 
-pub fn connect(addr: string) -> Result<Connection, Error> {
-    // ...
+pub enum ConnectError {
+    Refused,
+    TimedOut,
+}
+
+pub fn connect(addr: string) -> Result<Connection, ConnectError> {
+    Ok(Connection { address: addr, internal_state: 0 })
 }
 
 fn helper() {  // private to this module
-    // ...
 }
 ```
 
 **Import syntax:**
 
 ```hew
-import network.tcp;                    // Import module
-import network.tcp.Connection;        // Import specific symbol
-import network.tcp.{Connection, connect};  // Import multiple
+import std.net;                    // Import module
+import std.net.{Connection};        // Import specific symbol
+import std.net.{Connection, connect};  // Import multiple
 ```
 
 Glob imports are rejected. Import the specific symbols required by the module
@@ -1238,6 +1274,8 @@ myapp/
 ```
 
 `main.hew`:
+
+<!-- doctest: skip: needs the sibling `greeting/` directory module shown below; the single-file doc-fence harness cannot resolve it -->
 
 ```hew
 import greeting;
@@ -1332,6 +1370,8 @@ Types defined in different modules are distinct even if they share a name. A
 types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
 them everywhere — in type annotations, `match` patterns, and aggregate literals.
 
+<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+
 ```hew
 import geometry;
 import graphics;
@@ -1341,6 +1381,8 @@ let sp: graphics.Point = graphics.Point { x: 0,   y: 0   };
 ```
 
 **Import aliasing** resolves ambiguity at the module level:
+
+<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
 
 ```hew
 import geometry as geo;
@@ -1479,9 +1521,23 @@ collection methods.
 **Calling methods:**
 
 ```hew
-let p = Point { x: 1.0, y: 2.0 };
-p.fmt();    // `self` borrows: p is still valid
-p.fmt();    // and may be called again
+type Point { x: f64, y: f64 }
+
+trait Formattable {
+    fn fmt(self) -> string;
+}
+
+impl Formattable for Point {
+    fn fmt(self) -> string {
+        f"({self.x}, {self.y})"
+    }
+}
+
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 };
+    p.fmt();    // `self` borrows: p is still valid
+    p.fmt();    // and may be called again
+}
 ```
 
 A `var self` method needs a `var` binding. `let c = Counter { n: 0 }; c.bump()`
@@ -1768,12 +1824,27 @@ indirect enum Expr {
 **Construction** works identically to regular enums:
 
 ```hew
-let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
+indirect enum Expr {
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
+fn main() {
+    let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
+    let _ = e;
+}
 ```
 
 **Pattern matching** works identically to regular enums:
 
 ```hew
+indirect enum Expr {
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
@@ -2109,10 +2180,12 @@ fn max<T: Ord>(a: T, b: T) -> T {
     if a > b { a } else { b }
 }
 
-// Each call generates distinct machine code:
-max(42, 17);           // max$i32
-max("hello", "world"); // max$string
-max(3.14, 2.71);       // max$f64
+fn main() {
+    // Each call generates distinct machine code:
+    max(42, 17);           // max$i64
+    max("hello", "world"); // max$string
+    max(true, false);      // max$bool
+}
 ```
 
 **Benefits:**
@@ -2205,7 +2278,11 @@ where
     K: Hash + Eq + Send,
     V: Clone + Send,
 {
-    // implementation
+    var result = a;
+    for k in b.keys() {
+        result.insert(k, b.get(k).expect("key from keys() is present"));
+    }
+    result
 }
 ```
 
@@ -2224,12 +2301,17 @@ a promise kept by nothing. See HEW-FUTURE.md §2.2.
 Traits can declare associated types that implementors must specify:
 
 ```hew
-trait Iterator {
+trait Sequence {
     type Item;
     fn next(var self) -> Option<Self.Item>;
 }
 
-impl Iterator for RangeIter {
+type RangeIter {
+    current: i32,
+    end: i32,
+}
+
+impl Sequence for RangeIter {
     type Item = i32;
 
     fn next(var self) -> Option<i32> {
@@ -2336,18 +2418,27 @@ Hew refuses to invent one.
 Hew uses pipe-delimited closure syntax for first-class function values:
 
 ```hew
-let doubled = transform(|x| x * 2, 21);
-let sum = numbers.reduce(|a, b| a + b, 0);
-let checked = |x: i64| -> i64 { x + 1 };
+fn transform(f: fn(i64) -> i64, x: i64) -> i64 { f(x) }
+
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3];
+    let doubled = transform(|x| x * 2, 21);
+    let sum = numbers.reduce(|a, b| a + b, 0);
+    let checked = |x: i64| -> i64 { x + 1 };
+    println(f"{doubled} {sum} {checked(1)}");
+}
 ```
 
 Captured values are independent immutable snapshots. To mutate private capture
 state, name existing bindings in a `capture(var name, ...)` prefix:
 
 ```hew
-let count: i64 = 0;
-var next = capture(var count) || { count = count + 1; count };
-var independent = next;
+fn main() {
+    let count: i64 = 0;
+    var next = capture(var count) || { count = count + 1; count };
+    var independent = next;
+    println(f"{next()} {independent()}");
+}
 ```
 
 The original binding may be immutable. The prefix grants mutation only to the
@@ -2413,10 +2504,19 @@ values retain the read and clone guarantees of the selected declaration.
 **Untyped parameters when context provides types:**
 
 ```hew
-fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
+fn map<T: Clone, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> {
+    var result: Vec<U> = Vec.new();
+    for item in items {
+        result.push(transform(item.clone()));
+    }
+    result
+}
 
-// T=i64, U=string inferred from usage
-let strings = map([1, 2, 3], |x| x.to_string());  // x: i64 inferred
+fn main() {
+    // T=i64, U=string inferred from usage
+    let strings = map([1, 2, 3], |x| f"{x}");  // x: i64 inferred
+    println(f"{strings.len()}");
+}
 ```
 
 **Actor message type inference:**
@@ -2465,15 +2565,22 @@ fn process<T: Send + Clone>(items: Vec<T>, transform: fn(T) -> T) -> Vec<T>
 where
     T: Display,
 {
-    items.map(transform)
+    var result: Vec<T> = Vec.new();
+    for item in items {
+        result.push(transform(item.clone()));
+    }
+    result
 }
 
-// All constraints automatically verified:
-// - i64: Send ✓, Clone ✓, Display ✓
-let results = process([1, 2, 3], |x| {
-    print(f"Processing: {x}");  // Display bound allows this
-    x * 2
-});
+fn main() {
+    // All constraints automatically verified:
+    // - i64: Send ✓, Clone ✓, Display ✓
+    let results = process([1, 2, 3], |x| {
+        print(f"Processing: {x}");  // Display bound allows this
+        x * 2
+    });
+    println(f"{results.len()}");
+}
 ```
 
 **Error messages with inference context:**
@@ -2521,9 +2628,9 @@ actor Latest<T> {
 fn main() {
     let numbers = spawn Latest<i64>();
     let names = spawn Latest<string>();
-    numbers.put(41)?;
-    names.put("hew")?;
-    println(f"{(numbers.get())?.expect("set")} {(names.get())?.expect("set")}");
+    numbers.put(41).expect("put succeeds");
+    names.put("hew").expect("put succeeds");
+    println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
     close(numbers);
     close(names);
 }
@@ -2908,6 +3015,8 @@ name is not conforming.
 
 **Option and Result** are first-class generic enums:
 
+<!-- doctest: skip: illustrates the built-in `Option`/`Result` shape; redeclaring them collides with the protected prelude bindings -->
+
 ```hew
 enum Option<T> {
     Some(T),
@@ -2980,24 +3089,19 @@ implementation debt rather than an alternative error-return contract. Runtime
 FFI may use internal status channels, but they are not the public recovery API.
 
 **`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
-methods:
+methods. Available `Vec<T>` methods:
 
-```hew
-type string {}
-type Vec<T> {}
-
-impl<T> Vec<T> {
-    fn new() -> Vec<T>;
-    fn push(var self, item: T);
-    fn pop(var self) -> T;                     // traps on empty vec
-    fn len(self) -> i64;
-    fn get(self, index: i64) -> Option<T>;
-    fn set(var self, index: i64, item: T);      // traps out of bounds
-    fn contains(self, item: T) -> bool;
-    fn clear(var self);
-    fn append(var self, other: Vec<T>);
-}
-```
+| Method                    | Returns    | Description                    |
+| ------------------------- | ---------- | ------------------------------- |
+| `Vec.new()`               | `Vec<T>`   | Create empty vector             |
+| `v.push(item)`            | `()`       | Append an element               |
+| `v.pop()`                 | `T`        | Remove and return the last element; traps on empty vec |
+| `v.len()`                 | `i64`      | Number of elements              |
+| `v.get(index)`            | `Option<T>`| Look up an element by index     |
+| `v.set(index, item)`      | `()`       | Overwrite an element; traps out of bounds |
+| `v.contains(item)`        | `bool`     | Test membership                 |
+| `v.clear()`               | `()`       | Remove all elements             |
+| `v.append(other)`         | `()`       | Move all elements of `other` onto the end |
 
 **Collection element contracts.** A vector may own ordinary data, resource
 handles, generators, tasks and supported callable values. Each admitted element
@@ -3046,20 +3150,27 @@ brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
-// Inferred: HashMap<string, i64>
-let scores = {"alice": 10, "bob": 20};
+fn main() {
+    // Inferred: HashMap<string, i64>
+    let scores = {"alice": 10, "bob": 20};
 
-// Explicit type annotation drives checking; each value must match V
-let env: HashMap<string, string> = {
-    "HOST": "localhost",
-    "PORT": "8080",
-};
+    // Explicit type annotation drives checking; each value must match V
+    let env: HashMap<string, string> = {
+        "HOST": "localhost",
+        "PORT": "8080",
+    };
 
-// Trailing comma is allowed
-let flags = {"debug": true, "verbose": false,};
+    // Trailing comma is allowed
+    let flags = {"debug": true, "verbose": false,};
 
-// Empty block {} coerces to HashMap<K,V> when the expected type is known
-let empty: HashMap<string, i64> = {};
+    // Empty block {} coerces to HashMap<K,V> when the expected type is known
+    let empty: HashMap<string, i64> = {};
+
+    let _ = scores;
+    let _ = env;
+    let _ = flags;
+    let _ = empty;
+}
 ```
 
 Rules:
@@ -3173,11 +3284,16 @@ type-specific runtime intrinsics; that lowering is an implementation detail.
 F-strings support arbitrary expressions inside `{}`:
 
 ```hew
-let name = "world";
-let x = 10;
-let msg = f"hello {name}";
-let computed = f"result: {x + 1}";
-let nested = f"len: {name.len()}";
+fn main() {
+    let name = "world";
+    let x = 10;
+    let msg = f"hello {name}";
+    let computed = f"result: {x + 1}";
+    let nested = f"len: {name.len()}";
+    println(msg);
+    println(computed);
+    println(nested);
+}
 ```
 
 F-strings are the sole string interpolation syntax in Hew.
@@ -3433,11 +3549,13 @@ Inside a transition body the compiler binds two implicit names:
 
 ```hew
 machine Elevator {
+    events {
+        GoTo { floor: i64, },
+        Arrive,
+    }
+
     state Stopped { floor: i64, },
     state Moving  { from: i64, to: i64, },
-
-    event GoTo  { floor: i64; }
-    event Arrive;
 
     on GoTo: Stopped => Moving {
         Moving { from: state.floor, to: event.floor }   // state.floor, event.floor
@@ -3455,36 +3573,67 @@ machine Elevator {
 list is written:
 
 ```hew
-on Work: Active => Active { count: state.count + event.amount }
-// equivalent to:
-// on Work: Active => Active { Active { count: state.count + event.amount } }
+machine Accumulator {
+    events {
+        Work { amount: i64, },
+    }
+
+    state Active { count: i64, },
+
+    on Work: Active => Active { count: state.count + event.amount }
+    // equivalent to:
+    // on Work: Active => Active { Active { count: state.count + event.amount } }
+}
 ```
 
 **Body-less shorthand** — when a transition has no body, the compiler
-constructs the target state's zero-field (unit) variant automatically:
+constructs the target state's zero-field (unit) variant automatically. Like
+every other bodyless structural member (§ Structural punctuation), a bodyless
+route ends with a comma:
 
 ```hew
-on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { .On }
+machine Light {
+    events {
+        Toggle,
+    }
+
+    state Off,
+    state On,
+
+    on Toggle: Off => On,   // equivalent to: on Toggle: Off => On { .On }
+    on Toggle: On => Off,
+}
 ```
 
 **State names are not variants (normative).** The name after `=>` in a
 transition head is a state name in the machine's own namespace, resolved
 against the machine's `state` declarations. It is not an enum variant in
 expression position, so the variant-spelling rule of §3.1 does not reach it
-and `on Toggle: Off => On;` is well formed as written. A `;` body is legal in
-every transition form, guarded ones included. A machine's states desugar to
-an enum below the surface, and that desugar — not the source spelling — owns
-their identity.
+and `on Toggle: Off => On,` is well formed as written. A comma-terminated
+bodyless route is legal in every transition form, guarded ones included. A
+machine's states desugar to an enum below the surface, and that desugar —
+not the source spelling — owns their identity.
 
 ### 3.11.4 Guard Conditions (`when`)
 
 A transition may carry a boolean guard expression after the target state name:
 
 ```hew
-on Request: Allowing => Allowing when state.tokens > 1 {
-    Allowing { tokens: state.tokens - 1 }
+machine Bucket {
+    events {
+        Request,
+    }
+
+    state Allowing { tokens: i64, },
+    state Throttled,
+
+    on Request: Allowing => Allowing when state.tokens > 1 {
+        Allowing { tokens: state.tokens - 1 }
+    }
+    on Request: Allowing => Throttled when state.tokens <= 1,
+
+    default { state }
 }
-on Request: Allowing => Throttled when state.tokens <= 1;
 ```
 
 Guards are evaluated in declaration order.  The first transition whose event
@@ -3539,11 +3688,41 @@ candidate and any collected outputs. Successful output values remain valid
 independently of later state changes or the machine's lifetime.
 
 ```hew
-var light: Light = .Off;
-let report = light.step(.Toggle);
-for output in report.outputs {
-    // Interpret the typed output in the surrounding effectful application.
-    handle_output(output);
+machine Light {
+    events {
+        Toggle,
+    }
+
+    emits {
+        Changed { value: bool },
+    }
+
+    state Off,
+    state On,
+
+    on Toggle: Off => On {
+        emit Changed { value: true };
+        .On
+    }
+    on Toggle: On => Off {
+        emit Changed { value: false };
+        .Off
+    }
+}
+
+fn handle_output(output: LightOutput) {
+    match output {
+        .Changed { value } => println(f"changed to {value}"),
+    }
+}
+
+fn main() {
+    var light: Light = .Off;
+    let report = light.step(.Toggle);
+    for output in report.outputs {
+        // Interpret the typed output in the surrounding effectful application.
+        handle_output(output);
+    }
 }
 ```
 
@@ -3551,10 +3730,27 @@ for output in report.outputs {
 `while let`, and function parameters exactly like enums:
 
 ```hew
-match cb {
-    .Closed { failures } => println(f"failures = {failures}"),
-    .Open                => println("open"),
-    .HalfOpen            => println("half-open"),
+machine CircuitBreaker {
+    events {
+        Trip,
+    }
+
+    state Closed { failures: i64, },
+    state Open,
+    state HalfOpen,
+
+    on Trip: _ => _ { state }
+
+    default { state }
+}
+
+fn main() {
+    let cb: CircuitBreaker = .Closed { failures: 0 };
+    match cb {
+        .Closed { failures } => println(f"failures = {failures}"),
+        .Open                => println("open"),
+        .HalfOpen            => println("half-open"),
+    }
 }
 ```
 
@@ -3563,6 +3759,27 @@ match cb {
 Machines are values — they are commonly embedded as actor fields:
 
 ```hew
+machine TcpState {
+    events {
+        Connect { local_seq: i64, remote_seq: i64 },
+        Reset,
+    }
+
+    state Closed,
+    state Established { local_seq: i64, remote_seq: i64 },
+
+    on Connect: Closed => Established {
+        Established { local_seq: event.local_seq, remote_seq: event.remote_seq }
+    }
+    on Reset: _ => _ { .Closed }
+
+    default { state }
+}
+
+fn handle_outputs(outputs: Vec<TcpStateOutput>) {
+    let _ = outputs;
+}
+
 actor ConnectionManager {
     var tcp: TcpState = TcpState.Closed,
 
@@ -3904,6 +4121,8 @@ user-implementable `Awaitable` trait — the four forms are exhaustive.
 
 **Canonical syntax:**
 
+<!-- doctest: skip: shows all four select arm forms together; native actor-call registration is pending (§2.1.1) -->
+
 ```hew
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
@@ -4180,6 +4399,17 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 ### 5.1 Supervisor Declaration
 
 ```hew
+actor Worker {
+    var id: i64,
+    var count: i64,
+    receive fn work() {}
+}
+
+actor Logger {
+    var level: i64,
+    receive fn log(msg: string) { let _ = msg; }
+}
+
 supervisor MyPool {
     strategy: one_for_one,
     intensity: 5 within 60s,
@@ -4618,19 +4848,28 @@ errors are `fs.IoError`; this does not promise a bytes-file adapter.
 #### 6.5.2 Current operations
 
 ```hew
-// Pull items
-match bytes_stream.recv() {
-    .Some(chunk) => { ... },
-    .None => { /* EOF only */ },
+import std.stream;
+
+fn main() {
+    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+
+    // Empty items are valid data, not EOF
+    text_sink.write("");
+    bytes_sink.write(b"");
+
+    // Pull items
+    match bytes_stream.recv() {
+        .Some(chunk) => { println(f"{chunk.len()} bytes"); },
+        .None => { /* EOF only */ },
+    }
+
+    // Close semantics
+    bytes_sink.close();   // graceful EOF for the paired reader
+    bytes_stream.close(); // local cancel / discard unread items
+    text_sink.close();
+    text_stream.close();
 }
-
-// Empty items are valid data, not EOF
-text_sink.write("");
-bytes_sink.write(b"");
-
-// Close semantics
-bytes_sink.close();   // graceful EOF for the paired reader
-bytes_stream.close(); // local cancel / discard unread items
 ```
 
 `for` is the usual way to drain a stream. The text `lines()` adapter returns
@@ -4989,18 +5228,41 @@ Encoders select format based on context:
 Explicit format selection:
 
 ```hew
-let msg = MyMessage { ... };
-let binary = msg.encode();       // CBOR bytes
-let json_str = msg.to_json();    // JSON string
-let yaml_str = msg.to_yaml();    // YAML string
+#[wire]
+type MyMessage {
+    id: u64 @1,
+    text: string @2,
+}
+
+fn main() {
+    let msg = MyMessage { id: 1, text: "hello" };
+    let binary = msg.encode();       // CBOR bytes
+    let json_str = msg.to_json();    // JSON string
+    let yaml_str = msg.to_yaml();    // YAML string
+    println(f"{binary.len()} {json_str} {yaml_str}");
+}
 ```
 
 Decoding:
 
 ```hew
-let msg1 = MyMessage.decode(binary);
-let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
-let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
+#[wire]
+type MyMessage {
+    id: u64 @1,
+    text: string @2,
+}
+
+fn main() {
+    let msg = MyMessage { id: 1, text: "hello" };
+    let binary = msg.encode();
+    let json_str = msg.to_json();
+    let yaml_str = msg.to_yaml();
+
+    let msg1 = MyMessage.decode(binary);
+    let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
+    let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
+    println(f"{msg1.id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
+}
 ```
 
 Current shipped helper surface, as registered by the type checker:
@@ -5602,37 +5864,48 @@ Integer literals default to `i64`. Float literals default to `f64`.
 that mix distinct integer widths without a cast. Example:
 
 ```hew
-let x: i32 = 1;
-let y: i64 = x + 1;          // ERROR: i32 vs i64 width mismatch; use x as i64 + 1
-let z: i64 = x as i64 + 1;   // OK
+fn main() {
+    let x: i32 = 1;
+    // let y: i64 = x + 1;       // ERROR: i32 vs i64 width mismatch; use x as i64 + 1
+    let z: i64 = x as i64 + 1;   // OK
+    println(f"{z}");
+}
 ```
 
 `isize` and `usize` are also distinct from each other and from any fixed-width type:
 
 ```hew
-let n: usize = v.len();
-let i: i32 = n as i32;       // explicit conversion required
-let j: i64 = n as i64;       // explicit conversion required
+fn main() {
+    let v: Vec<i64> = [1, 2, 3];
+    let n: usize = v.len() as usize;
+    let i: i32 = n as i32;       // explicit conversion required
+    let j: i64 = n as i64;       // explicit conversion required
+    println(f"{i} {j}");
+}
 ```
 
 All numeric types support `as` casts to every other numeric type:
 
 ```hew
-// Integer → f64
-let x: i32 = 42;
-let f: f64 = x as f64;        // 42.0
+fn main() {
+    // Integer → f64
+    let x: i32 = 42;
+    let f: f64 = x as f64;        // 42.0
 
-// Float → integer (saturating)
-let pi: f64 = 3.14;
-let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
+    // Float → integer (saturating)
+    let pi: f64 = 3.14;
+    let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
 
-// Out-of-range and non-finite values saturate instead of producing poison:
-let big: f64 = 1.0e30;
-let clamped: i32 = big as i32;      // positive overflow clamps to 2147483647
-let neg_big: f64 = -1.0e30;
-let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
-let nan: f64 = 0.0 / 0.0;
-let nan_as_int: i32 = nan as i32;       // NaN converts to zero
+    // Out-of-range and non-finite values saturate instead of producing poison:
+    let big: f64 = 1.0e30;
+    let clamped: i32 = big as i32;      // positive overflow clamps to 2147483647
+    let neg_big: f64 = -1.0e30;
+    let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
+    let nan: f64 = 0.0 / 0.0;
+    let nan_as_int: i32 = nan as i32;       // NaN converts to zero
+
+    println(f"{f} {n} {clamped} {neg_clamped} {nan_as_int}");
+}
 ```
 
 **`as` conversion semantics:**
@@ -5787,13 +6060,18 @@ Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`
 **Syntax:**
 
 ```hew
-@outer: loop {
-    @inner: while condition {
-        if done {
-            break @outer;
-        }
-        if skip {
-            continue @outer;
+fn main() {
+    let condition = true;
+    let done = false;
+    let skip = false;
+    @outer: loop {
+        @inner: while condition {
+            if done {
+                break @outer;
+            }
+            if skip {
+                continue @outer;
+            }
         }
     }
 }
@@ -5806,14 +6084,19 @@ Labels are scoped to the loop they annotate.
 `loop`, `while`, and `for` are statements — they do not produce a value. To carry a result out of a loop, declare a `var` binding before the loop and assign to it inside the body:
 
 ```hew
-var result: i64 = 0;
-loop {
-    if found {
-        result = computed_value;
-        break;
+fn main() {
+    let found = true;
+    let computed_value: i64 = 42;
+    var result: i64 = 0;
+    loop {
+        if found {
+            result = computed_value;
+            break;
+        }
     }
+    // use result here
+    println(f"{result}");
 }
-// use result here
 ```
 
 `break` and `continue` are pure control-flow statements. A `break` carries no
@@ -5897,11 +6180,13 @@ fn describe_chain(first: Option<i64>, second: Result<string, string>) {
 apply:
 
 ```hew
-var m: HashMap<string, i64> = {"a": 1, "b": 2};
+fn main() {
+    let m: HashMap<string, i64> = {"a": 1, "b": 2};
 
-while let .Some(v) = m.get("a") {
-    println(f"{v}");
-    break;
+    while let .Some(v) = m.get("a") {
+        println(f"{v}");
+        break;
+    }
 }
 ```
 

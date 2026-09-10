@@ -85,8 +85,12 @@
 # Updated 2026-07-02: rewrote direct actor-call examples, reclassified
 # intentional actor-boundary error demos, corrected spec-0122..spec-0133 labels,
 # and bound entries to cksum metadata.
+# Updated 2026-09-10: reconciled the guide/spec SNIPPET, FRAGMENT and SPEC-BUG
+# rows against the current implementation — fixed or skip-annotated the fences
+# whose doc content was stale, and reclassified the handful that turned out to
+# demonstrate a genuine compiler gap as IMPL-GAP. std/ rows are untouched.
 #
-# ─── Guide failures (1) ─────────────────────────────────────────────────────────
+# ─── Guide failures ─────────────────────────────────────────────────────────────
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
@@ -94,46 +98,12 @@
 guide-144626557   # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
 
 
-# ─── Spec failures (38) ──────────────────────────────────────────────────────────
+# ─── Spec failures ───────────────────────────────────────────────────────────────
 
-spec-558578277   # SNIPPET: bare `let counter = spawn Counter(...)` with field args — spawn illustration
-spec-4253604243   # SNIPPET: bare lambda actor example — inline actor syntax illustration
-spec-3107872017   # FRAGMENT: calls `open(path)` with no import — context-dependent snippet
-spec-3221762372   # SNIPPET: bare `let x = 5` / `var y = 0` — binding modes illustration
-spec-3406269624   # FRAGMENT: imports `network.tcp` — hypothetical module, not in stdlib
-spec-2603276079   # FRAGMENT: imports `greeting` — multi-file example, module not found
-spec-53697221   # SNIPPET: bare code outside declarations — trait method dispatch illustration
-spec-158863422   # SNIPPET: bare `let` + trait call — trait dispatch illustration
-spec-2589017280   # SNIPPET: bare `let` — type inference illustration
-spec-60603610   # SNIPPET: bare `let f = |...| ...` — lambda illustration
-spec-1914272309   # SPEC-BUG: references variant `Lit` not defined in the fence
-spec-1607851950   # SNIPPET: bare `let` — fn-type variable illustration
-spec-4266594633   # SNIPPET: bare identifier `max` after trait definition — illustration
-spec-1757877651   # SPEC-BUG: type mismatch in aspirational HashMap construction
-spec-3755535258   # FRAGMENT: associated-type illustration — `trait Iterator` collides with the prelude binding and `RangeIter` is undefined in the fence; `.Some(value)` additionally hits the prelude-variant path gap
-spec-484878998   # SNIPPET: bare `let` after struct definitions — trait usage illustration
-spec-3690728588   # SNIPPET: bare `let f: fn(i64) -> i64 = ...` — fn-type illustration
-spec-286908305   # SNIPPET: bare code — trait implementation illustration
-spec-4058908296   # SNIPPET: bare `let` — generic function illustration
-spec-820125999   # SPEC-BUG: enum variants separated by `,` not `;` — illustrates wrong syntax
-spec-1673587477   # SPEC-BUG: malformed struct `impl` syntax — aspirational (re-verified after Vec<T> method-table correction, still fails identically: signature-only `;`-terminated impl bodies, no `{ }`)
-spec-3414934173   # SNIPPET: bare `var`/`let` — HashMap bracket-indexing illustration (re-verified after the dotted-path migration and the corrected index-read result type: `m[k]` yields bare `V`, not `Option<V>`)
-spec-3711765580   # SNIPPET: bare `let`/`var` — machine state illustration
-spec-3943447574   # SNIPPET: bare `let m = ...` — machine instantiation illustration
-spec-813722226   # SNIPPET: bare `on event { ... }` — machine transition illustration
-spec-2693414511   # SNIPPET: bare `on event ...` — machine state illustration
-spec-696588660   # SNIPPET: bare `on event ...` — machine event illustration
-spec-3427923877   # SNIPPET: bare `match state { ... }` — machine pattern illustration
-spec-2109671045   # SNIPPET: bare `match` — wire format pattern illustration
-spec-3178540149   # SNIPPET: bare `let` — wire encode illustration
-spec-3387341978   # SNIPPET: bare `let` — wire decode illustration
-spec-2829887061   # SNIPPET: bare `let` — integer width-mismatch conversion illustration
-spec-570017546   # SNIPPET: bare `let` — explicit usize-to-integer conversion illustration
-spec-2833987996   # SNIPPET: bare `let` — saturating `as` f64/integer conversion illustration
-spec-3559603183   # SNIPPET: bare `let` — exact numeric try_to conversion illustration
-spec-1635702216   # SNIPPET: bare labeled loop — labeled break/continue illustration
-spec-796057876   # SNIPPET: bare `var` — loop statement result-accumulator illustration
-spec-2132440862   # SNIPPET: bare `while let` — HashMap pattern-match illustration (re-verified after the §3.1 variant-spelling rule dotted the pattern: still `expected item (fn, actor, machine, type, import, ...), found var` at line 1)
+spec-1607851950   # SNIPPET: bare `let` — fn-type/Rc illustration; Rc/Weak wording owned by feat/rc-physical-path, left untouched by this lane
+spec-484878998   # IMPL-GAP: `Vec.filter`/`Vec.map` type-check but are not yet lowered (`E_SIR_UNSUPPORTED: ... mutable place root is not mutable`); the closure-inference half of the fence (via `apply`) compiles on its own
+spec-3414934173   # IMPL-GAP: `m[k] = v` HashMap index-assignment sugar type-checks but is not yet lowered (`E_SIR_UNSUPPORTED: ... assignment requires a resolved local binding target`); bracket reads and `.insert` both work
+spec-3559603183   # IMPL-GAP: `.try_to_i32()`/`.try_to_f32()` etc. type-check but are not lowered (`E_SIR_UNSUPPORTED: ... unsupported HIR expression kind TryWidthCast`)
 
 # ─── Auto-classified new failures (doc-fence rekeying pass) ─────────────────
 # Root causes are a first-pass heuristic from the diagnostic text; refine the
@@ -141,26 +111,15 @@ spec-2132440862   # SNIPPET: bare `while let` — HashMap pattern-match illustra
 
 guide-1477095503   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 guide-1657801784   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<Node>` has no semantic valu…
-guide-232405810   # SNIPPET: warning: unused variable `rounded_float`
-guide-2331035367   # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
+guide-232405810   # IMPL-GAP: `.try_to_u8()`/`.try_to_u32()`/`.try_to_f32()` type-check but are not lowered (`E_SIR_UNSUPPORTED: ... unsupported HIR expression kind TryWidthCast`), same gap as spec-3559603183
 guide-247214399   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 guide-2798920363   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<i64>` has no semantic value…
 guide-3632677243   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `NumericMet…
 guide-672237462   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: unsupported HIR expression kind `ResolvedIm…
-guide-797256300   # SPEC-BUG: error: type `Result<i64, string>` does not implement `Display` (f-string interpolation requires `impl Display for Result<i64, string>`)
-spec-1608552429   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `select`
-spec-1821018001   # SPEC-BUG: error: unknown type `TcpStateEvent`
-spec-1957460217   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `var`
-spec-2102466625   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
-spec-2338216717   # FRAGMENT: error: E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `MyPool` child `worker1` references unknown actor `Worker`; import a public actor into t…
-spec-3139797707   # SPEC-BUG: error: ordinary machine evaluation does not yet admit const parameters or composite states
-spec-3697505193   # SPEC-BUG: error: type mismatch: expected `Result<Connection, Error>`, found `()`
-spec-3920426618   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `var`
-spec-3936244856   # SNIPPET: error: expected item (fn, actor, machine, type, import, ...), found `let`
-spec-59372567   # SPEC-BUG: error: interleaved `event` declarations are no longer supported; declare events in an `events { … }` header at the top of the machine body
+guide-797256300   # IMPL-GAP: `unicode.rune_count` type-checks but is not lowered (`E_SIR_UNSUPPORTED: ... extern hew_string_char_count` is named by `#[extern_symbol]` rather than an `extern` block), same gap as the std-text-unicode entries below
+spec-3139797707   # IMPL-GAP: error: ordinary machine evaluation does not yet admit const parameters or composite states (native evaluator limitation, §3.11.2)
+spec-3936244856   # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> ...` type-checks (discarding the completion result correctly raises `E_SEND_RESULT_DROPPED`) but SIR lowering of the ask/completion for such a handler is not implemented (`E_SIR_UNSUPPORTED: ... ask must return its complete checked Result`)
 spec-606174901   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: nested type `Rc<Node>` has no semantic valu…
-spec-656256712   # SPEC-BUG: error: type mismatch: expected `T`, found `i64`
-spec-810979879   # SPEC-BUG: error: undefined function `process`
 std-arena-3714386937   # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
 std-fmt-fmt-3604441172   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_left` is not implemented: extern `hew_string_char_coun…
 std-fmt-fmt-3999788508   # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_std$string$pad_right` is not implemented: extern `hew_string_char_cou…

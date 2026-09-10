@@ -2873,19 +2873,19 @@ import std.sort;
 fn main() {
     var nums: Vec<i64> = Vec.new();
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
-    let sorted   = sort.sort(nums);            // returns new Vec — original unchanged
-    let reversed = sort.reverse(sorted);
+    let sorted   = sort.sort_ints(nums);            // returns new Vec — original unchanged
+    let reversed = sort.reverse_ints(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
 
     var words: Vec<string> = Vec.new();
     words.push("banana"); words.push("apple"); words.push("cherry");
-    let sw = sort.sort(words);
+    let sw = sort.sort_strings(words);
     println(sw[0]);        // apple
 
     var floats: Vec<f64> = Vec.new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
-    let sf = sort.sort(floats);
+    let sf = sort.sort_floats(floats);
     println(sf[0]);        // 1.41
 }
 ```

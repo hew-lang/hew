@@ -1,0 +1,15 @@
+// Wrapping and pushing pushes the whole structure built so far at every level.
+// Cloning it was quadratic and overflowed the native stack before the loop
+// finished; transferring costs one allocation per level.
+
+type Node { child: Vec<Node> }
+
+fn main() {
+  var n = Node { child: Vec.new() };
+  for i in 0..30000 {
+    var wrapper: Vec<Node> = Vec.new();
+    wrapper.push(n);
+    n = Node { child: wrapper };
+  }
+  println(f"depth=30000 root={n.child.len()}");
+}

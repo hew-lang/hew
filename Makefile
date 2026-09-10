@@ -1128,8 +1128,8 @@ test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 # migrate them. It shrinks as those are fixed; the next lane retires it.
 test-vertical-slice: hew-native ## Test: run the end-to-end compiler oracle
 	bash tests/vertical-slice/test-compile-accept.sh
-	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 	cargo run -p xtask -- core-acceptance --suite acceptance --kind run,check,reject --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
+	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 
 # Audited native value-semantics cases.  hew-native is the sole compiler build
 # edge; xtask only drives that already-built binary for its O0 and O2 outcomes.

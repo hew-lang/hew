@@ -31,6 +31,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -198,6 +199,51 @@ def parse_calls(lines: list[str]) -> tuple[list[Call], list[str]]:
         args = [unescape(argument.replace("${ROOT}", str(ROOT))) for argument in args]
         calls.append(Call(helper, args, *bracket(lines, first, last)))
     return calls, declined
+
+
+# What run.sh's helpers leave behind for the lines after them: the shared
+# capture files and the status of the last accepted run.
+CAPTURED_OUTPUT = (
+    "${stdout_output}",
+    "${stderr_output}",
+    "${accept_output}",
+    "${reject_output}",
+    "last_accept_status",
+)
+
+
+def reads_this_run(lines: list[str], last: int) -> bool:
+    """Whether the lines after a call assert against what that call captured.
+
+    run.sh writes each fixture's stdout and stderr to shared files, and a
+    hand-written block after a helper call reads them. Deleting the call would
+    leave that block asserting against whatever fixture ran before it, which
+    is a new failure rather than a migration. A block that redirects into the
+    capture, or reassigns the status, has established its own value and no
+    longer depends on what this call left there.
+    """
+    live = set(CAPTURED_OUTPUT)
+    index = last + 1
+    while index < len(lines) and live:
+        line = lines[index]
+        helper = line.split(" ", 1)[0].split("\t", 1)[0]
+        if (
+            helper in RUN_HELPERS
+            or helper in CHECK_HELPERS
+            or helper == "compile_accept"
+        ):
+            return False
+        for name in sorted(live):
+            if name not in line:
+                continue
+            if re.search(r"[0-9]*>>?\s*\"?" + re.escape(name), line) or re.search(
+                re.escape(name) + r"\s*=", line
+            ):
+                live.discard(name)
+                continue
+            return True
+        index += 1
+    return False
 
 
 def bracket(lines: list[str], first: int, last: int) -> tuple[int, int]:
@@ -598,6 +644,13 @@ def main() -> int:
                     None,
                     "owns state at a fixed path that only run.sh's trap cleans",
                 )
+            if any(reads_this_run(lines, c.last_line) for c in fixture_calls):
+                return (
+                    fixture,
+                    fixture_calls,
+                    None,
+                    "a hand-written assertion after it reads the output it captured",
+                )
             env = dict(FIXTURE_ENV)
             if fixture_calls[0].helper == "run_accept_expect_status":
                 for assignment in fixture_calls[0].args[2:]:
@@ -631,6 +684,8 @@ def main() -> int:
 
         def observe_reject(item):
             path, path_calls = item
+            if any(reads_this_run(lines, c.last_line) for c in path_calls):
+                return path, path_calls, None, None
             status, diagnostics = observe_check(hew, Path(path))
             return path, path_calls, status, diagnostics
 
@@ -638,6 +693,12 @@ def main() -> int:
             for path, path_calls, status, diagnostics in pool.map(
                 observe_reject, check_calls.items()
             ):
+                if status is None:
+                    left_behind.append(
+                        f"{Path(path).stem}: a hand-written assertion after it"
+                        " reads the output it captured"
+                    )
+                    continue
                 case, why = check_case_from(path_calls, status, diagnostics)
                 if case is None:
                     left_behind.append(f"{Path(path).stem}: {why}")

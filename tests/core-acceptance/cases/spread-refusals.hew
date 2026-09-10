@@ -1,0 +1,26 @@
+//! What `..` refuses inside a literal. A spread operand is a `Vec` of the
+//! literal's element type, a fixed-size array's length is part of its type so
+//! a run-time length cannot fill it, and every record field is initialized
+//! exactly once.
+//!
+//! Harness verb: hew check (must fail)
+
+type Point { x: i64, y: i64, }
+
+fn _wrong_element(xs: Vec<i64>) -> Vec<i64> {
+    [..xs, "not a number"]
+}
+
+fn _not_a_collection(n: i64) -> Vec<i64> {
+    [..n, 1]
+}
+
+fn _fixed_length(xs: Vec<i64>) -> [i64; 3] {
+    [..xs, 3]
+}
+
+fn _field_named_twice() -> Point {
+    Point { x: 1, x: 2, y: 3 }
+}
+
+fn main() {}

@@ -1631,6 +1631,20 @@ mod tests {
     }
 
     #[test]
+    fn hover_on_a_spread_operand_shows_the_operand_type() {
+        // `..xs` splices a collection, so the useful hover is the collection's
+        // own type, not the literal's.
+        let source = "fn f(xs: Vec<i64>) -> Vec<i64> {\n    [..xs, 1]\n}";
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        let offset = source.rfind("xs").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert_eq!(result.contents, "```hew\nxs: Vec<i64>\n```");
+    }
+
+    #[test]
     fn hover_shows_actor_receive_param_type() {
         let source = "actor Worker {\n    receive fn handle(msg: string) {\n        msg\n    }\n}";
         let pr = hew_parser::parse(source);

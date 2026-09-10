@@ -1,0 +1,49 @@
+// `..operand` inside a bracket literal splices the operand's elements in
+// order. The operand is a retain, not a transfer: it stays usable afterwards,
+// and owned elements copy into the new vector so each one owns its own value.
+//
+// Harness verb: hew run
+
+type Item { name: string, parts: Vec<i64> }
+
+fn describe(label: string, xs: Vec<i64>) {
+    var total = 0;
+    for n in xs { total = total + n; }
+    println(f"{label}={xs.len()}:{total}");
+}
+
+fn source() -> Vec<i64> {
+    var made: Vec<i64> = Vec.new();
+    made.push(7);
+    made.push(8);
+    made
+}
+
+fn main() {
+    let xs: Vec<i64> = [1, 2];
+    let ys: Vec<i64> = [4, 5];
+    let empty: Vec<i64> = [];
+
+    describe("front", [..xs, 9]);
+    describe("middle", [0, ..xs, 9]);
+    describe("back", [9, ..xs]);
+    describe("multiple", [..xs, 9, ..ys]);
+    describe("empty", [..empty, ..xs, ..empty]);
+    describe("only", [..xs]);
+    describe("call", [..source(), 1]);
+
+    // The spread is not the operand's last use: `xs` still owns its elements.
+    describe("kept", xs);
+
+    let names: Vec<string> = ["a", "b"];
+    let more = [..names, "c"];
+    var tail = "";
+    for name in more { tail = name; }
+    println(f"names={names.len()} more={more.len()} tail={tail}");
+
+    let one = Item { name: "one", parts: [1] };
+    let two = Item { name: "two", parts: [2, 3] };
+    let items: Vec<Item> = [one, two];
+    let all = [..items, Item { name: "three", parts: [] }];
+    println(f"items={items.len()} all={all.len()} parts={all[1].parts.len()}");
+}

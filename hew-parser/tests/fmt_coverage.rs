@@ -758,7 +758,7 @@ fn fmt_dotted_import_forms_roundtrip() {
 #[test]
 fn fmt_contextual_variants_roundtrip() {
     exact_roundtrip(
-        "fn main() {\n    let a = .None;\n    let b = .Some(value);\n    let c = .Ready { value: value, ..base };\n}\n",
+        "fn main() {\n    let a = .None;\n    let b = .Some(value);\n    let c = .Ready { ..base, value: value };\n}\n",
     );
 }
 
@@ -784,9 +784,25 @@ fn fmt_qualified_assoc_paths_roundtrip() {
 }
 
 #[test]
+fn fmt_spread_elements_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let a = [..xs, 1, ..ys];\n    let b = [..xs];\n    let c = [1, ..xs];\n}\n",
+    );
+}
+
+#[test]
+fn fmt_record_spread_normalizes_to_base_first() {
+    let out = roundtrip("fn main() { let p = Point { x: 1, ..base }; }");
+    assert!(
+        out.contains("Point { ..base, x: 1 }"),
+        "the base is written first: {out}"
+    );
+}
+
+#[test]
 fn fmt_pure_dot_record_init_with_update_roundtrip() {
     exact_roundtrip(
-        "fn main() {\n    let data = wire.Message.Data { bytes: payload, ..base };\n}\n",
+        "fn main() {\n    let data = wire.Message.Data { ..base, bytes: payload };\n}\n",
     );
 }
 

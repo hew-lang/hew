@@ -1,0 +1,10 @@
+[[case]]
+id = "spread-vec"
+intent = "`..operand` splices a collection's elements in order at any position in a bracket literal; the operand is a retain rather than a transfer, so it stays usable afterwards, and owned elements copy into the new vector as independent values."
+source = "cases/spread-vec.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "front=3:12\nmiddle=4:12\nback=3:12\nmultiple=5:21\nempty=2:3\nonly=2:3\ncall=3:16\nkept=2:3\nnames=2 more=3 tail=c\nitems=2 all=3 parts=2\n"
+exit = 0

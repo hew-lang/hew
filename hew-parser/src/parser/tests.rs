@@ -4631,7 +4631,79 @@ fn wrapping_ops_parse_with_no_errors() {
     }
 }
 
-// ── functional_update: `R { x: 5, ..base }` ───────────────────────────
+// ── spread in literals: `[..xs, x]` and `R { ..base, x: 5 }` ─────────
+
+#[test]
+fn array_spread_elements_parse_at_any_position() {
+    let src = r"
+            fn f(xs: Vec<int>, ys: Vec<int>) {
+                let a = [..xs, 1];
+                let b = [1, ..xs];
+                let c = [..xs, 1, ..ys];
+                let d = [..xs];
+            }
+        ";
+    let result = parse(src);
+    assert!(
+        result.errors.is_empty(),
+        "spread elements parse at any position; got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn array_spread_keeps_element_and_spread_apart() {
+    let result = parse("fn f(xs: Vec<int>) { let a = [1, ..xs]; }");
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let Item::Function(f) = &result.program.items[0].0 else {
+        panic!("expected function");
+    };
+    let Stmt::Let {
+        value: Some((expr, _)),
+        ..
+    } = &f.body.stmts[0].0
+    else {
+        panic!("expected let with value");
+    };
+    let Expr::Array(elements) = expr else {
+        panic!("expected an array literal, got {expr:?}");
+    };
+    assert_eq!(elements.len(), 2);
+    assert!(!elements[0].is_spread(), "`1` is a plain element");
+    assert!(elements[1].is_spread(), "`..xs` is a spread");
+}
+
+#[test]
+fn spread_does_not_start_an_expression_outside_a_literal() {
+    // Negative control for the literal-only spread: `..` still cannot begin an
+    // expression, so no range spelling changed meaning.
+    let result = parse("fn f(xs: Vec<int>) { let r = ..xs; }");
+    assert!(
+        result.errors.iter().any(|error| matches!(
+            &error.kind,
+            ParseDiagnosticKind::MissingExpression { got } if got.contains("..")
+        )),
+        "`..` outside a literal is still not an expression; got: {:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn array_spread_with_a_repeat_count_is_rejected() {
+    // `[..xs; 3]` has no reading: a spread splices a collection and a repeat
+    // literal repeats one value.
+    let result = parse("fn f(xs: Vec<int>) { let a = [..xs; 3]; }");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.message.contains("repeat literal")),
+        "a spread with a repeat count is refused; got: {:?}",
+        result.errors
+    );
+}
+
+// ── record spread: `R { ..base, x: 5 }` ───────────────────────────────
 
 #[test]
 fn functional_update_basic_parses() {
@@ -4701,17 +4773,30 @@ fn functional_update_no_explicit_fields_parses() {
 }
 
 #[test]
-fn functional_update_mid_list_base_is_rejected() {
-    // `Point { ..base, x: 1 }` — base is not last; must produce a parse error.
-    let src = r"
+fn record_spread_base_parses_anywhere_in_the_field_list() {
+    // `..base` names the same value wherever it sits: it supplies the fields
+    // the literal does not name. Base first is the taught spelling.
+    for src in [
+        r"
             type Point { x: int, y: int }
             fn f(old: Point) { let p = Point { ..old, x: 1 }; }
-        ";
-    let result = parse(src);
-    assert!(
-        !result.errors.is_empty(),
-        "functional-update base not at end must produce a parse error"
-    );
+        ",
+        r"
+            type Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { x: 1, ..old }; }
+        ",
+        r"
+            type Point { x: int, y: int, z: int }
+            fn f(old: Point) { let p = Point { x: 1, ..old, z: 3 }; }
+        ",
+    ] {
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "a record spread parses at any position; got: {:?}",
+            result.errors
+        );
+    }
 }
 
 #[test]
@@ -4745,21 +4830,27 @@ fn functional_update_base_is_none_for_regular_struct_init() {
 }
 
 #[test]
-fn functional_update_double_base_is_rejected() {
-    // `R { ..a, ..b }` must be a parse error — only one base allowed.
+fn record_spread_second_base_is_rejected() {
+    // `R { ..a, ..b }` has two answers for every unnamed field, so it is
+    // refused with a code a client can act on.
     let src = r"
             type Point { x: int, y: int }
             fn f(a: Point, b: Point) { let p = Point { ..a, ..b }; }
         ";
     let result = parse(src);
-    let has_expected_error = result
+    let refusal = result
         .errors
         .iter()
-        .any(|e| e.message.contains("must be the last item"));
+        .find(|error| error.kind == ParseDiagnosticKind::DuplicateRecordBase);
+    let refusal = refusal.unwrap_or_else(|| {
+        panic!(
+            "two `..base` items must be refused; got: {:?}",
+            result.errors
+        )
+    });
     assert!(
-        has_expected_error,
-        "double base `..a, ..b` must produce a 'must be the last item' error; got: {:?}",
-        result.errors
+        refusal.message.contains("one `..base`"),
+        "the refusal names the one-base rule: {refusal:?}"
     );
 }
 

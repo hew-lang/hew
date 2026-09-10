@@ -1,0 +1,10 @@
+[[case]]
+id = "spread-record"
+intent = "`..base` in a record literal supplies every field the literal does not name, wherever the base sits in the field list; a named field wins over the base, and a base with a resource field transfers that field so its close is observed exactly once."
+source = "cases/spread-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "moved=1:2 trailing=1:2\nbase=1:1\nline=4:1 redrawn=1:4:9\nretagged=1:5\nclose s1\n"
+exit = 0

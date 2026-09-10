@@ -1,0 +1,38 @@
+//! A machine state literal takes the same `..base` spread as any record
+//! literal: inside a transition the source state's fields are readable, so
+//! `..self` carries the fields the literal does not name and the transition
+//! only writes what actually changes.
+//!
+//! Harness verb: hew run
+
+machine Till {
+    events { Sale, Void, Close, }
+    state Empty,
+    state Filled { count: i64, label: string, },
+    on Sale: Empty => Filled { Till.Filled { count: 1, label: "open" } }
+    on Sale: Filled => Filled reenter { Till.Filled { ..self, count: self.count + 1 } }
+    on Void: Filled => Filled reenter { Till.Filled { ..self, label: "voided" } }
+    on Close: Filled => Empty { Till.Empty }
+    default { state }
+}
+
+fn show(till: Till) {
+    match till {
+        .Empty => println("empty"),
+        .Filled { count, label } => println(f"{label}:{count}"),
+    }
+}
+
+fn main() {
+    var till = Till.Empty;
+    show(till);
+    let _ = till.step(.Sale);
+    show(till);
+    let _ = till.step(.Sale);
+    let _ = till.step(.Sale);
+    show(till);
+    let _ = till.step(.Void);
+    show(till);
+    let _ = till.step(.Close);
+    show(till);
+}

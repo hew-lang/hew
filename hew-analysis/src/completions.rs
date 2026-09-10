@@ -1415,6 +1415,25 @@ fn probe(mat: Matcher, s: string) {
     }
 
     #[test]
+    fn completions_include_locals_inside_a_spread_operand() {
+        // A spread operand is an ordinary expression position: completion sees
+        // the same locals it would anywhere else in the literal.
+        let labels = labels_at_cursor(
+            r"fn example() {
+    let outer = 5;
+    let joined = [1, ..{
+        let spread_local = 7;
+        /*cursor*/
+        spread_local
+    }];
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "spread_local"));
+        assert!(labels.iter().any(|label| label == "outer"));
+    }
+
+    #[test]
     fn completions_do_not_leak_call_argument_block_locals_after_statement() {
         let labels = labels_at_cursor(
             r"fn example() {

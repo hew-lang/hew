@@ -5017,7 +5017,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src.reasons.reasons.{MAX_RETRIES, retries_label};\n\
+        "import src.reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\

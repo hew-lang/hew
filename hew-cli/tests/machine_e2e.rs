@@ -5,7 +5,7 @@ use std::process::Command;
 use support::hew_binary;
 
 fn machine_fixture() -> &'static str {
-    "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { On }\n    on Toggle: On => Off { Off }\n}\n"
+    "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
 }
 
 fn missing_import_fixture() -> &'static str {
@@ -14,9 +14,9 @@ fn missing_import_fixture() -> &'static str {
      \x20   state Red;\n\
      \x20   state Green;\n\
      \x20   state Yellow;\n\
-     \x20   on Tick: Red => Green { Green }\n\
-     \x20   on Tick: Green => Yellow { Yellow }\n\
-     \x20   on Tick: Yellow => Red { Red }\n\
+     \x20   on Tick: Red => Green { .Green }\n\
+     \x20   on Tick: Green => Yellow { .Yellow }\n\
+     \x20   on Tick: Yellow => Red { .Red }\n\
      }\n\
      fn main() {\n\
      \x20   let _ = fs.read(\"test.txt\");\n\
@@ -86,9 +86,9 @@ fn composite_fixture() -> &'static str {
      \x20   state Connected {\n\
      \x20       initial state Authenticating;\n\
      \x20       state Active;\n\
-     \x20       on Disconnect: _ => Disconnected;\n\
+     \x20       on Disconnect: _ => .Disconnected;\n\
      \x20   }\n\
-     \x20   on Connect: Disconnected => Authenticating;\n\
+     \x20   on Connect: Disconnected => .Authenticating;\n\
      \x20   on Connect: _ => _ { state }\n\
      \x20   on Disconnect: _ => _ { state }\n\
      }\n"
@@ -199,7 +199,7 @@ fn machine_diagram_missing_file_exits_non_zero() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error reading"), "stderr: {stderr}");
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
     assert!(stderr.contains("missing.hew"), "stderr: {stderr}");
 }
 
@@ -249,8 +249,8 @@ fn machine_diagram_fails_closed_on_missing_import() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("add 'import std.fs;'"),
-        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+        stderr.contains("undefined variable `fs`"),
+        "stderr must surface the checker's missing-import diagnostic; stderr: {stderr}"
     );
 }
 
@@ -275,8 +275,8 @@ fn machine_list_fails_closed_on_missing_import() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("add 'import std.fs;'"),
-        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+        stderr.contains("undefined variable `fs`"),
+        "stderr must surface the checker's missing-import diagnostic; stderr: {stderr}"
     );
 }
 
@@ -295,7 +295,8 @@ fn machine_list_fails_closed_on_parse_error() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("parse error"), "stderr: {stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
+    assert!(stderr.contains("parse_err.hew"), "stderr: {stderr}");
 }
 
 #[test]
@@ -346,7 +347,7 @@ fn default_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Filling;\n\
      \x20   state Draining;\n\
-     \x20   on Drain: Filling => Draining { Draining }\n\
+     \x20   on Drain: Filling => Draining { .Draining }\n\
      \x20   default { state }\n\
      }\n"
 }
@@ -360,10 +361,10 @@ fn reenter_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Zero;\n\
      \x20   state NonZero { value: i64; }\n\
-     \x20   on Inc: Zero => NonZero { NonZero { value: 1 } }\n\
-     \x20   on Inc: NonZero => NonZero reenter { NonZero { value: self.value + 1 } }\n\
-     \x20   on Reset: NonZero => Zero { Zero }\n\
-     \x20   on Reset: Zero => Zero reenter { Zero }\n\
+     \x20   on Inc: Zero => NonZero { .NonZero { value: 1 } }\n\
+     \x20   on Inc: NonZero => NonZero reenter { .NonZero { value: self.value + 1 } }\n\
+     \x20   on Reset: NonZero => Zero { .Zero }\n\
+     \x20   on Reset: Zero => Zero reenter { .Zero }\n\
      }\n"
 }
 
@@ -380,13 +381,15 @@ fn emits_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Idle;\n\
      \x20   state Active;\n\
-     \x20   on Trigger: Idle => Active { emit Signal {}; Active }\n\
-     \x20   on Trigger: Active => Idle { Idle }\n\
+     \x20   on Trigger: Idle => Active { emit Signal {}; .Active }\n\
+     \x20   on Trigger: Active => Idle { .Idle }\n\
      \x20   default { state }\n\
      }\n"
 }
 
 /// Generic machine — HIR path must not crash; falls back to AST with a warning.
+/// Uses `default { state }` to satisfy exhaustiveness so the type-check the
+/// command now runs accepts it and the AST fallback is what the test observes.
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
@@ -395,8 +398,9 @@ fn generic_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Empty;\n\
      \x20   state Full { value: T; }\n\
-     \x20   on Put(value): Empty => Full { Full { value: value } }\n\
-     \x20   on Take: Full => Empty { Empty }\n\
+     \x20   on Put(value): Empty => Full { .Full { value: value } }\n\
+     \x20   on Take: Full => Empty { .Empty }\n\
+     \x20   default { state }\n\
      }\n"
 }
 
@@ -753,8 +757,8 @@ fn machine_diagram_json_no_wildcard_rows() {
                   \x20   events { Flip; Reset; }\n\
                   \x20   state A;\n\
                   \x20   state B;\n\
-                  \x20   on Flip: A => B { B }\n\
-                  \x20   on Reset: _ => A { A }\n\
+                  \x20   on Flip: A => B { .B }\n\
+                  \x20   on Reset: _ => A { .A }\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("toggle.hew");
@@ -794,8 +798,8 @@ fn machine_diagram_json_event_fields_present() {
                   \x20   events { Send { payload: i64; }; Ack; }\n\
                   \x20   state Idle;\n\
                   \x20   state Waiting;\n\
-                  \x20   on Send: Idle => Waiting { Waiting }\n\
-                  \x20   on Ack: Waiting => Idle { Idle }\n\
+                  \x20   on Send: Idle => Waiting { .Waiting }\n\
+                  \x20   on Ack: Waiting => Idle { .Idle }\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("sender.hew");

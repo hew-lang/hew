@@ -10683,7 +10683,13 @@ mod tests {
     }
 
     #[test]
-    fn collection_callback_cleanup_requires_its_existing_fault_owner() {
+    fn collection_callback_cleanup_releases_storage_and_owns_its_fault() {
+        // Two mutations of the `contains_key` failure edge, both fail-closed:
+        //   1. Replacing the cleanup block with a trap abandons the map's
+        //      still-active local storage — the cleanup block is load-bearing,
+        //      not decoration.
+        //   2. Propagating a fault out of the success return has no fault
+        //      owner to propagate.
         let semantic = lower_source(
             r#"fn main() -> i64 {
                 var values: HashMap<i64, string> = HashMap.new();
@@ -10742,7 +10748,7 @@ mod tests {
         assert!(
             error
                 .message
-                .contains("creates a trap while an earlier fault is active"),
+                .contains("physical function exit leaves local storage active"),
             "{error}"
         );
 

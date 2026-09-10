@@ -15,7 +15,10 @@ fn select_arms() -> i32 {
     let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     tx.send("ping");
     let result = select {
-        reply from recipient.ask(1) => reply,
+        reply from recipient.ask(1) => match reply {
+            .Ok(value) => value,
+            .Err(_) => 0,
+        },
         msg from rx.recv() => {
             match msg {
                 .Some(value) => select_probe(),

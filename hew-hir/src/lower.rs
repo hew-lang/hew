@@ -37579,7 +37579,6 @@ impl Widget {
             lowered.diagnostics
         );
     }
-
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -37593,21 +37592,11 @@ impl Widget {
         // tuple call as a struct ctor and the other mis-tag the struct ctor.
         let alpha_source = r"
             pub enum Color { AlphaOnly, Red(i64), }
-            pub machine Switch {
-                events { AlphaTick, }
-                state Empty,
-                state Shared,
-                on AlphaTick: _ => _ { state }
-            }
+            pub enum Switch { Empty, Shared, }
         ";
         let beta_source = r"
             pub enum Color { Red { value: i64 }, BetaOnly, }
-            pub machine Switch {
-                events { BetaTick, }
-                state Shared,
-                state Full,
-                on BetaTick: _ => _ { state }
-            }
+            pub enum Switch { Shared, Full, }
         ";
         let root_with_alpha_first = r"
             import hew.alpha.{ Color as Hue, Switch };

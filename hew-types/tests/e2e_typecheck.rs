@@ -2644,7 +2644,7 @@ fn wasm_scope_with_fork_child_rejected_before_codegen() {
         fn compute() -> i64 { 7 }
         fn main() {
             scope {
-                fork a = compute();
+                let a = fork compute();
                 await a;
             }
         }

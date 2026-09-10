@@ -1272,7 +1272,7 @@ mod tests {
             ),
             (
                 ResolvedTy::Task(Box::new(ResolvedTy::I64)),
-                ValueClass::Linear,
+                ValueClass::AffineResource,
                 CloneKind::None,
             ),
             (conn(), ValueClass::AffineResource, CloneKind::None),

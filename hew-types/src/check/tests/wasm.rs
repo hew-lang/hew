@@ -1348,7 +1348,7 @@ fn main() {
         r"
             fn main() {
                 scope {
-                    fork task = compute();
+                    let task = fork compute();
                     await task;
                 }
             }

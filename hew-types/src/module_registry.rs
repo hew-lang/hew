@@ -1360,8 +1360,12 @@ mod tests {
         let out_of_tree_executable = TestDir::new("compiler-stdlib-out-of-tree-targets")
             .root
             .join("deeply/nested/unrelated/path/deps/hew_types-abc123");
+        // The development tier returns the manifest-dir ancestor as spelled,
+        // so canonicalize both sides: an out-of-tree `target/` symlink
+        // otherwise spells the same directory two ways.
         assert_eq!(
-            compiler_stdlib_root_impl(&out_of_tree_executable, &child_manifest_dir),
+            compiler_stdlib_root_impl(&out_of_tree_executable, &child_manifest_dir)
+                .and_then(|root| root.canonicalize().ok()),
             development.root.canonicalize().ok(),
             "the development tier must resolve from manifest_dir, not the executable path"
         );
@@ -2119,9 +2123,14 @@ mod tests {
         let loaded = registry
             .get("std.option")
             .expect("compiler-owned option module is active");
+        // Both sides go through `canonicalize`: an out-of-tree `target/`
+        // symlink otherwise spells the same file two ways.
         assert_eq!(
-            loaded.source_path.as_deref(),
-            Some(compiler_source.as_path())
+            loaded
+                .source_path
+                .as_deref()
+                .and_then(|path| path.canonicalize().ok()),
+            compiler_source.canonicalize().ok()
         );
 
         registry
@@ -2136,8 +2145,12 @@ mod tests {
         assert_eq!(active[0].module_id.path, ["std", "option"]);
         assert!(active[0].compiler_owned);
         assert_eq!(
-            active[0].info.source_path.as_deref(),
-            Some(compiler_source.as_path())
+            active[0]
+                .info
+                .source_path
+                .as_deref()
+                .and_then(|path| path.canonicalize().ok()),
+            compiler_source.canonicalize().ok()
         );
     }
 

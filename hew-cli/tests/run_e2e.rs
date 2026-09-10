@@ -564,8 +564,10 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
                 peers: ["zznothexzz"],
                 seeds: [],
             };
-            Node.start(config);
-            println("after-start");
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -582,8 +584,8 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         "bad-hex allow_peer must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
-        stdout.contains("after-start"),
-        "program continues past the failed start without binding a listener; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 
@@ -613,8 +615,10 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
                 peers: [],
                 seeds: [],
             };
-            Node.start(config);
-            println("after-start");
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -629,8 +633,8 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         "a corrupt keyfile must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
-        stdout.contains("after-start"),
-        "program continues past the failed start without binding a listener; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 
@@ -657,8 +661,10 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
                 peers: [],
                 seeds: [],
             };
-            Node.start(config);
-            println("after-start");
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -673,8 +679,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         "an unestablishable identity must be surfaced on stderr; stderr: {stderr}"
     );
     assert!(
-        stdout.contains("after-start"),
-        "program continues past the failed start without binding a listener; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 

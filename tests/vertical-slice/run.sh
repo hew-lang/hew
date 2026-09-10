@@ -5097,8 +5097,8 @@ expect_check_fail_contains \
     "borrowed by a live element loan" \
     "hashmap_get_borrow_mutate"
 
-# `m.clone()` deep-clones every value blob, so a value with no clone must fail
-# closed at the operation that copies it.
+# `values()` copies every value out of the map, so a value whose class carries
+# no copy operation must fail closed at that operation.
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/hashmap_clone_unclonable_opaque_value.hew" \
     "copies each value out of the map" \

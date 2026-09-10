@@ -570,7 +570,7 @@ pub(crate) fn with_actor_send_by_identity<R>(
 /// is a hard spawn failure, not a wrap), so no two incarnations in a process
 /// ever share one. Recording the pair and resolving it through
 /// [`with_live_incarnation`] makes a wake name an incarnation, not an address.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ActorIncarnation {
     actor_id: u64,
     spawn_serial: u64,
@@ -634,6 +634,23 @@ impl ActorIncarnation {
 
     /// The never-reissued serial half of the pair.
     pub(crate) const fn spawn_serial(self) -> u64 {
+        self.spawn_serial
+    }
+
+    /// The one-word form of this incarnation, for the lock-free in-flight
+    /// guards that cannot publish both halves in a single atomic.
+    ///
+    /// `spawn_serial` alone names the incarnation exactly. The spawn allocator
+    /// is monotonic and refuses to wrap ([`crate::pid::MAX_ACTOR_SERIAL`] is a
+    /// hard spawn failure), so no two incarnations in a process share one; and
+    /// the mint refuses serial `0` before it can become an id
+    /// ([`crate::pid::actor_slot_fits_internal_alias`]), so `0` names no
+    /// incarnation and is free to mean "idle" at a guard. [`Self::NONE`] maps
+    /// to `0` for the same reason.
+    ///
+    /// Unlike the packed `actor_id`, whose serial portion is masked to 48 bits,
+    /// this needs no collision caveat: it is the full serial.
+    pub(crate) const fn guard_key(self) -> u64 {
         self.spawn_serial
     }
 }

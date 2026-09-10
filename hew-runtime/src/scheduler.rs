@@ -8409,13 +8409,7 @@ mod tests {
         unsafe { crate::read_slot::read_slot_retain(slot1) };
         // SAFETY: `actor_ptr` is a live tracked actor for the whole test.
         let ref_inject = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::inject_accept_registration_for_test(
-            fd1,
-            listener1,
-            ref_inject,
-            actor_ptr as usize,
-            slot1,
-        );
+        crate::reactor::inject_accept_registration_for_test(fd1, listener1, ref_inject, slot1);
 
         // The admission-parked acceptor is exempt through the REAL reactor
         // snapshot: both pre-completion samples read idle.
@@ -8478,13 +8472,7 @@ mod tests {
         unsafe { crate::read_slot::read_slot_retain(slot2) };
         // SAFETY: `actor_ptr` is live; the ref is a by-value snapshot.
         let ref_inject2 = unsafe { crate::transport::hew_actor_ref_local(actor_ptr) };
-        crate::reactor::inject_accept_registration_for_test(
-            fd2,
-            listener2,
-            ref_inject2,
-            actor_ptr as usize,
-            slot2,
-        );
+        crate::reactor::inject_accept_registration_for_test(fd2, listener2, ref_inject2, slot2);
 
         // Step 1 (drain start): shutdown Phase 1 closes listener admission
         // before any idleness sample.

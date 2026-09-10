@@ -193,6 +193,54 @@ impl TrackedTestActor {
     }
 }
 
+/// A stub actor allocation deliberately NOT tracked in `LIVE_ACTORS` - the dead
+/// half of [`TrackedTestActor`].
+///
+/// A readiness source names an [`ActorIncarnation`], so a test that needs an
+/// edge to REFUSE a registrant still has to present an actor: the registration
+/// reads its identity off the ref it is given. This provides one - a real,
+/// distinct id and serial that no liveness resolution can ever find, so every
+/// gate reads it as gone. Its address is never dereferenced by the code under
+/// test, because no gate it can pass leads to a dereference.
+///
+/// It replaces the synthetic `usize` actor key the reactor's detach tests used
+/// to invent: identity now comes from the actor, so a test cannot name one that
+/// no actor has.
+pub(crate) struct UntrackedTestActor {
+    ptr: *mut HewActor,
+}
+
+impl UntrackedTestActor {
+    /// Allocate an untracked stub under a fresh identity.
+    pub(crate) fn new() -> Self {
+        let mut actor = stub_actor();
+        actor.id = next_stub_actor_id();
+        actor.spawn_serial = next_stub_spawn_serial();
+        // `Box::into_raw` for the same provenance reason as `TrackedTestActor`.
+        Self {
+            ptr: Box::into_raw(Box::new(actor)),
+        }
+    }
+
+    pub(crate) fn ptr(&self) -> *mut HewActor {
+        self.ptr
+    }
+
+    /// This stub's incarnation identity.
+    pub(crate) fn incarnation(&self) -> ActorIncarnation {
+        // SAFETY: the guard owns this allocation for its lifetime.
+        unsafe { ActorIncarnation::of(self.ptr) }
+    }
+}
+
+impl Drop for UntrackedTestActor {
+    fn drop(&mut self) {
+        // SAFETY: reconstitutes the `Box::into_raw` allocation, freed once. The
+        // stub was never tracked, so nothing else can hold a pin on it.
+        drop(unsafe { Box::from_raw(self.ptr) });
+    }
+}
+
 /// Which identity a reincarnated stub takes, and therefore which half of
 /// [`ActorIncarnation`] refuses the stale wake.
 #[derive(Clone, Copy)]

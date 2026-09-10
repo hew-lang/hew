@@ -3057,6 +3057,14 @@ and writing `machine.Thing` is then a parse error
 (``unexpected `.` in block``). The same is true of `actor`. Use the
 selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
 
+**Directory-form modules.** A directory whose entry file's stem matches
+the directory name (`greeting/greeting.hew`) is one module spanning every
+`.hew` file in that directory — its peer files see each other's
+declarations without any imports between them. A peer file has no import
+identity of its own; reach its declarations through the directory module
+(`import greeting;`), not the peer file directly. Imports between
+modules, directory-form or single-file, must not form a cycle.
+
 ### `pub const` — module-level constants
 
 ```hew

@@ -2458,8 +2458,7 @@ fn resolve_file_imports_internal(
                     // The shipped stdlib directory peers are alternate
                     // spellings of one compiler-owned module. Promote those
                     // imports to the entry source before loading the
-                    // completed source set. User package directories retain
-                    // their requested module identity and source surface.
+                    // completed source set.
                     if is_module_import
                         && hew_types::module_registry::canonical_stdlib_module_for_source(
                             &canonical,
@@ -2467,6 +2466,35 @@ fn resolve_file_imports_internal(
                         .is_some()
                     {
                         canonical_directory_module_entry_source(&canonical)
+                    } else if is_module_import
+                        && canonical_directory_module_entry_source(&canonical) != canonical
+                        && decl.path.len() >= 2
+                    {
+                        // A user package's peer file has no identity of its
+                        // own — spec 3.5.1 merges every peer into the
+                        // directory module's namespace. Importing it
+                        // directly would parse it standalone, isolated from
+                        // the sibling declarations it expects to share a
+                        // scope with, and any reference to one of those
+                        // siblings would surface downstream as a plain
+                        // "undefined function"/"undefined variable" with no
+                        // hint that the fix is to import the directory
+                        // module instead. Refuse here, before that isolated
+                        // module ever gets built.
+                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                        let message = format!(
+                            "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
+                        );
+                        return Err(match std::fs::read_to_string(source_file) {
+                            Ok(module_source) => FrontendFailure::coded_message_at(
+                                "E_PEER_IMPORT",
+                                message,
+                                items[*idx].1.clone(),
+                                &module_source,
+                                &source_file.display().to_string(),
+                            ),
+                            Err(_) => FrontendFailure::coded_message("E_PEER_IMPORT", message),
+                        });
                     } else {
                         canonical
                     }
@@ -3729,19 +3757,23 @@ mod tests {
         .expect("reimporting a shipped directory peer must not duplicate declarations");
     }
 
+    /// Reverses 10ec5abd6 (`fix(modules): limit peer promotion to shipped
+    /// stdlib`), which let a user package import one of its own directory
+    /// peers directly and kept it as an isolated module. That isolated
+    /// parse has no access to its sibling declarations — spec 3.5.1 merges
+    /// every peer into the directory module's one namespace — so any
+    /// reference to a sibling surfaced downstream as a bare "undefined
+    /// function"/"undefined variable" with no hint that the fix is to
+    /// import the directory module instead. Refusing the import outright,
+    /// naming the directory module to use, is the actionable diagnostic;
+    /// the isolated-parse path is no longer reachable.
     #[test]
-    fn user_directory_peer_import_keeps_requested_module_owner() {
+    fn user_directory_peer_import_is_refused() {
         let dir = tempfile::tempdir().expect("create module-owner fixture");
         let module_dir = dir.path().join("greeting");
         fs::create_dir(&module_dir).expect("create module directory");
         write_source(&module_dir, "greeting.hew", "pub fn entry() -> i64 { 1 }\n");
-        let peer = Path::new(&write_source(
-            &module_dir,
-            "dog.hew",
-            "pub fn bark() -> i64 { 2 }\n",
-        ))
-        .canonicalize()
-        .expect("canonical peer source");
+        write_source(&module_dir, "dog.hew", "pub fn bark() -> i64 { 2 }\n");
         let input = write_source(
             dir.path(),
             "main.hew",
@@ -3760,28 +3792,25 @@ mod tests {
             module_search_paths: None,
         };
 
-        let graph = build_module_graph(
+        let failure = build_module_graph(
             Path::new(&input),
             &mut program.items,
             program.module_doc.clone(),
             &mut ctx,
         )
-        .expect("user peer import should build a module graph");
-        let peer_id = hew_parser::module::ModuleId::new(
-            ["greeting", "dog"].into_iter().map(String::from).collect(),
-        );
-        let peer_module = graph
-            .modules
-            .get(&peer_id)
-            .expect("the requested user peer module should be present");
-        assert_eq!(peer_module.source_paths, vec![peer]);
+        .expect_err("importing a directory peer directly must be refused");
+
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+        assert_eq!(inner.code, "E_PEER_IMPORT");
         assert!(
-            !graph
-                .modules
-                .contains_key(&hew_parser::module::ModuleId::new(
-                    ["greeting"].into_iter().map(String::from).collect(),
-                )),
-            "a user peer import must not be promoted to its directory entry"
+            inner.message.contains("greeting"),
+            "message should name the directory module to import instead: {}",
+            inner.message
         );
     }
 

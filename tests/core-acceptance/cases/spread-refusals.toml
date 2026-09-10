@@ -1,6 +1,6 @@
 [[case]]
 id = "spread-refusals"
-intent = "A spread operand is a `Vec` of the literal's element type, a fixed-size array's length is part of its type so a run-time length cannot fill it, and every record field is initialized exactly once."
+intent = "A spread operand is a `Vec` of the literal's element type, a spread copies each element into the new vector so an element with no copy has no spread, a fixed-size array's length is part of its type so a run-time length cannot fill it, and every record field is initialized exactly once."
 source = "cases/spread-refusals.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -8,24 +8,30 @@ kind = "check"
 
 [[case.expected.diagnostics]]
 code = "Mismatch"
-line = 11
+line = 19
 column = 12
 message = "expected `i64`, found `string`"
 
 [[case.expected.diagnostics]]
 code = "Mismatch"
-line = 15
+line = 23
 column = 8
 message = "expected `Vec<i64>`, found `i64`"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 19
+line = 27
 column = 8
 message = "spread `..` is not allowed in a `[i64; 3]` literal"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 23
+line = 31
+column = 8
+message = "E_ELEMENT_NO_COPY: spreading a `Vec<Conn>` copies each element into the new vector"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 35
 column = 22
 message = "record literal names field `x` more than once"

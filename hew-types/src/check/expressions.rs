@@ -1330,6 +1330,27 @@ impl Checker {
         }
     }
 
+    /// A spread reads each of the operand's elements and pushes an independent
+    /// copy onto the new vector, so it admits exactly the element types the
+    /// value class gives a copy path — the same answer `xs[i]`, a range slice
+    /// and cloning iteration get.
+    fn refuse_uncopyable_spread_element(&mut self, elem_ty: &Ty, span: &Span) {
+        let Some(blocker) = self.element_clone_blocker(elem_ty) else {
+            return;
+        };
+        let resolved = self.subst.resolve(elem_ty).materialize_literal_defaults();
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "E_ELEMENT_NO_COPY: spreading a `Vec<{elem}>` copies each element into the \
+                 new vector, but {blocker} has no copy operation; use an owning removal such \
+                 as `pop()` to move the elements out instead",
+                elem = resolved.user_facing()
+            ),
+        );
+    }
+
     /// `Vec<elem_ty>` without the concrete-element validation `make_vec_type`
     /// performs: used to build an expectation for a spread operand, where the
     /// element type may still be an inference variable.
@@ -1347,6 +1368,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let mut elem_ty: Option<Ty> = None;
+        let mut spread_span: Option<Span> = None;
         for element in elements {
             let (operand, operand_span) = element.expr();
             match element {
@@ -1374,10 +1396,14 @@ impl Checker {
                     let want = Self::vec_of(current.clone());
                     self.check_against(operand, operand_span, &want);
                     elem_ty = Some(current);
+                    spread_span.get_or_insert_with(|| operand_span.clone());
                 }
             }
         }
         let elem_ty = elem_ty.unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+        if let Some(spread_span) = spread_span {
+            self.refuse_uncopyable_spread_element(&elem_ty, &spread_span);
+        }
         self.make_vec_type(elem_ty, span)
     }
 
@@ -3907,6 +3933,7 @@ impl Checker {
                     if element.is_spread() {
                         let want = Self::vec_of(elem_ty.clone());
                         self.check_against(operand, operand_span, &want);
+                        self.refuse_uncopyable_spread_element(&elem_ty, operand_span);
                     } else {
                         self.check_against(operand, operand_span, &elem_ty);
                         self.record_callable_value_transfer(operand, operand_span);

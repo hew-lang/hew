@@ -77,7 +77,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -671,7 +671,7 @@ ci-preflight: preflight
 .PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling compiler-measurements lint-rust lint-source
 ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
 	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
-	test-doc-examples doc-ratchet-selftest test-migrate-corpus \
+	test-doc-examples test-migrate-corpus \
 	o2-differential-selftest playground-verify
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
@@ -1420,27 +1420,19 @@ test-example-expectations-selftest:
 # Python only; no artifacts.
 
 # Check ```hew fenced blocks in docs/ and std/ against hew check.
-# Extracts each fence from the Markdown guides, docs/language/*.hew module
-# doc blocks, and every std/**/*.hew doc comment into .tmp/doc-fences/, runs
-# `hew check` on each, and applies the ratchet from
-# scripts/doc-test-expected-failures.txt so known-failing fences do not block
-# the gate while new failures always do.
 #
-# Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
-# never compiled — they describe aspirational or not-yet-implemented surfaces.
-# Fail-closed default: a fence is compiled unless explicitly skipped.
+# A transitional alias for the doc kind of the one acceptance runner. Each
+# fence in the guide, the spec, the docs/language modules and every
+# std/**/*.hew doc comment is a `kind = "doc"` case named by its own content,
+# and its known failures live in tests/core-acceptance/expected-failures.txt
+# with every other acceptance case. Skip-annotated fences
+# (<!-- doctest: skip --> or a preceding NYI callout) are never checked; the
+# default is fail-closed.
 #
 # Run `make test-doc-examples` after any docs/ or std/ change to confirm no
 # fence regressions were introduced.
 test-doc-examples: hew-native
-	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
-
-# Drive matching and mutated doc-failure sets through the production harness.
-doc-ratchet-selftest:
-	@scripts/tests/test_doc_ratchet_membership.sh
-	@scripts/tests/test_std_doc_fence_extraction.sh
-
-# Shell/python only; no artifacts.
+	cargo run -p xtask -- core-acceptance --suite acceptance --kind doc --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #
@@ -1982,7 +1974,6 @@ clean: ## Develop: remove generated build and test artifacts
 	cargo clean
 	rm -rf -- $(COV_DIR) \
 		"$(CURDIR)/.tmp/compile-out" \
-		"$(CURDIR)/.tmp/doc-fences" \
 		"$(CURDIR)/.tmp/core-matrix-regen" \
 		"$(CURDIR)/.tmp/forced-cancel-gate-out" \
 		"$(CURDIR)/.tmp/asan-fixture-out" \

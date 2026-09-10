@@ -1,0 +1,11 @@
+[[case]]
+id = "doc-language-modules"
+intent = "Every hew fence in the docs/language modules type-checks."
+source = "../../docs/language"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "doc"
+
+[case.fences]
+prefix = "lang"
+style = "module"

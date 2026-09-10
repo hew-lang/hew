@@ -1,0 +1,11 @@
+[[case]]
+id = "doc-spec"
+intent = "Every hew fence in the language specification type-checks, so the normative surface is the implemented surface."
+source = "../../docs/specs/HEW-SPEC-2026.md"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "doc"
+
+[case.fences]
+prefix = "spec"
+style = "markdown"

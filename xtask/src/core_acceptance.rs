@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,6 +21,11 @@ struct Manifest {
 struct Case {
     id: String,
     intent: String,
+    /// The `.hew` (or, for `kind = "doc"`, the documentation file or
+    /// directory) the case observes, resolved against
+    /// `tests/core-acceptance/`. A case may point outside that directory —
+    /// `../vertical-slice/accept/x.hew`, `../../examples/y.hew` — so a case
+    /// names an existing source instead of duplicating it.
     source: PathBuf,
     /// Flat input directory copied independently for each execution profile.
     fixtures: Option<PathBuf>,
@@ -26,24 +34,69 @@ struct Case {
     /// A case without a `kind` is `run`: compile and execute at O0 and O2.
     #[serde(default)]
     kind: CaseKind,
+    /// `kind = "run"` only: environment the compiled binary runs under. The
+    /// migrated vertical-slice fixtures carry `HEW_WORKERS` here because
+    /// their observed output depends on the scheduler's worker count.
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    /// `kind = "doc"` only: how fences are extracted from `source` and how
+    /// each fence's case id is spelled.
+    #[serde(default)]
+    fences: Option<FenceSource>,
+    #[serde(default)]
     expected: ExpectedOutcome,
 }
 
-/// What a case proves. `Run` (the default, and today's only behaviour)
-/// compiles and executes the source at O0 and O2 against an exact
-/// stdout/stderr/exit expectation. `Check` runs `hew check` once against the
-/// source and asserts the exact set of diagnostics it reports; it never
-/// builds or executes a binary. Safety (ASan/LSan) stays a suite selected by
-/// `suites`, not a case kind — a `check` case is never sanitizer-compiled.
+/// What a case proves.
+///
+/// - `Run` (the default) compiles and executes the source at O0 and O2
+///   against an exact stdout/stderr/exit expectation.
+/// - `Check` runs `hew check` once and asserts the *exact* set of
+///   diagnostics it reports: nothing extra, nothing missing.
+/// - `Reject` runs `hew check` once and asserts the compile was refused and
+///   that the named diagnostics are among the ones reported. This is the
+///   vertical-slice reject oracle: it pins the diagnostic that matters
+///   without freezing every unrelated cascade line around it.
+/// - `Doc` is a fence source, not a single observation: the runner extracts
+///   every ```hew fence from `source` and expands each into its own case,
+///   named by the fence's content, and `hew check`s it.
+///
+/// Safety (ASan/LSan) stays a suite selected by `suites`, not a case kind —
+/// only a `run` case is ever sanitizer-compiled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 enum CaseKind {
     #[default]
     Run,
     Check,
+    Reject,
+    Doc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+impl CaseKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Check => "check",
+            Self::Reject => "reject",
+            Self::Doc => "doc",
+        }
+    }
+
+    fn parse(text: &str) -> Result<Self> {
+        match text {
+            "run" => Ok(Self::Run),
+            "check" => Ok(Self::Check),
+            "reject" => Ok(Self::Reject),
+            "doc" => Ok(Self::Doc),
+            other => Err(format!(
+                "unknown core-acceptance kind {other:?}; expected run, check, reject or doc"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 struct ExpectedOutcome {
     /// `kind = "run"` only, and required there: the exact stdout the
     /// program must produce. `Option` (not a default-empty `String`) so a
@@ -110,8 +163,13 @@ struct ExpectedDiagnostic {
 struct Options {
     suite: String,
     cases: Vec<String>,
+    /// Empty means every kind. `--kind` exists so the transitional
+    /// `make test-doc-examples` alias can run the doc fences without also
+    /// compiling every native case.
+    kinds: Vec<CaseKind>,
     hew_bin: PathBuf,
     timeout_seconds: Option<u64>,
+    jobs: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,9 +214,13 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     }
     let options = parse_options(args)?;
     let root = workspace_root()?;
-    let manifest = load_manifest(&root)?;
+    let run_dir = tempfile::tempdir()
+        .map_err(|err| format!("create core acceptance temporary directory: {err}"))?;
+    let mut manifest = load_manifest(&root)?;
+    expand_doc_cases(&mut manifest, &root, run_dir.path())?;
     validate_manifest(&manifest, &root)?;
-    let selected = select_cases(&manifest, &options.suite, &options.cases)?;
+    let ratchet = load_expected_failures(&root, &manifest)?;
+    let selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
     let instrumentation_request = if options.suite == "safety" {
         if !cfg!(target_os = "linux") {
@@ -176,32 +238,183 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
         std::env::consts::ARCH,
     );
     println!(
-        "core-acceptance suite={} selected={} build=prebuilt",
+        "core-acceptance suite={} selected={} jobs={} build=prebuilt",
         options.suite,
-        selected.len()
+        selected.len(),
+        options.jobs,
     );
 
-    let run_dir = tempfile::tempdir()
-        .map_err(|err| format!("create core acceptance temporary directory: {err}"))?;
     let runner = Runner {
         options: &options,
         root: &root,
         run_dir: run_dir.path(),
         instrumentation_request,
     };
-    let mut failures = 0usize;
-    for case in selected {
-        if !runner.run_case(case) {
-            failures += 1;
+    let outcomes = run_selected(&runner, &selected, options.jobs);
+
+    for (_, _, log) in &outcomes {
+        print!("{log}");
+    }
+    let verdicts: Vec<(&str, bool)> = outcomes
+        .iter()
+        .map(|(case, passed, _)| (case.id.as_str(), *passed))
+        .collect();
+    let Ratchet {
+        failed,
+        known,
+        now_passing,
+    } = classify(&verdicts, &ratchet);
+
+    println!(
+        "core-acceptance results: {} passed, {} known-failing, {} failed",
+        outcomes.len() - failed.len() - known.len() - now_passing.len(),
+        known.len(),
+        failed.len(),
+    );
+    for id in &known {
+        println!("KNOWN {id}  # {}", ratchet[*id]);
+    }
+
+    if !now_passing.is_empty() {
+        println!("core-acceptance: these cases pass but are listed in {EXPECTED_FAILURES_PATH}:");
+        for id in &now_passing {
+            println!("  {id}");
+        }
+        println!(
+            "  Delete those rows. Ratchets only shrink; never restore a row to keep a run green."
+        );
+    }
+    if !failed.is_empty() {
+        println!("core-acceptance: unlisted failing cases:");
+        for id in &failed {
+            println!("  {id}");
         }
     }
 
-    if failures == 0 {
+    if failed.is_empty() && now_passing.is_empty() {
         println!("core-acceptance: PASS");
         Ok(())
     } else {
-        Err(format!("core-acceptance: {failures} case(s) failed"))
+        Err(format!(
+            "core-acceptance: {} unlisted failure(s), {} stale expected-failure row(s)",
+            failed.len(),
+            now_passing.len()
+        ))
     }
+}
+
+/// Run the selected cases across `jobs` threads and return their outcomes in
+/// manifest order. Each case buffers its own report so a parallel run reads
+/// exactly like a serial one.
+fn run_selected<'a>(
+    runner: &Runner<'_>,
+    selected: &[&'a Case],
+    jobs: usize,
+) -> Vec<(&'a Case, bool, String)> {
+    let next = AtomicUsize::new(0);
+    let mut slots: Vec<Option<(bool, String)>> = vec![None; selected.len()];
+    {
+        let slot_refs: Vec<&mut Option<(bool, String)>> = slots.iter_mut().collect();
+        let shared = std::sync::Mutex::new(slot_refs);
+        thread::scope(|scope| {
+            for _ in 0..jobs.min(selected.len().max(1)) {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(case) = selected.get(index) else {
+                        return;
+                    };
+                    let mut log = String::new();
+                    let passed = runner.run_case(case, &mut log);
+                    *shared.lock().expect("slot lock")[index] = Some((passed, log));
+                });
+            }
+        });
+    }
+    selected
+        .iter()
+        .zip(slots)
+        .map(|(case, slot)| {
+            let (passed, log) = slot.expect("every selected case reports an outcome");
+            (*case, passed, log)
+        })
+        .collect()
+}
+
+/// How a run's verdicts land against the expected-failure ledger.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Ratchet<'a> {
+    /// Failed with no row: red.
+    failed: Vec<&'a str>,
+    /// Failed with a row: reported, not red.
+    known: Vec<&'a str>,
+    /// Passed with a row: red, because a ratchet only shrinks and a stale row
+    /// hides the next real failure of that case.
+    now_passing: Vec<&'a str>,
+}
+
+fn classify<'a>(verdicts: &[(&'a str, bool)], ratchet: &BTreeMap<String, String>) -> Ratchet<'a> {
+    let mut out = Ratchet::default();
+    for (id, passed) in verdicts {
+        match (passed, ratchet.contains_key(*id)) {
+            (true, false) => {}
+            (true, true) => out.now_passing.push(id),
+            (false, true) => out.known.push(id),
+            (false, false) => out.failed.push(id),
+        }
+    }
+    out
+}
+
+const EXPECTED_FAILURES_PATH: &str = "tests/core-acceptance/expected-failures.txt";
+
+/// The one expected-failure ledger for the acceptance runner: a case id per
+/// row, with an issue or a one-line reason after `#`.
+///
+/// A row naming a case that no longer exists is refused here rather than
+/// silently ignored — a renamed or deleted case must take its row with it,
+/// otherwise the ledger accumulates rows that can never be retired.
+fn load_expected_failures(root: &Path, manifest: &Manifest) -> Result<BTreeMap<String, String>> {
+    let path = root.join(EXPECTED_FAILURES_PATH);
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(err) => return Err(format!("read {}: {err}", path.display())),
+    };
+    let ids: std::collections::BTreeSet<&str> =
+        manifest.cases.iter().map(|case| case.id.as_str()).collect();
+    let mut rows = BTreeMap::new();
+    for (number, line) in contents.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (id, reason) = match line.split_once('#') {
+            Some((id, reason)) => (id.trim(), reason.trim()),
+            None => (line, ""),
+        };
+        if reason.is_empty() {
+            return Err(format!(
+                "{}:{}: {id} has no reason; give an issue or a one-line reason after #",
+                path.display(),
+                number + 1
+            ));
+        }
+        if !ids.contains(id) {
+            return Err(format!(
+                "{}:{}: {id} is not a core-acceptance case; delete the row with the case",
+                path.display(),
+                number + 1
+            ));
+        }
+        if rows.insert(id.to_string(), reason.to_string()).is_some() {
+            return Err(format!(
+                "{}:{}: duplicate row for {id}",
+                path.display(),
+                number + 1
+            ));
+        }
+    }
+    Ok(rows)
 }
 
 fn parse_options(args: &[String]) -> Result<Options> {
@@ -210,6 +423,8 @@ fn parse_options(args: &[String]) -> Result<Options> {
     let mut cases = Vec::new();
     let mut hew_bin = root.join("target/debug/hew");
     let mut timeout_seconds = None;
+    let mut kinds = Vec::new();
+    let mut jobs = default_jobs();
     let mut index = 0;
 
     while index < args.len() {
@@ -223,6 +438,23 @@ fn parse_options(args: &[String]) -> Result<Options> {
             }
             "--hew-bin" => {
                 hew_bin = PathBuf::from(required_value(args, &mut index, "--hew-bin")?);
+            }
+            "--kind" => {
+                for name in required_value(args, &mut index, "--kind")?.split(',') {
+                    let kind = CaseKind::parse(name.trim())?;
+                    if !kinds.contains(&kind) {
+                        kinds.push(kind);
+                    }
+                }
+            }
+            "--jobs" => {
+                let value = required_value(args, &mut index, "--jobs")?;
+                jobs = value
+                    .parse()
+                    .map_err(|_| format!("--jobs must be a positive integer, got {value:?}"))?;
+                if jobs == 0 {
+                    return Err("--jobs must be positive".to_string());
+                }
             }
             "--timeout-seconds" => {
                 let value = required_value(args, &mut index, "--timeout-seconds")?;
@@ -252,9 +484,21 @@ fn parse_options(args: &[String]) -> Result<Options> {
     Ok(Options {
         suite,
         cases,
+        kinds,
         hew_bin,
         timeout_seconds,
+        jobs,
     })
+}
+
+/// One case at a time per core. Every case shells out to the compiler and
+/// then to the compiled program, so the runner is almost entirely waiting on
+/// child processes; the migrated suite is thousands of compile-and-run pairs
+/// and is unusable serially.
+fn default_jobs() -> usize {
+    thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
 }
 
 fn required_value<'a>(args: &'a [String], index: &mut usize, flag: &str) -> Result<&'a str> {
@@ -272,6 +516,8 @@ fn usage() -> String {
         "  --suite acceptance|safety              select a manifest suite (default: acceptance)",
         "  --case ID                             run one named manifest case",
         "  --hew-bin PATH                        use a prebuilt compiler binary",
+        "  --kind run,check,reject,doc           run only cases of these kinds",
+        "  --jobs N                              cases to run concurrently (default: cores)",
         "  --timeout-seconds N                   override each case timeout",
     ]
     .join("\n")
@@ -363,17 +609,19 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
                     ));
                 }
             }
-            CaseKind::Check => {
+            CaseKind::Check | CaseKind::Reject => {
                 if case.expected.diagnostics.is_empty() {
                     return Err(format!(
-                        "{} has kind check but declares no expected diagnostics",
-                        case.id
+                        "{} has kind {} but declares no expected diagnostics",
+                        case.id,
+                        case.kind.label()
                     ));
                 }
                 if case.suites.iter().any(|suite| suite == "safety") {
                     return Err(format!(
-                        "{} has kind check but belongs to the safety suite; safety stays a suite, not a kind",
-                        case.id
+                        "{} has kind {} but belongs to the safety suite; safety stays a suite, not a kind",
+                        case.id,
+                        case.kind.label()
                     ));
                 }
                 if case.expected.stdout.is_some()
@@ -381,13 +629,43 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
                     || !case.expected.stderr.is_empty()
                 {
                     return Err(format!(
-                        "{} has kind check but declares run-only expected stdout/stderr/exit",
+                        "{} has kind {} but declares run-only expected stdout/stderr/exit",
+                        case.id,
+                        case.kind.label()
+                    ));
+                }
+            }
+            CaseKind::Doc => {
+                // Every doc case in the manifest was expanded into one case
+                // per extracted fence before validation, so what survives
+                // here is a fence: it proves a clean `hew check`, and has no
+                // expectation of its own to declare.
+                if !case.expected.diagnostics.is_empty()
+                    || case.expected.stdout.is_some()
+                    || case.expected.exit.is_some()
+                    || !case.expected.stderr.is_empty()
+                {
+                    return Err(format!(
+                        "{} is a doc fence and must not declare an expectation; a fence proves a clean check",
+                        case.id
+                    ));
+                }
+                if case.suites.iter().any(|suite| suite == "safety") {
+                    return Err(format!(
+                        "{} has kind doc but belongs to the safety suite",
                         case.id
                     ));
                 }
             }
         }
-        let source = root.join("tests/core-acceptance").join(&case.source);
+        if !case.env.is_empty() && case.kind != CaseKind::Run {
+            return Err(format!(
+                "{} has kind {} but declares run-only environment",
+                case.id,
+                case.kind.label()
+            ));
+        }
+        let source = case_source(root, case);
         if !source.is_file() {
             return Err(format!(
                 "{} source does not exist: {}",
@@ -399,10 +677,20 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a case's `source` against `tests/core-acceptance/`. A migrated
+/// case points at the fixture where it already lives
+/// (`../vertical-slice/accept/x.hew`, `../../examples/y.hew`) instead of
+/// carrying a second copy of it, and an expanded doc fence carries an
+/// absolute path into the run directory — `Path::join` honours both.
+fn case_source(root: &Path, case: &Case) -> PathBuf {
+    root.join("tests/core-acceptance").join(&case.source)
+}
+
 fn select_cases<'a>(
     manifest: &'a Manifest,
     suite: &str,
     selected_ids: &[String],
+    kinds: &[CaseKind],
 ) -> Result<Vec<&'a Case>> {
     if !selected_ids.is_empty() {
         let mut selected = Vec::with_capacity(selected_ids.len());
@@ -425,9 +713,20 @@ fn select_cases<'a>(
         .cases
         .iter()
         .filter(|case| case.suites.iter().any(|member| member == suite))
+        .filter(|case| kinds.is_empty() || kinds.contains(&case.kind))
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        return Err(format!("core acceptance suite {suite:?} has no cases"));
+        return Err(format!(
+            "core acceptance suite {suite:?} has no cases{}",
+            if kinds.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " of kind {:?}",
+                    kinds.iter().map(|kind| kind.label()).collect::<Vec<_>>()
+                )
+            }
+        ));
     }
     Ok(selected)
 }
@@ -474,26 +773,32 @@ struct Runner<'a> {
 }
 
 impl Runner<'_> {
-    fn run_case(&self, case: &Case) -> bool {
+    fn run_case(&self, case: &Case, log: &mut String) -> bool {
         match case.kind {
             CaseKind::Run => {
                 let mut passed = true;
                 for profile in [Profile::O0, Profile::O2] {
-                    if !self.run_profile(case, profile) {
+                    if !self.run_profile(case, profile, log) {
                         passed = false;
                     }
                 }
                 passed
             }
-            CaseKind::Check => self.run_check(case),
+            CaseKind::Check | CaseKind::Reject => self.run_check(case, false, log),
+            CaseKind::Doc => self.run_check(case, true, log),
         }
     }
 
-    /// Run a `kind = "check"` case once: `hew check --format json` against
-    /// the source, no build and no execution. The process must exit 1 and
-    /// its stdout must be exactly the JSON diagnostic array the case expects.
-    fn run_check(&self, case: &Case) -> bool {
-        let source = self.root.join("tests/core-acceptance").join(&case.source);
+    /// Run one `hew check --format json` against the case's source: no
+    /// build, no execution.
+    ///
+    /// `expect_clean` is the doc-fence shape — the check must exit 0, which
+    /// is the whole observation a fence makes. Otherwise the check must be
+    /// refused (exit 1) and its diagnostics compared against the case:
+    /// `check` demands the exact set, `reject` demands the named ones are
+    /// present and says nothing about the rest.
+    fn run_check(&self, case: &Case, expect_clean: bool, log: &mut String) -> bool {
+        let source = case_source(self.root, case);
         let mut command = Command::new(&self.options.hew_bin);
         command
             .arg("check")
@@ -504,18 +809,22 @@ impl Runner<'_> {
         let result = match run_command(&mut command, self.timeout(case)) {
             Ok(result) => result,
             Err(err) => {
-                println!(
-                    "FAIL {} profile=check class=environment-failure detail={err}",
-                    case.id
+                let _ = writeln!(
+                    log,
+                    "FAIL {} profile={} class=environment-failure detail={err}",
+                    case.id,
+                    case.kind.label()
                 );
                 return false;
             }
         };
         match result {
             CommandResult::TimedOut { stdout, stderr } => {
-                println!(
-                    "FAIL {} profile=check class=timeout timeout_seconds={}{}{}",
+                let _ = writeln!(
+                    log,
+                    "FAIL {} profile={} class=timeout timeout_seconds={}{}{}",
                     case.id,
+                    case.kind.label(),
                     self.timeout(case).as_secs(),
                     summarise(&stdout),
                     summarise(&stderr)
@@ -528,57 +837,76 @@ impl Runner<'_> {
                 stderr,
             } => {
                 let Some(actual_exit) = status.code() else {
-                    println!(
-                        "FAIL {} profile=check class=compiler-crash{}{}",
+                    let _ = writeln!(
+                        log,
+                        "FAIL {} profile={} class=compiler-crash{}{}",
                         case.id,
+                        case.kind.label(),
                         summarise(&stdout),
                         summarise(&stderr)
                     );
                     return false;
                 };
-                // A rejecting `check` always exits 1: that is the contract
-                // this case kind verifies, not a per-case expectation.
-                if actual_exit != 1 {
-                    println!(
-                        "FAIL {} profile=check class=wrong-exit expected=1 actual={actual_exit}{}{}",
+                // A refused check always exits 1 and a clean one 0: that is
+                // the contract the kind verifies, not a per-case expectation.
+                let expected_exit = i32::from(!expect_clean);
+                if actual_exit != expected_exit {
+                    let _ = writeln!(
+                        log,
+                        "FAIL {} profile={} class=wrong-exit expected={expected_exit} actual={actual_exit}{}{}",
                         case.id,
+                        case.kind.label(),
                         summarise(&stdout),
                         summarise(&stderr)
                     );
                     return false;
                 }
-                let actual: Vec<ActualDiagnostic> = match serde_json::from_str(&stdout) {
-                    Ok(diagnostics) => diagnostics,
-                    Err(err) => {
-                        println!(
-                            "FAIL {} profile=check class=environment-failure detail=parse diagnostics json: {err}{}",
+                if !expect_clean {
+                    let actual: Vec<ActualDiagnostic> = match serde_json::from_str(&stdout) {
+                        Ok(diagnostics) => diagnostics,
+                        Err(err) => {
+                            let _ = writeln!(
+                                log,
+                                "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
+                                case.id,
+                                case.kind.label(),
+                                summarise(&stdout)
+                            );
+                            return false;
+                        }
+                    };
+                    let exact = case.kind == CaseKind::Check;
+                    if let Err(detail) =
+                        diagnostics_match(&case.expected.diagnostics, &actual, exact)
+                    {
+                        let _ = writeln!(
+                            log,
+                            "FAIL {} profile={} class=wrong-diagnostics detail={detail}{}",
                             case.id,
-                            summarise(&stdout)
+                            case.kind.label(),
+                            summarise(&stderr)
                         );
                         return false;
                     }
-                };
-                if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual) {
-                    println!(
-                        "FAIL {} profile=check class=wrong-diagnostics detail={detail}{}",
-                        case.id,
-                        summarise(&stderr)
-                    );
-                    return false;
                 }
-                println!("PASS {} profile=check exit={actual_exit}", case.id);
+                let _ = writeln!(
+                    log,
+                    "PASS {} profile={} exit={actual_exit}",
+                    case.id,
+                    case.kind.label()
+                );
                 true
             }
         }
     }
 
-    fn run_profile(&self, case: &Case, profile: Profile) -> bool {
-        let source = self.root.join("tests/core-acceptance").join(&case.source);
+    fn run_profile(&self, case: &Case, profile: Profile, log: &mut String) -> bool {
+        let source = case_source(self.root, case);
         let emit_dir = self.run_dir.join(&case.id).join(profile.label());
-        let Some(binary) = self.compile(case, profile, &source, &emit_dir) else {
+        let Some(binary) = self.compile(case, profile, &source, &emit_dir, log) else {
             return false;
         };
-        self.execute(case, profile, &binary)
+        self.execute(case, profile, &binary, log)
     }
 
     fn timeout(&self, case: &Case) -> Duration {
@@ -591,9 +919,11 @@ impl Runner<'_> {
         profile: Profile,
         source: &Path,
         emit_dir: &Path,
+        log: &mut String,
     ) -> Option<PathBuf> {
         if let Err(err) = fs::create_dir_all(emit_dir) {
-            println!(
+            let _ = writeln!(
+                log,
                 "FAIL {} profile={} class=environment-failure detail=create emit directory: {err}",
                 case.id,
                 profile.label()
@@ -618,7 +948,8 @@ impl Runner<'_> {
         let result = match run_command(&mut command, self.timeout(case)) {
             Ok(result) => result,
             Err(err) => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=environment-failure detail={err}",
                     case.id,
                     profile.label()
@@ -628,7 +959,8 @@ impl Runner<'_> {
         };
         match result {
             CommandResult::TimedOut { stdout, stderr } => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=timeout phase=compile timeout_seconds={}{}{}",
                     case.id,
                     profile.label(),
@@ -648,7 +980,8 @@ impl Runner<'_> {
                 } else {
                     "compiler-crash"
                 };
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class={} exit={:?}{}{}",
                     case.id,
                     profile.label(),
@@ -664,7 +997,8 @@ impl Runner<'_> {
                 if self.instrumentation_request == "address" {
                     if let Err(error) = verify_address_instrumentation(&binary.with_extension("ll"))
                     {
-                        println!(
+                        let _ = writeln!(
+                            log,
                             "FAIL {} profile={} class=environment-failure detail={error}",
                             case.id,
                             profile.label()
@@ -675,7 +1009,8 @@ impl Runner<'_> {
                 if binary.is_file() {
                     Some(binary)
                 } else {
-                    println!(
+                    let _ = writeln!(
+                    log,
                         "FAIL {} profile={} class=environment-failure detail=compiler returned success without {}",
                         case.id,
                         profile.label(),
@@ -719,12 +1054,16 @@ impl Runner<'_> {
         Ok(destination)
     }
 
-    fn execute(&self, case: &Case, profile: Profile, binary: &Path) -> bool {
+    fn execute(&self, case: &Case, profile: Profile, binary: &Path, log: &mut String) -> bool {
         let mut command = Command::new(binary);
+        for (name, value) in &case.env {
+            command.env(name, value);
+        }
         let working_dir = match self.prepare_inputs(case, profile) {
             Ok(directory) => directory,
             Err(err) => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=environment-failure detail={err}",
                     case.id,
                     profile.label()
@@ -739,7 +1078,8 @@ impl Runner<'_> {
         let executed = match run_command(&mut command, self.timeout(case)) {
             Ok(result) => result,
             Err(err) => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=environment-failure detail={err}",
                     case.id,
                     profile.label()
@@ -749,7 +1089,8 @@ impl Runner<'_> {
         };
         match executed {
             CommandResult::TimedOut { stdout, stderr } => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=timeout phase=run timeout_seconds={}{}{}",
                     case.id,
                     profile.label(),
@@ -764,7 +1105,8 @@ impl Runner<'_> {
                 stdout,
                 stderr,
             } if status.code().is_none() => {
-                println!(
+                let _ = writeln!(
+                    log,
                     "FAIL {} profile={} class=program-crash{}{}",
                     case.id,
                     profile.label(),
@@ -781,7 +1123,8 @@ impl Runner<'_> {
                 let actual_exit = status.code().expect("checked above");
                 let (expected_stdout, expected_exit) = case.expected.run_expectation();
                 if actual_exit != expected_exit {
-                    println!(
+                    let _ = writeln!(
+                        log,
                         "FAIL {} profile={} class=wrong-exit expected={} actual={}{}{}",
                         case.id,
                         profile.label(),
@@ -793,7 +1136,8 @@ impl Runner<'_> {
                     return false;
                 }
                 if stdout != expected_stdout || stderr != case.expected.stderr {
-                    println!(
+                    let _ = writeln!(
+                        log,
                         "FAIL {} profile={} class=wrong-output expected={:?} actual={:?}{}",
                         case.id,
                         profile.label(),
@@ -803,7 +1147,8 @@ impl Runner<'_> {
                     );
                     return false;
                 }
-                println!(
+                let _ = writeln!(
+                    log,
                     "PASS {} profile={} exit={} instrumentation-requested={}",
                     case.id,
                     profile.label(),
@@ -926,9 +1271,17 @@ struct ActualSpan {
 
 /// Match a case's expected diagnostics against what `hew check` actually
 /// reported, as a set keyed on `(code, line, column)` with an optional
-/// message substring per match. Extra or missing diagnostics both fail: a
-/// `check` case proves the exact diagnostic set, not a subset of it.
-fn diagnostics_match(expected: &[ExpectedDiagnostic], actual: &[ActualDiagnostic]) -> Result<()> {
+/// message substring per match.
+///
+/// A missing diagnostic always fails. `exact` decides what an unnamed extra
+/// diagnostic means: a `check` case proves the exact set and fails on one, a
+/// `reject` case proves only that the named diagnostics are reported and
+/// ignores the rest.
+fn diagnostics_match(
+    expected: &[ExpectedDiagnostic],
+    actual: &[ActualDiagnostic],
+    exact: bool,
+) -> Result<()> {
     let mut remaining: Vec<&ActualDiagnostic> = actual.iter().collect();
     let mut missing = Vec::new();
     for want in expected {
@@ -968,8 +1321,11 @@ fn diagnostics_match(expected: &[ExpectedDiagnostic], actual: &[ActualDiagnostic
             )),
         }
     }
-    if missing.is_empty() && remaining.is_empty() {
+    if missing.is_empty() && (!exact || remaining.is_empty()) {
         return Ok(());
+    }
+    if !exact {
+        return Err(format!("missing={missing:?}"));
     }
     let extra: Vec<String> = remaining
         .iter()
@@ -1002,6 +1358,341 @@ fn summarise(text: &str) -> String {
         let truncated = &text[..end];
         format!(" output={truncated:?}")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Documentation fences
+// ---------------------------------------------------------------------------
+
+/// How a `kind = "doc"` case's fences are found and named.
+///
+/// Fence identity is the fence's own content, not its position in the file:
+/// a `<prefix>-<cksum>` id is unaffected by an unrelated fence inserted or
+/// removed earlier in the same document, and a fence whose text genuinely
+/// changes gets a new id and shows up as an ordinary new case. That is the
+/// same identity the doc-fence ratchet has always used, so an expected-failure
+/// row survives this migration verbatim.
+#[derive(Debug, Clone, Deserialize)]
+struct FenceSource {
+    prefix: String,
+    style: FenceStyle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FenceStyle {
+    /// One Markdown file. Fences open with ```hew.
+    Markdown,
+    /// A directory of `.hew` documentation modules. Only `//!` lines carry
+    /// prose; fences open with ```hew. Ids are `<prefix>-<stem>-<cksum>`.
+    Module,
+    /// The standard library, walked recursively. Both `//!` and `///` carry
+    /// prose, fences open with a bare ``` (hew is the only language std
+    /// writes), and an explicitly tagged fence is skipped. Ids are
+    /// `<prefix>-<slug>-<cksum>`.
+    Std,
+}
+
+/// Substrings that, in the five lines before a fence, mark it as documenting
+/// a surface that is not implemented yet. Spec ahead of implementation is not
+/// drift when it is declared.
+const FENCE_SKIP_MARKERS: [&str; 3] = ["Not yet implemented", "doctest: skip", "doctest:skip"];
+
+/// Replace every `kind = "doc"` case with one case per extracted fence.
+///
+/// A doc case in the manifest is a fence *source*, not an observation. After
+/// this pass every case in the manifest is a single observation with its own
+/// id, so selection, the expected-failure ledger and the reporting all see
+/// one flat key space.
+fn expand_doc_cases(manifest: &mut Manifest, root: &Path, run_dir: &Path) -> Result<()> {
+    if !manifest.cases.iter().any(|case| case.kind == CaseKind::Doc) {
+        return Ok(());
+    }
+    let fence_dir = run_dir.join("doc-fences");
+    fs::create_dir_all(&fence_dir).map_err(|err| format!("create doc fence directory: {err}"))?;
+    let mut minted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut expanded = Vec::with_capacity(manifest.cases.len());
+
+    for case in std::mem::take(&mut manifest.cases) {
+        if case.kind != CaseKind::Doc {
+            expanded.push(case);
+            continue;
+        }
+        let Some(fences) = case.fences.clone() else {
+            return Err(format!(
+                "{} has kind doc but declares no [case.fences]",
+                case.id
+            ));
+        };
+        let source = root.join("tests/core-acceptance").join(&case.source);
+        let mut found = 0usize;
+        for (path, prefix) in fence_documents(&source, &fences)? {
+            let text = fs::read_to_string(&path)
+                .map_err(|err| format!("read doc source {}: {err}", path.display()))?;
+            let extracted = match fences.style {
+                FenceStyle::Std => extract_std_fences(&text),
+                FenceStyle::Markdown => extract_fences(&text, false),
+                FenceStyle::Module => extract_fences(&text, true),
+            };
+            for (content, skip) in extracted {
+                found += 1;
+                if skip {
+                    continue;
+                }
+                let id = mint_fence_id(&prefix, &content, &mut minted);
+                let fence_path = fence_dir.join(format!("{id}.hew"));
+                fs::write(&fence_path, &content)
+                    .map_err(|err| format!("write fence {}: {err}", fence_path.display()))?;
+                expanded.push(Case {
+                    id,
+                    intent: format!(
+                        "documentation fence from {}: the surface it teaches must type-check",
+                        path.strip_prefix(root).unwrap_or(&path).display()
+                    ),
+                    source: fence_path,
+                    fixtures: None,
+                    suites: case.suites.clone(),
+                    timeout_seconds: case.timeout_seconds,
+                    kind: CaseKind::Doc,
+                    env: BTreeMap::new(),
+                    fences: None,
+                    expected: ExpectedOutcome::default(),
+                });
+            }
+        }
+        // A source that yields nothing (a renamed doc, a changed fence
+        // marker) would make the ledger trivially agree with an empty run.
+        if found == 0 {
+            return Err(format!(
+                "{} extracted no fences from {}",
+                case.id,
+                source.display()
+            ));
+        }
+    }
+    manifest.cases = expanded;
+    Ok(())
+}
+
+/// The `(file, id prefix)` pairs one doc case covers: a single file for
+/// `markdown`, every module in a directory for `module`, the whole tree for
+/// `std`.
+fn fence_documents(source: &Path, fences: &FenceSource) -> Result<Vec<(PathBuf, String)>> {
+    if fences.style == FenceStyle::Markdown {
+        if !source.is_file() {
+            return Err(format!("doc source is not a file: {}", source.display()));
+        }
+        return Ok(vec![(source.to_path_buf(), fences.prefix.clone())]);
+    }
+    if !source.is_dir() {
+        return Err(format!(
+            "doc source is not a directory: {}",
+            source.display()
+        ));
+    }
+    let recursive = fences.style == FenceStyle::Std;
+    let mut files = Vec::new();
+    collect_hew_files(source, recursive, &mut files)?;
+    files.sort();
+    let documents = files
+        .into_iter()
+        .map(|path| {
+            let slug = match fences.style {
+                FenceStyle::Std => path
+                    .strip_prefix(source)
+                    .unwrap_or(&path)
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "-"),
+                _ => path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            let prefix = format!("{}-{slug}", fences.prefix);
+            (path, prefix)
+        })
+        .collect();
+    Ok(documents)
+}
+
+fn collect_hew_files(directory: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in
+        fs::read_dir(directory).map_err(|err| format!("read {}: {err}", directory.display()))?
+    {
+        let entry = entry.map_err(|err| format!("read directory entry: {err}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            if recursive && path.file_name().is_some_and(|name| name != "target") {
+                collect_hew_files(&path, recursive, out)?;
+            }
+        } else if path.extension().is_some_and(|ext| ext == "hew") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// `<prefix>-<cksum>`, with a numeric suffix when two fences in the same
+/// document are byte-identical, so both are still checked independently.
+fn mint_fence_id(
+    prefix: &str,
+    content: &str,
+    minted: &mut std::collections::BTreeSet<String>,
+) -> String {
+    let base = format!("{prefix}-{}", posix_cksum(content.as_bytes()));
+    let mut candidate = base.clone();
+    let mut suffix = 1u32;
+    while minted.contains(&candidate) {
+        suffix += 1;
+        candidate = format!("{base}-{suffix}");
+    }
+    minted.insert(candidate.clone());
+    candidate
+}
+
+/// The POSIX `cksum` CRC. The doc-fence ratchet's ids were minted by
+/// `cksum`, so the runner must produce the same number or every existing
+/// expected-failure row would be orphaned by this migration.
+fn posix_cksum(data: &[u8]) -> u32 {
+    fn step(crc: u32, byte: u8) -> u32 {
+        let mut crc = crc ^ (u32::from(byte) << 24);
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+        crc
+    }
+    let mut crc = 0u32;
+    for byte in data {
+        crc = step(crc, *byte);
+    }
+    let mut length = data.len();
+    while length > 0 {
+        crc = step(crc, (length & 0xFF) as u8);
+        length >>= 8;
+    }
+    !crc
+}
+
+/// Split a document the way `while IFS= read -r line` does: on newlines, with
+/// a final unterminated line dropped. Carriage returns stay in the line so a
+/// fence's content — and therefore its id — is byte-identical to what the
+/// shell extractor produced.
+fn document_lines(text: &str) -> Vec<&str> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    lines.pop();
+    lines
+}
+
+fn without_carriage_return(line: &str) -> &str {
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+fn fence_is_skipped(lines: &[String], fence_index: usize) -> bool {
+    let start = fence_index.saturating_sub(5);
+    lines[start..fence_index].iter().any(|line| {
+        FENCE_SKIP_MARKERS
+            .iter()
+            .any(|marker| line.contains(marker))
+    })
+}
+
+/// Extract ```hew fences from a Markdown document, or from the `//!` prose of
+/// a `.hew` documentation module when `strip_module_prefix` is set.
+fn extract_fences(text: &str, strip_module_prefix: bool) -> Vec<(String, bool)> {
+    let lines: Vec<String> = document_lines(text)
+        .into_iter()
+        .map(|line| {
+            if !strip_module_prefix {
+                return line.to_string();
+            }
+            match line.strip_prefix("//!") {
+                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest).to_string(),
+                None => String::new(),
+            }
+        })
+        .collect();
+
+    let mut fences = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if without_carriage_return(&lines[index]) != "```hew" {
+            index += 1;
+            continue;
+        }
+        let skip = fence_is_skipped(&lines, index);
+        index += 1;
+        let mut content = String::new();
+        while index < lines.len() {
+            if without_carriage_return(&lines[index]) == "```" {
+                index += 1;
+                break;
+            }
+            content.push_str(&lines[index]);
+            content.push('\n');
+            index += 1;
+        }
+        fences.push((content, skip));
+    }
+    fences
+}
+
+/// The standard library's fences: `///` and `//!` both carry prose, an
+/// untagged ``` opens an implicit hew fence, and an explicitly tagged fence
+/// (```text) is stepped over rather than mistaken for one.
+fn extract_std_fences(text: &str) -> Vec<(String, bool)> {
+    let lines: Vec<String> = document_lines(text)
+        .into_iter()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            for marker in ["//!", "///"] {
+                if let Some(rest) = trimmed.strip_prefix(marker) {
+                    return rest.strip_prefix(' ').unwrap_or(rest).to_string();
+                }
+            }
+            String::new()
+        })
+        .collect();
+
+    let mut fences = Vec::new();
+    let mut index = 0;
+    let mut inside_other_language = false;
+    while index < lines.len() {
+        let stripped = without_carriage_return(&lines[index]);
+        if inside_other_language {
+            if stripped == "```" {
+                inside_other_language = false;
+            }
+            index += 1;
+            continue;
+        }
+        if stripped != "```" && stripped != "```hew" {
+            if stripped.starts_with("```") {
+                inside_other_language = true;
+            }
+            index += 1;
+            continue;
+        }
+        let skip = fence_is_skipped(&lines, index);
+        index += 1;
+        let mut content = String::new();
+        while index < lines.len() {
+            if without_carriage_return(&lines[index]) == "```" {
+                index += 1;
+                break;
+            }
+            content.push_str(&lines[index]);
+            content.push('\n');
+            index += 1;
+        }
+        fences.push((content, skip));
+    }
+    fences
 }
 
 #[cfg(test)]
@@ -1042,6 +1733,7 @@ mod tests {
             &manifest,
             "acceptance",
             &["safety-case".to_string(), "acceptance-case".to_string()],
+            &[],
         )
         .expect("both cases belong to the acceptance suite");
         let selected_ids: Vec<&str> = selected.iter().map(|case| case.id.as_str()).collect();
@@ -1050,7 +1742,7 @@ mod tests {
 
     #[test]
     fn selected_case_must_exist() {
-        let error = select_cases(&manifest(), "acceptance", &["missing".to_string()])
+        let error = select_cases(&manifest(), "acceptance", &["missing".to_string()], &[])
             .expect_err("unknown focused case must fail rather than silently running a suite");
         assert!(error.contains("unknown core acceptance case"));
     }
@@ -1067,6 +1759,8 @@ mod tests {
         let options = Options {
             suite: "acceptance".into(),
             cases: Vec::new(),
+            kinds: Vec::new(),
+            jobs: 1,
             hew_bin: directory.path().join("hew"),
             timeout_seconds: None,
         };
@@ -1120,6 +1814,8 @@ mod tests {
         let options = Options {
             suite: "safety".to_string(),
             cases: Vec::new(),
+            kinds: Vec::new(),
+            jobs: 1,
             hew_bin: binary.clone(),
             timeout_seconds: None,
         };
@@ -1129,7 +1825,7 @@ mod tests {
             run_dir: directory.path(),
             instrumentation_request: "address",
         };
-        assert!(!runner.execute(&case, Profile::O0, &binary));
+        assert!(!runner.execute(&case, Profile::O0, &binary, &mut String::new()));
     }
 
     #[test]
@@ -1148,17 +1844,20 @@ mod tests {
         )
         .unwrap();
         for suite in ["acceptance", "safety"] {
-            assert_eq!(select_cases(&manifest, suite, &[]).unwrap()[0].id, "owned");
+            assert_eq!(
+                select_cases(&manifest, suite, &[], &[]).unwrap()[0].id,
+                "owned"
+            );
         }
     }
 
     #[test]
     fn focused_case_cannot_replace_the_requested_suite() {
         let manifest = manifest();
-        let error = select_cases(&manifest, "safety", &["acceptance-case".to_string()])
+        let error = select_cases(&manifest, "safety", &["acceptance-case".to_string()], &[])
             .expect_err("ordinary execution cannot substitute for safety validation");
         assert!(error.contains("does not belong to suite"));
-        let selected = select_cases(&manifest, "safety", &["safety-case".to_string()])
+        let selected = select_cases(&manifest, "safety", &["safety-case".to_string()], &[])
             .expect("a focused case within its suite remains selectable");
         assert_eq!(selected[0].id, "safety-case");
     }
@@ -1218,6 +1917,141 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Expectation kind: `doc`, and the expected-failure ledger
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn fence_ids_use_the_posix_cksum_the_ratchet_was_minted_with() {
+        // `printf '%s' <content> | cksum` — the ids in every existing
+        // expected-failure row were minted this way, so a different checksum
+        // would orphan the whole ledger.
+        assert_eq!(posix_cksum(b""), 4_294_967_295);
+        assert_eq!(posix_cksum(b"fn main() {}\n"), 3_257_837_729);
+        assert_eq!(posix_cksum(b"let x = 1\n"), 2_119_607_129);
+    }
+
+    #[test]
+    fn markdown_fences_carry_content_and_honour_a_skip_marker() {
+        let document = concat!(
+            "prose\n",
+            "```hew\n",
+            "fn main() {}\n",
+            "```\n",
+            "<!-- doctest: skip -->\n",
+            "```hew\n",
+            "aspirational\n",
+            "```\n",
+        );
+        let fences = extract_fences(document, false);
+        assert_eq!(
+            fences,
+            vec![
+                ("fn main() {}\n".to_string(), false),
+                ("aspirational\n".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn module_fences_read_only_the_module_doc_prose() {
+        let module = concat!(
+            "//! prose\n",
+            "//! ```hew\n",
+            "//! fn main() {}\n",
+            "//! ```\n",
+            "fn actual_code() {}\n",
+            "```hew\n",
+            "not a doc fence\n",
+            "```\n",
+        );
+        assert_eq!(
+            extract_fences(module, true),
+            vec![("fn main() {}\n".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn std_fences_are_implicit_hew_and_step_over_a_tagged_block() {
+        let module = concat!(
+            "//! module prose\n",
+            "    /// ```text\n",
+            "    /// not hew at all\n",
+            "    /// ```\n",
+            "    /// ```\n",
+            "    /// let value = 1\n",
+            "    /// ```\n",
+        );
+        assert_eq!(
+            extract_std_fences(module),
+            vec![("let value = 1\n".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn identical_fences_in_one_document_are_still_checked_independently() {
+        let mut minted = std::collections::BTreeSet::new();
+        let first = mint_fence_id("guide", "same\n", &mut minted);
+        let second = mint_fence_id("guide", "same\n", &mut minted);
+        assert_ne!(first, second);
+        assert_eq!(second, format!("{first}-2"));
+    }
+
+    fn ledger(rows: &[(&str, &str)]) -> BTreeMap<String, String> {
+        rows.iter()
+            .map(|(id, reason)| (id.to_string(), reason.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_listed_case_that_now_passes_is_red_because_ratchets_only_shrink() {
+        let ledger = ledger(&[("listed", "issue #1")]);
+        let verdicts = [("listed", true), ("unlisted", true)];
+        let result = classify(&verdicts, &ledger);
+        assert_eq!(result.now_passing, ["listed"]);
+        assert!(result.failed.is_empty() && result.known.is_empty());
+    }
+
+    #[test]
+    fn an_unlisted_failure_is_red_and_a_listed_one_is_known() {
+        let ledger = ledger(&[("listed", "issue #1")]);
+        let verdicts = [("listed", false), ("unlisted", false)];
+        let result = classify(&verdicts, &ledger);
+        assert_eq!(result.failed, ["unlisted"]);
+        assert_eq!(result.known, ["listed"]);
+        assert!(result.now_passing.is_empty());
+    }
+
+    fn ledger_root(body: &str) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("tests/core-acceptance")).unwrap();
+        fs::write(directory.path().join(EXPECTED_FAILURES_PATH), body).unwrap();
+        directory
+    }
+
+    #[test]
+    fn a_row_naming_no_case_is_refused_rather_than_ignored() {
+        let directory = ledger_root("ghost  # issue #1\n");
+        let error = load_expected_failures(directory.path(), &manifest())
+            .expect_err("a row for a case that no longer exists must be refused");
+        assert!(error.contains("is not a core-acceptance case"), "{error}");
+    }
+
+    #[test]
+    fn a_row_without_a_reason_is_refused() {
+        let directory = ledger_root("acceptance-case\n");
+        let error = load_expected_failures(directory.path(), &manifest())
+            .expect_err("a row with no reason must be refused");
+        assert!(error.contains("has no reason"), "{error}");
+    }
+
+    #[test]
+    fn a_ledger_row_is_read_with_its_reason() {
+        let directory = ledger_root("# a comment\n\nacceptance-case  # issue #3001\n");
+        let rows = load_expected_failures(directory.path(), &manifest()).unwrap();
+        assert_eq!(rows["acceptance-case"], "issue #3001");
+    }
+
+    // -----------------------------------------------------------------
     // Expectation kind: `check`
     // -----------------------------------------------------------------
 
@@ -1235,6 +2069,8 @@ mod tests {
             suites: suites.iter().map(ToString::to_string).collect(),
             timeout_seconds: 1,
             kind,
+            env: BTreeMap::new(),
+            fences: None,
             expected: ExpectedOutcome {
                 stdout: None,
                 stderr: String::new(),
@@ -1349,7 +2185,7 @@ mod tests {
             message: Some("needs at least one arm".to_string()),
             file: Some("probe.hew".to_string()),
         }];
-        assert!(diagnostics_match(&expected, &actual).is_ok());
+        assert!(diagnostics_match(&expected, &actual, true).is_ok());
     }
 
     #[test]
@@ -1370,7 +2206,7 @@ mod tests {
             message: None,
             file: None,
         }];
-        let error = diagnostics_match(&wrong_line, &actual)
+        let error = diagnostics_match(&wrong_line, &actual, true)
             .expect_err("naming the wrong line must fail rather than silently pass");
         assert!(error.contains("missing"));
         assert!(error.contains("extra"));
@@ -1396,7 +2232,7 @@ mod tests {
             message: None,
             file: Some("cases/token.hew".to_string()),
         }];
-        let error = diagnostics_match(&expected, &actual)
+        let error = diagnostics_match(&expected, &actual, true)
             .expect_err("a diagnostic reported against another file must fail the case");
         assert!(error.contains("cases/token.hew"));
     }
@@ -1412,7 +2248,7 @@ mod tests {
             message: "unused variable seen".to_string(),
             file: None,
         }];
-        let error = diagnostics_match(&[], &actual)
+        let error = diagnostics_match(&[], &actual, true)
             .expect_err("an undeclared extra diagnostic must fail the case");
         assert!(error.contains("extra"));
     }
@@ -1441,6 +2277,8 @@ mod tests {
         let options = Options {
             suite: "acceptance".to_string(),
             cases: Vec::new(),
+            kinds: Vec::new(),
+            jobs: 1,
             hew_bin: fake_hew,
             timeout_seconds: None,
         };
@@ -1464,7 +2302,7 @@ mod tests {
             "cases/probe.hew",
         );
         assert!(
-            runner.run_check(&correct_case),
+            runner.run_check(&correct_case, false, &mut String::new()),
             "a check case whose expectation matches the real diagnostic position must pass"
         );
 
@@ -1481,7 +2319,7 @@ mod tests {
             "cases/probe.hew",
         );
         assert!(
-            !runner.run_check(&wrong_position_case),
+            !runner.run_check(&wrong_position_case, false, &mut String::new()),
             "a check case naming the wrong position must fail the runner, not pass it"
         );
     }

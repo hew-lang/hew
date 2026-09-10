@@ -1,0 +1,11 @@
+[[case]]
+id = "doc-guide"
+intent = "Every hew fence in the language guide type-checks, so the taught language is the implemented language."
+source = "../../docs/hew-language-guide.md"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "doc"
+
+[case.fences]
+prefix = "guide"
+style = "markdown"

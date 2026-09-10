@@ -116,11 +116,16 @@ pub enum RuntimeValueKind {
     ActorRequestAdmission,
     Unit,
     Bool,
+    I8,
+    I16,
     U8,
+    U16,
     U32,
     I32,
     I64,
     U64,
+    Isize,
+    Usize,
     F64,
     /// A Unicode scalar. The C ABI carries it as `i32`.
     Char,
@@ -171,11 +176,16 @@ impl RuntimeValueKind {
             (self, ty),
             (Self::Unit, ResolvedTy::Unit)
                 | (Self::Bool, ResolvedTy::Bool)
+                | (Self::I8, ResolvedTy::I8)
+                | (Self::I16, ResolvedTy::I16)
                 | (Self::U8, ResolvedTy::U8)
+                | (Self::U16, ResolvedTy::U16)
                 | (Self::U32, ResolvedTy::U32)
                 | (Self::I32, ResolvedTy::I32)
                 | (Self::I64, ResolvedTy::I64)
                 | (Self::U64, ResolvedTy::U64)
+                | (Self::Isize, ResolvedTy::Isize)
+                | (Self::Usize, ResolvedTy::Usize)
                 | (Self::F64, ResolvedTy::F64)
                 | (Self::Char, ResolvedTy::Char)
                 | (Self::String, ResolvedTy::String)
@@ -217,11 +227,6 @@ impl RuntimeValueKind {
             }
             Self::Unit => ResolvedTy::Unit,
             Self::Bool => ResolvedTy::Bool,
-            Self::U8 => ResolvedTy::U8,
-            Self::U32 => ResolvedTy::U32,
-            Self::I32 => ResolvedTy::I32,
-            Self::I64 => ResolvedTy::I64,
-            Self::U64 => ResolvedTy::U64,
             Self::F64 => ResolvedTy::F64,
             Self::Char => ResolvedTy::Char,
             Self::String => ResolvedTy::String,
@@ -285,7 +290,30 @@ impl RuntimeValueKind {
                     .map(|ty| ty.resolve(receiver))
                     .collect::<Option<Vec<_>>>()?,
             ),
+            // Only the ten integer widths reach this catch-all; every other
+            // variant is matched above. See `resolve_integer_width`.
+            kind => resolve_integer_width(kind),
         })
+    }
+}
+
+/// Resolve one of the ten integer-width `RuntimeValueKind` variants to its
+/// `ResolvedTy`. Split out of `resolve` to keep that match under clippy's
+/// line limit; the only caller is `resolve`'s catch-all arm, reached only
+/// after every other variant has already matched.
+fn resolve_integer_width(kind: RuntimeValueKind) -> ResolvedTy {
+    match kind {
+        RuntimeValueKind::I8 => ResolvedTy::I8,
+        RuntimeValueKind::I16 => ResolvedTy::I16,
+        RuntimeValueKind::U8 => ResolvedTy::U8,
+        RuntimeValueKind::U16 => ResolvedTy::U16,
+        RuntimeValueKind::U32 => ResolvedTy::U32,
+        RuntimeValueKind::I32 => ResolvedTy::I32,
+        RuntimeValueKind::I64 => ResolvedTy::I64,
+        RuntimeValueKind::U64 => ResolvedTy::U64,
+        RuntimeValueKind::Isize => ResolvedTy::Isize,
+        RuntimeValueKind::Usize => ResolvedTy::Usize,
+        _ => unreachable!("resolve_integer_width is only called with an integer-width kind"),
     }
 }
 
@@ -1234,17 +1262,26 @@ pub enum IntBitOp {
     RotateRight,
 }
 
-/// Receiver width for [`IntBitOp`] methods. Scoped to the widths
-/// `RuntimeValueKind` already carries (`I32`/`I64`/`U32`/`U64`); `i8`/`i16`/
-/// `u8`/`u16`/`isize`/`usize` are not yet first-class runtime-call kinds and
-/// are left for a follow-up (same table shape, more rows).
+/// Receiver width for [`IntBitOp`]/[`IntArithKind`] methods, covering every
+/// integer width Hew has. Narrow widths (`I8`/`I16`/`U8`/`U16`) and the
+/// pointer-sized widths (`Isize`/`Usize`) share codegen's C ABI convention
+/// for `RuntimeValueKind`: they carry their own LLVM width end to end (no
+/// widening at a call boundary), so codegen picks the LLVM intrinsic at the
+/// value's own bit width (`llvm.ctpop.i8`, `llvm.sadd.sat.i16`, …) and needs
+/// no runtime symbol per width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum IntMethodWidth {
+    I8,
+    I16,
     #[default]
     I32,
     I64,
+    Isize,
+    U8,
+    U16,
     U32,
     U64,
+    Usize,
 }
 
 /// `f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).
@@ -1260,11 +1297,11 @@ pub enum FloatMethodOp {
     IsSignNegative,
 }
 
-/// Non-trapping integer arithmetic: `x.wrapping_add(y)` and its siblings.
-/// Flat (not a cartesian `IntArithOp × IntArithMode`) because saturating
-/// multiplication has no LLVM intrinsic — a fake row for it would violate
-/// the closed-set guarantee that every representable value is a real
-/// operation. `saturating_mul` is refused by the checker instead.
+/// Non-trapping and overflow-checked integer arithmetic: `x.wrapping_add(y)`
+/// and its siblings. `SaturatingMul` has no direct LLVM saturating-multiply
+/// intrinsic; codegen builds it from `llvm.{s,u}mul.with.overflow` plus a
+/// select onto the saturated bound. `Checked*` results are `Option<T>`
+/// through the ordinary `VariantResult` physical form (see the row table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum IntArithKind {
     #[default]
@@ -1273,6 +1310,10 @@ pub enum IntArithKind {
     WrappingMul,
     SaturatingAdd,
     SaturatingSub,
+    SaturatingMul,
+    CheckedAdd,
+    CheckedSub,
+    CheckedMul,
 }
 
 // =============================================================================
@@ -4357,6 +4398,36 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "count_ones.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "count_ones.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "count_ones.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4377,6 +4448,51 @@ impl RuntimeCallFamily {
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "count_ones.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "count_ones.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "count_ones.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::U32),
@@ -4417,6 +4533,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::CountOnes, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "count_ones.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "count_zeros.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "count_zeros.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "count_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4437,6 +4598,51 @@ impl RuntimeCallFamily {
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "count_zeros.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "count_zeros.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "count_zeros.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::U32),
@@ -4477,6 +4683,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::CountZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "count_zeros.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "leading_zeros.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "leading_zeros.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "leading_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4497,6 +4748,51 @@ impl RuntimeCallFamily {
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "leading_zeros.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "leading_zeros.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "leading_zeros.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::U32),
@@ -4537,6 +4833,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::LeadingZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "leading_zeros.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "trailing_zeros.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "trailing_zeros.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "trailing_zeros.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4557,6 +4898,51 @@ impl RuntimeCallFamily {
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::I64,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "trailing_zeros.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "trailing_zeros.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "trailing_zeros.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::U32),
@@ -4597,6 +4983,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::TrailingZeros, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "trailing_zeros.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "swap_bytes.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "swap_bytes.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "swap_bytes.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4620,6 +5051,51 @@ impl RuntimeCallFamily {
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "swap_bytes.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "swap_bytes.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "swap_bytes.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -4657,6 +5133,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::SwapBytes, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "swap_bytes.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "reverse_bits.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "reverse_bits.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::I16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::I16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::I32) => RuntimeOpRow {
                 symbol: "reverse_bits.i32",
                 contract: Some(RuntimeSemanticContract {
@@ -4687,6 +5208,51 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "reverse_bits.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Isize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "reverse_bits.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U8,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "reverse_bits.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::U16,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "reverse_bits.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -4710,6 +5276,63 @@ impl RuntimeCallFamily {
                         effect: E::Copy,
                     }],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::ReverseBits, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "reverse_bits.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Usize,
+                        effect: E::Copy,
+                    }],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "rotate_left.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "rotate_left.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -4759,6 +5382,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "rotate_left.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "rotate_left.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "rotate_left.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "rotate_left.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -4794,6 +5480,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateLeft, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "rotate_left.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "rotate_right.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "rotate_right.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -4843,6 +5592,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "rotate_right.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "rotate_right.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "rotate_right.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "rotate_right.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -4878,6 +5690,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntMethod(IntBitOp::RotateRight, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "rotate_right.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "wrapping_add.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "wrapping_add.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -4927,6 +5802,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "wrapping_add.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "wrapping_add.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "wrapping_add.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "wrapping_add.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -4962,6 +5900,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "wrapping_add.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "wrapping_sub.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "wrapping_sub.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -5011,6 +6012,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "wrapping_sub.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "wrapping_sub.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "wrapping_sub.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "wrapping_sub.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -5046,6 +6110,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "wrapping_sub.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "wrapping_mul.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "wrapping_mul.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -5095,6 +6222,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "wrapping_mul.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "wrapping_mul.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "wrapping_mul.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "wrapping_mul.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -5130,6 +6320,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::WrappingMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "wrapping_mul.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "saturating_add.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "saturating_add.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -5179,6 +6432,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "saturating_add.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "saturating_add.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "saturating_add.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "saturating_add.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -5214,6 +6530,69 @@ impl RuntimeCallFamily {
                         },
                     ],
                     result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "saturating_add.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "saturating_sub.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "saturating_sub.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -5263,6 +6642,69 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "saturating_sub.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "saturating_sub.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "saturating_sub.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::U32) => RuntimeOpRow {
                 symbol: "saturating_sub.u32",
                 contract: Some(RuntimeSemanticContract {
@@ -5303,6 +6745,867 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "saturating_sub.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "saturating_mul.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "saturating_mul.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I32) => RuntimeOpRow {
+                symbol: "saturating_mul.i32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::I64) => RuntimeOpRow {
+                symbol: "saturating_mul.i64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "saturating_mul.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Isize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "saturating_mul.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U8),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "saturating_mul.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U16),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U32) => RuntimeOpRow {
+                symbol: "saturating_mul.u32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U32),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::U64) => RuntimeOpRow {
+                symbol: "saturating_mul.u64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::U64),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::SaturatingMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "saturating_mul.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::BitCopy(K::Usize),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "checked_add.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "checked_add.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I32) => RuntimeOpRow {
+                symbol: "checked_add.i32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::I64) => RuntimeOpRow {
+                symbol: "checked_add.i64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "checked_add.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Isize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "checked_add.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "checked_add.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U32) => RuntimeOpRow {
+                symbol: "checked_add.u32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::U64) => RuntimeOpRow {
+                symbol: "checked_add.u64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedAdd, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "checked_add.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Usize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "checked_sub.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "checked_sub.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I32) => RuntimeOpRow {
+                symbol: "checked_sub.i32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::I64) => RuntimeOpRow {
+                symbol: "checked_sub.i64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "checked_sub.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Isize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "checked_sub.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "checked_sub.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U32) => RuntimeOpRow {
+                symbol: "checked_sub.u32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::U64) => RuntimeOpRow {
+                symbol: "checked_sub.u64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedSub, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "checked_sub.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Usize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I8) => RuntimeOpRow {
+                symbol: "checked_mul.i8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I16) => RuntimeOpRow {
+                symbol: "checked_mul.i16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I32) => RuntimeOpRow {
+                symbol: "checked_mul.i32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::I64) => RuntimeOpRow {
+                symbol: "checked_mul.i64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::I64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::Isize) => RuntimeOpRow {
+                symbol: "checked_mul.isize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Isize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Isize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U8) => RuntimeOpRow {
+                symbol: "checked_mul.u8",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U8,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U8])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U16) => RuntimeOpRow {
+                symbol: "checked_mul.u16",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U16,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U16])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U32) => RuntimeOpRow {
+                symbol: "checked_mul.u32",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U32,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U32])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::U64) => RuntimeOpRow {
+                symbol: "checked_mul.u64",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::U64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::U64])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::IntArith(IntArithKind::CheckedMul, IntMethodWidth::Usize) => RuntimeOpRow {
+                symbol: "checked_mul.usize",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::Usize,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::IndependentValue(K::Applied(BuiltinType::Option, &[K::Usize])),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::NodeAllowPeer => RuntimeOpRow {
@@ -9358,11 +11661,16 @@ impl RuntimeCallFamily {
                 | RuntimeResultEffect::FreshOwned(
                     RuntimeValueKind::Unit
                     | RuntimeValueKind::Bool
+                    | RuntimeValueKind::I8
+                    | RuntimeValueKind::I16
                     | RuntimeValueKind::U8
+                    | RuntimeValueKind::U16
                     | RuntimeValueKind::U32
                     | RuntimeValueKind::I32
                     | RuntimeValueKind::I64
                     | RuntimeValueKind::U64
+                    | RuntimeValueKind::Isize
+                    | RuntimeValueKind::Usize
                     | RuntimeValueKind::F64
                     | RuntimeValueKind::Char
                     | RuntimeValueKind::Duration

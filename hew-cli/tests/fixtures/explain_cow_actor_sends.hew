@@ -18,6 +18,6 @@ fn main() {
     let printer = spawn Printer;
     let counter = spawn Counter;
     let greeting = "hello";
-    printer.print_message(greeting);
-    counter.increment(42);
+    let _ = printer.print_message(greeting);
+    let _ = counter.increment(42);
 }

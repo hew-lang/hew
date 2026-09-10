@@ -1,0 +1,11 @@
+// E_SIR_UNSUPPORTED: unsupported HIR expression kind `IdentityCompare` in the
+// initial SIR subset. `is` between two actor handles must keep checking clean.
+actor Worker {
+    receive fn ping() -> i64 { 1 }
+}
+
+fn main() -> i64 {
+    let a = spawn Worker;
+    let b = spawn Worker;
+    if a is b { 1 } else { 0 }
+}

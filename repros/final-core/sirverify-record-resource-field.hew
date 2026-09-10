@@ -1,0 +1,28 @@
+// E_SIR_VERIFY: InvalidResourceType. A plain record embedding a
+// `#[resource] #[opaque]` field is admitted by the checker and then refused by
+// the SIR verifier (RAII-1).
+#[resource]
+#[opaque]
+type Dq {}
+
+impl Dq {
+    fn close(consume self) {
+        unsafe { hew_deque_free(self) };
+        println("closed");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+type Holder {
+    dq: Dq,
+}
+
+fn main() -> i64 {
+    let h = Holder { dq: unsafe { hew_deque_new() } };
+    println("built");
+    0
+}

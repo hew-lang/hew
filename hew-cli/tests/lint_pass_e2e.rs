@@ -362,7 +362,7 @@ const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n\
      }\n\
      fn main() {\n\
      let counter = spawn Counter(count: 0);\n\
-     counter.send(1);\n\
+     let _ = counter.send(1);\n\
      }\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n\
@@ -372,7 +372,7 @@ const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n\
      }\n\
      fn main() {\n\
      let counter = spawn Counter(count: 0);\n\
-     counter.send(1);\n\
+     let _ = counter.send(1);\n\
      }\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE: &str =

@@ -1,0 +1,11 @@
+[[case]]
+id = "int-bit-methods"
+intent = "count_ones, count_zeros, leading_zeros, trailing_zeros, swap_bytes, reverse_bits, rotate_left and rotate_right hold at positive, negative and boundary (zero, MIN, MAX, all-bits-set) values at i32, i64, u32 and u64."
+source = "cases/int-bit-methods.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "integer bit methods hold at i32, i64, u32 and u64 boundaries\n"
+stderr = ""
+exit = 0

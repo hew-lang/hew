@@ -12,6 +12,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::runtime_call::{IntBitOp, IntMethodWidth};
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
@@ -326,6 +327,20 @@ impl CollectionTyCx {
             name: kind.name().to_string(),
             args,
         }
+    }
+}
+
+/// Map a checked receiver type to its `RuntimeCallFamily::IntMethod` width.
+/// `RuntimeValueKind` (the runtime-call contract vocabulary) has no i8/i16/
+/// u8/u16/isize/usize kinds yet, so bit-manipulation methods are scoped to
+/// the four widths it does have.
+fn int_method_width(ty: &Ty) -> Option<IntMethodWidth> {
+    match ty {
+        Ty::I32 => Some(IntMethodWidth::I32),
+        Ty::I64 => Some(IntMethodWidth::I64),
+        Ty::U32 => Some(IntMethodWidth::U32),
+        Ty::U64 => Some(IntMethodWidth::U64),
+        _ => None,
     }
 }
 
@@ -7867,6 +7882,82 @@ impl Checker {
                     );
                     Ty::Error
                 }
+            }
+            // Integer bit-manipulation methods: each lowers to one LLVM
+            // intrinsic (ctpop/ctlz/cttz/bswap/bitreverse/fshl/fshr) carried
+            // as `RuntimeCallFamily::IntMethod`. Scoped to i32/i64/u32/u64 —
+            // the widths `RuntimeValueKind` already has rows for; i8/i16/u8/
+            // u16/isize/usize report `UndefinedMethod` rather than silently
+            // picking a wrong width.
+            (resolved, method)
+                if resolved.is_integer()
+                    && matches!(
+                        method,
+                        "count_ones"
+                            | "count_zeros"
+                            | "leading_zeros"
+                            | "trailing_zeros"
+                            | "swap_bytes"
+                            | "reverse_bits"
+                            | "rotate_left"
+                            | "rotate_right"
+                    ) =>
+            {
+                let Some(width) = int_method_width(resolved) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{}`; bit-manipulation methods are \
+                             supported on i32, i64, u32 and u64",
+                            resolved.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                let op = match method {
+                    "count_ones" => IntBitOp::CountOnes,
+                    "count_zeros" => IntBitOp::CountZeros,
+                    "leading_zeros" => IntBitOp::LeadingZeros,
+                    "trailing_zeros" => IntBitOp::TrailingZeros,
+                    "swap_bytes" => IntBitOp::SwapBytes,
+                    "reverse_bits" => IntBitOp::ReverseBits,
+                    "rotate_left" => IntBitOp::RotateLeft,
+                    "rotate_right" => IntBitOp::RotateRight,
+                    _ => unreachable!("method matched the guard above"),
+                };
+                let is_rotate = matches!(op, IntBitOp::RotateLeft | IntBitOp::RotateRight);
+                self.check_arity(args, usize::from(is_rotate), &format!("`{method}`"), span);
+                if is_rotate {
+                    if let Some(arg) = args.first() {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, &Ty::U32);
+                    }
+                } else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                }
+                let ret_ty = match op {
+                    IntBitOp::CountOnes
+                    | IntBitOp::CountZeros
+                    | IntBitOp::LeadingZeros
+                    | IntBitOp::TrailingZeros => Ty::U32,
+                    IntBitOp::SwapBytes
+                    | IntBitOp::ReverseBits
+                    | IntBitOp::RotateLeft
+                    | IntBitOp::RotateRight => resolved.clone(),
+                };
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::runtime_call::RuntimeCallFamily::IntMethod(op, width),
+                );
+                ret_ty
             }
             // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
             // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).

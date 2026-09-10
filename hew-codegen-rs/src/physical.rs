@@ -79,7 +79,7 @@ use hew_runtime::internal::types::{
     HEW_TRAP_USER_PANIC,
 };
 use hew_runtime::vec::HewTypeOwnershipKind;
-use hew_types::runtime_call::{collection_type_arguments, MathIntrinsic};
+use hew_types::runtime_call::{collection_type_arguments, IntBitOp, IntMethodWidth, MathIntrinsic};
 use hew_types::{
     EntryExitAction, EntryIntegerType, ResolvedTy, RuntimeCallFamily, ValueCapability,
 };
@@ -4243,6 +4243,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     failure,
                 );
             }
+            RuntimeCallFamily::IntMethod(op, width) => {
+                return self.emit_int_method(
+                    op,
+                    width,
+                    transfers,
+                    required_result()?,
+                    normal,
+                    failure,
+                );
+            }
             RuntimeCallFamily::Tcp(op) => {
                 self.emit_tcp_operation(op, transfers, result)?;
             }
@@ -5295,6 +5305,173 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         }
         self.store(result, value)?;
         self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Integer bit-manipulation methods (`x.count_ones()`, …). Every op is a
+    /// single LLVM intrinsic call parameterized on the receiver's width;
+    /// `count_ones`/`count_zeros`/`leading_zeros`/`trailing_zeros` narrow
+    /// their intrinsic result down to `u32` (LLVM's `ctpop`/`ctlz`/`cttz`
+    /// return the receiver's own width; Hew's bit-count methods return `u32`
+    /// at every receiver width, matching Rust).
+    fn emit_int_method(
+        &self,
+        op: IntBitOp,
+        width: IntMethodWidth,
+        transfers: &[ArgumentTransfer],
+        result: StorageId,
+        normal: &PhysicalEdge,
+        failure: Option<&PhysicalEdge>,
+    ) -> CodegenResult<()> {
+        if failure.is_some() {
+            return Err(CodegenError::FailClosed(
+                "infallible integer bit method carries a failure edge".into(),
+            ));
+        }
+        let arguments = transfers
+            .iter()
+            .map(|transfer| self.load(argument_source(transfer), "int_method.argument"))
+            .collect::<CodegenResult<Vec<_>>>()?;
+        let receiver = arguments.first().copied().ok_or_else(|| {
+            CodegenError::FailClosed("physical integer method lacks its receiver".into())
+        })?;
+        let receiver_int = receiver.into_int_value();
+        let receiver_ty = receiver_int.get_type();
+        let value = match op {
+            IntBitOp::CountOnes => {
+                let popcount = self.call_intrinsic1("llvm.ctpop", receiver_int)?;
+                self.narrow_to_u32(popcount)?
+            }
+            IntBitOp::CountZeros => {
+                let inverted = self
+                    .builder
+                    .build_not(receiver_int, "int_method.not")
+                    .llvm_ctx("negate operand for count_zeros")?;
+                let popcount = self.call_intrinsic1("llvm.ctpop", inverted)?;
+                self.narrow_to_u32(popcount)?
+            }
+            IntBitOp::LeadingZeros => {
+                let clz = self.call_intrinsic1_i1(
+                    "llvm.ctlz",
+                    receiver_int,
+                    self.ctx.bool_type().const_zero(),
+                )?;
+                self.narrow_to_u32(clz)?
+            }
+            IntBitOp::TrailingZeros => {
+                let ctz = self.call_intrinsic1_i1(
+                    "llvm.cttz",
+                    receiver_int,
+                    self.ctx.bool_type().const_zero(),
+                )?;
+                self.narrow_to_u32(ctz)?
+            }
+            IntBitOp::SwapBytes => self.call_intrinsic1("llvm.bswap", receiver_int)?.into(),
+            IntBitOp::ReverseBits => self
+                .call_intrinsic1("llvm.bitreverse", receiver_int)?
+                .into(),
+            IntBitOp::RotateLeft | IntBitOp::RotateRight => {
+                let shift_arg = arguments.get(1).copied().ok_or_else(|| {
+                    CodegenError::FailClosed("physical rotate lacks its shift amount".into())
+                })?;
+                let shift = self
+                    .builder
+                    .build_int_z_extend_or_bit_cast(
+                        shift_arg.into_int_value(),
+                        receiver_ty,
+                        "int_method.rotate_shift",
+                    )
+                    .llvm_ctx("widen rotate shift amount to the receiver's width")?;
+                let name = match op {
+                    IntBitOp::RotateLeft => "llvm.fshl",
+                    IntBitOp::RotateRight => "llvm.fshr",
+                    _ => unreachable!("matched rotate ops above"),
+                };
+                let declaration = Intrinsic::find(name)
+                    .and_then(|intrinsic| {
+                        intrinsic.get_declaration(self.llvm, &[receiver_ty.into()])
+                    })
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!("LLVM intrinsic `{name}` is unavailable"))
+                    })?;
+                self.runtime_call_value(
+                    declaration,
+                    &[receiver_int.into(), receiver_int.into(), shift.into()],
+                    "int_method.result",
+                )?
+            }
+        };
+        let width_ok = match width {
+            IntMethodWidth::I32 | IntMethodWidth::U32 => receiver_ty.get_bit_width() == 32,
+            IntMethodWidth::I64 | IntMethodWidth::U64 => receiver_ty.get_bit_width() == 64,
+        };
+        if !width_ok {
+            return Err(CodegenError::FailClosed(format!(
+                "integer method `{op:?}` carried width {width:?} but its receiver is {} bits",
+                receiver_ty.get_bit_width()
+            )));
+        }
+        self.store(result, value)?;
+        self.emit_result_edge(Some(result), normal)
+    }
+
+    /// Declare (if needed) and call a single-operand LLVM intrinsic
+    /// overloaded on `operand`'s type, returning its `iN` result.
+    fn call_intrinsic1(
+        &self,
+        name: &str,
+        operand: inkwell::values::IntValue<'ctx>,
+    ) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+        let declaration = Intrinsic::find(name)
+            .and_then(|intrinsic| {
+                intrinsic.get_declaration(self.llvm, &[operand.get_type().into()])
+            })
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("LLVM intrinsic `{name}` is unavailable"))
+            })?;
+        Ok(self
+            .runtime_call_value(declaration, &[operand.into()], "int_method.result")?
+            .into_int_value())
+    }
+
+    /// Like [`Self::call_intrinsic1`] but for `ctlz`/`cttz`, which take a
+    /// second non-overloaded `i1` operand.
+    fn call_intrinsic1_i1(
+        &self,
+        name: &str,
+        operand: inkwell::values::IntValue<'ctx>,
+        flag: inkwell::values::IntValue<'ctx>,
+    ) -> CodegenResult<inkwell::values::IntValue<'ctx>> {
+        let declaration = Intrinsic::find(name)
+            .and_then(|intrinsic| {
+                intrinsic.get_declaration(self.llvm, &[operand.get_type().into()])
+            })
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!("LLVM intrinsic `{name}` is unavailable"))
+            })?;
+        Ok(self
+            .runtime_call_value(
+                declaration,
+                &[operand.into(), flag.into()],
+                "int_method.result",
+            )?
+            .into_int_value())
+    }
+
+    /// Truncate an intrinsic result (the receiver's own width) down to the
+    /// `u32` that every `count_ones`/`count_zeros`/`leading_zeros`/
+    /// `trailing_zeros` method returns, regardless of receiver width.
+    fn narrow_to_u32(
+        &self,
+        value: inkwell::values::IntValue<'ctx>,
+    ) -> CodegenResult<inkwell::values::BasicValueEnum<'ctx>> {
+        if value.get_type().get_bit_width() == 32 {
+            return Ok(value.into());
+        }
+        Ok(self
+            .builder
+            .build_int_truncate(value, self.ctx.i32_type(), "int_method.narrow")
+            .llvm_ctx("narrow bit-count result to u32")?
+            .into())
     }
 
     fn new_array_storage(

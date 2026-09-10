@@ -486,7 +486,7 @@ actor Adder {
 fn main() {
     let ffi: i64 = unsafe { actorcabi_probe() };
     let adder = spawn Adder();
-    match await adder.add(ffi) {
+    match adder.add(ffi) {
         .Ok(v) => println(f"total={v}"),
         .Err(_) => println("err"),
     }

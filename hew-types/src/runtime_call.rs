@@ -148,6 +148,10 @@ pub enum RuntimeValueKind {
     PoolMember,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
+    /// The payload of the signature's `Rc<T>`/`Weak<T>` receiver. A shared
+    /// handle is not a collection, so its argument does not resolve through
+    /// [`Self::TypeArgument`].
+    SharedPayload,
     /// The exact checked result type for a compiler-owned operation whose
     /// generic payload is not carried by an argument (Node.lookup).
     NodeLookupResult,
@@ -250,6 +254,7 @@ impl RuntimeValueKind {
             Self::TypeArgument(index) => {
                 collection_type_arguments(receiver?)?.1.get(index)?.clone()
             }
+            Self::SharedPayload => shared_handle_payload(receiver?)?.clone(),
             Self::PoolView => {
                 let view = receiver?;
                 supervisor_pool_member_type(view)?;
@@ -498,8 +503,11 @@ impl RuntimeSemanticContract {
             })
             .or_else(|| {
                 (params.is_empty()
-                    || runtime_receiver_builtin(result_hint)
-                        .is_some_and(BuiltinType::is_encoding_value)
+                    || runtime_receiver_builtin(result_hint).is_some_and(|builtin| {
+                        // Constructors whose arguments are payload values, not
+                        // receivers: the result names the receiver identity.
+                        builtin.is_encoding_value() || builtin == BuiltinType::Rc
+                    })
                     || FileReadHandleKind::of_ty(result_hint).is_some())
                 .then_some(result_hint)
                 .filter(|ty| {
@@ -570,7 +578,14 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     }
     match ty {
         ResolvedTy::Named {
-            builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink | BuiltinType::LocalPid)),
+            builtin:
+                Some(
+                    kind @ (BuiltinType::Stream
+                    | BuiltinType::Sink
+                    | BuiltinType::LocalPid
+                    | BuiltinType::Rc
+                    | BuiltinType::Weak),
+                ),
             args,
             ..
         } if args.len() == 1 => Some(*kind),
@@ -582,6 +597,18 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
         } if builtin.is_encoding_value() && name == builtin.canonical_name() && args.is_empty() => {
             Some(*builtin)
         }
+        _ => None,
+    }
+}
+
+/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
+fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
         _ => None,
     }
 }
@@ -4075,20 +4102,56 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::RcClone => RuntimeOpRow {
-                symbol: "hew_rc_clone",
-                contract: None,
+            // --- Rc/Weak ownership -------------------------------------
+            // A strong handle is the payload pointer; a weak handle is the
+            // allocation header pointer. `Rc.new` hands the runtime the
+            // payload's release recipe, so every later release of the last
+            // strong reference runs the payload's own destructor. `Rc.drop`
+            // and `Weak.drop` are destroy actions rather than call sites:
+            // physical MIR reaches their symbols through `DestroyAction`.
+            Self::RcNew => RuntimeOpRow {
+                symbol: "hew_rc_new",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::SharedPayload,
+                        effect: E::Value,
+                    }],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Rc)),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::SharedHandle,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::RcClone => RuntimeOpRow {
+                symbol: "hew_rc_clone",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Rc)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcDowngrade => RuntimeOpRow {
                 symbol: "hew_rc_downgrade",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Applied(BuiltinType::Weak, &[K::SharedPayload])),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcDrop => RuntimeOpRow {
@@ -4101,58 +4164,98 @@ impl RuntimeCallFamily {
             },
             Self::RcGet => RuntimeOpRow {
                 symbol: "hew_rc_get",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::IndependentValue(K::SharedPayload),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::SharedHandle,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcIsUnique => RuntimeOpRow {
                 symbol: "hew_rc_is_unique",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::Bool),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RcNew => RuntimeOpRow {
-                symbol: "hew_rc_new",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthI32,
             },
             Self::RcSet => RuntimeOpRow {
                 symbol: "hew_rc_set",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        RuntimeArgumentContract {
+                            ty: K::Receiver(BuiltinType::Rc),
+                            effect: E::Borrow,
+                        },
+                        RuntimeArgumentContract {
+                            ty: K::SharedPayload,
+                            effect: E::Value,
+                        },
+                    ],
+                    result: R::Unit,
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::SharedHandle,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcStrongCount => RuntimeOpRow {
                 symbol: "hew_rc_strong_count",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RcWeakCount => RuntimeOpRow {
                 symbol: "hew_rc_weak_count",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Rc),
+                        effect: E::Borrow,
+                    }],
+                    result: R::BitCopy(K::I64),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::WeakCloneRc => RuntimeOpRow {
                 symbol: "hew_weak_clone_rc",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Weak),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Weak)),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::WeakDropRc => RuntimeOpRow {
@@ -4165,10 +4268,20 @@ impl RuntimeCallFamily {
             },
             Self::WeakUpgradeRc => RuntimeOpRow {
                 symbol: "hew_weak_upgrade_rc",
-                contract: None,
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[RuntimeArgumentContract {
+                        ty: K::Receiver(BuiltinType::Weak),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::Applied(
+                        BuiltinType::Option,
+                        &[K::Applied(BuiltinType::Rc, &[K::SharedPayload])],
+                    )),
+                    failures: &[],
+                }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::RecvHalfRecv => RuntimeOpRow {
@@ -7769,6 +7882,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
                     | RuntimeValueKind::TypeArgument(_)
+                    | RuntimeValueKind::SharedPayload
                     | RuntimeValueKind::NodeLookupResult
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
@@ -8281,6 +8395,11 @@ pub enum RuntimePhysicalForm {
     Vector,
     Map,
     Set,
+    /// `Rc` glue: the payload's own layout and release recipe. `Rc.new` hands
+    /// that recipe to the runtime as the allocation's destructor, `Rc.get`
+    /// loads the payload back out of the shared allocation and `Rc.set`
+    /// stages a replacement for the runtime to swap in.
+    SharedHandle,
 }
 
 /// How the backend reaches one runtime operation.

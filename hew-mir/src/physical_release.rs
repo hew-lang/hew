@@ -22,6 +22,7 @@ pub struct PureDataReleases {
     vector: Vec<bool>,
     map: Vec<bool>,
     set: Vec<bool>,
+    shared: Vec<bool>,
 }
 
 impl PureDataReleases {
@@ -34,6 +35,7 @@ impl PureDataReleases {
             vector: vec![true; module.vector_glue.len()],
             map: vec![true; module.map_glue.len()],
             set: vec![true; module.set_glue.len()],
+            shared: vec![true; module.shared_glue.len()],
         };
         let mut settled = false;
         while !settled {
@@ -61,6 +63,12 @@ impl PureDataReleases {
                 let pure = table.recipe_is_pure(&glue.element);
                 settled &= !retract(&mut table.set[glue.id.0 as usize], pure);
             }
+            // Releasing the last strong reference runs the payload's own
+            // release, so a shared handle is pure exactly when its payload is.
+            for glue in &module.shared_glue {
+                let pure = table.recipe_is_pure(&glue.payload);
+                settled &= !retract(&mut table.shared[glue.id.0 as usize], pure);
+            }
         }
         table
     }
@@ -72,7 +80,9 @@ impl PureDataReleases {
         match action {
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
-            | DestroyAction::BytesRelease => true,
+            | DestroyAction::BytesRelease
+            // A weak handle owns no payload; dropping one only decrements.
+            | DestroyAction::WeakRelease => true,
             DestroyAction::Resource(_) | DestroyAction::Callable | DestroyAction::TraitObject => {
                 false
             }
@@ -81,6 +91,7 @@ impl PureDataReleases {
             DestroyAction::Vector(id) | DestroyAction::Array(id) => self.vector[id.0 as usize],
             DestroyAction::Map(id) => self.map[id.0 as usize],
             DestroyAction::Set(id) => self.set[id.0 as usize],
+            DestroyAction::RcRelease(id) => self.shared[id.0 as usize],
         }
     }
 

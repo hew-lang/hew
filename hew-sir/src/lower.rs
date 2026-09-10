@@ -969,6 +969,14 @@ fn require_type_shapes(
         }
         if let ResolvedTy::Array(element, _) = &ty {
             pending.push((**element).clone());
+        } else if let Some(payload) = shared_handle_payload(&ty) {
+            if !is_supported_call_value(module, facts, payload) {
+                return Err(format!(
+                    "shared payload `{}` has no semantic value contract",
+                    payload.user_facing()
+                ));
+            }
+            pending.push(payload.clone());
         } else if let Some((builtin, arguments)) = collection_type_arguments(&ty) {
             for argument in arguments {
                 if !is_supported_call_value(module, facts, argument) {
@@ -2698,6 +2706,39 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
+        // A shared handle is one pointer into a runtime-counted allocation.
+        // Its payload is a nested type of its own, published alongside it.
+        || shared_handle_payload(ty).is_some()
+}
+
+/// The runtime operation one checked `Rc`/`Weak` method is.
+fn shared_handle_family(op: hew_types::RcIntrinsicOp) -> hew_types::RuntimeCallFamily {
+    use hew_types::RcIntrinsicOp as Op;
+    use hew_types::RuntimeCallFamily as F;
+    match op {
+        Op::New => F::RcNew,
+        Op::Clone => F::RcClone,
+        Op::GetCopy => F::RcGet,
+        Op::Set => F::RcSet,
+        Op::Downgrade => F::RcDowngrade,
+        Op::StrongCount => F::RcStrongCount,
+        Op::WeakCount => F::RcWeakCount,
+        Op::IsUnique => F::RcIsUnique,
+        Op::WeakClone => F::WeakCloneRc,
+        Op::WeakUpgrade => F::WeakUpgradeRc,
+    }
+}
+
+/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
+fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
 }
 
 fn is_concrete_aggregate_type(
@@ -5107,6 +5148,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         match &expr.kind {
             HirExprKind::Literal(literal) => self.lower_literal(expr, literal),
+            HirExprKind::RcIntrinsic {
+                op,
+                receiver,
+                value,
+                ..
+            } => {
+                let mut operands: Vec<&HirExpr> = Vec::with_capacity(2);
+                operands.extend(receiver.as_deref());
+                operands.extend(value.as_deref());
+                let family = shared_handle_family(*op);
+                if self.ty(&expr.ty) == ResolvedTy::Unit {
+                    self.lower_runtime_operation(expr, family, &operands, false)?;
+                    return self.emit(expr, SemOpKind::ConstUnit);
+                }
+                self.lower_runtime_operation(expr, family, &operands, true)?
+                    .ok_or_else(|| format!("`{op:?}` must produce a shared-handle value"))
+            }
             HirExprKind::Select(select) => match self.lower_task_select(expr, select)? {
                 Some(value) => Ok(value),
                 None if self.is_open() => self.emit(expr, SemOpKind::ConstUnit),

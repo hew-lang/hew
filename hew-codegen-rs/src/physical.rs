@@ -49,6 +49,8 @@ mod close;
 mod dyn_object;
 #[path = "physical_host.rs"]
 mod host;
+#[path = "physical_shared.rs"]
+mod shared;
 
 pub use host::HostExport;
 
@@ -689,6 +691,11 @@ fn primitive_repr(
                 integer_layout(ctx, target, 32)?,
             ])
         }
+        // A strong handle is the payload pointer and a weak handle the
+        // allocation header pointer; both are one machine pointer.
+        shared if hew_mir::physical::shared_handle_payload(shared).is_some() => {
+            PhysicalRepr::Pointer
+        }
         collection if collection_type_arguments(collection).is_some() => PhysicalRepr::Pointer,
         encoding if hew_mir::physical::encoding_format(encoding).is_some() => PhysicalRepr::Pointer,
         ResolvedTy::Bytes => PhysicalRepr::Struct(vec![
@@ -1194,6 +1201,24 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     .basic()
                     .ok_or_else(|| CodegenError::FailClosed("string retain returned void".into()))
             }
+            CloneAction::RcRetain | CloneAction::WeakRetain => {
+                let symbol = if action == CloneAction::RcRetain {
+                    RuntimeCallFamily::RcClone.row().symbol
+                } else {
+                    RuntimeCallFamily::WeakCloneRc.row().symbol
+                };
+                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
+                self.builder
+                    .build_call(
+                        function,
+                        &[value.into_pointer_value().into()],
+                        "shared.retain",
+                    )
+                    .llvm_ctx("retain a shared allocation")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("shared retain returned void".into()))
+            }
             CloneAction::BytesRetain => {
                 let aggregate = value.into_struct_value();
                 let pointer = self
@@ -1361,6 +1386,20 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
 
+            // Releasing a strong handle may run the payload's own release,
+            // which the runtime already holds as this allocation's destructor.
+            DestroyAction::RcRelease(_) | DestroyAction::WeakRelease => {
+                let symbol = if matches!(action, DestroyAction::WeakRelease) {
+                    RuntimeCallFamily::WeakDropRc.row().symbol
+                } else {
+                    RuntimeCallFamily::RcDrop.row().symbol
+                };
+                let function = external_drop(self.ctx, self.llvm, symbol)?;
+                self.builder
+                    .build_call(function, &[value.into_pointer_value().into()], "")
+                    .llvm_ctx("release a shared allocation")?;
+                Ok(())
+            }
             DestroyAction::Encoding(_)
             | DestroyAction::StringRelease
             | DestroyAction::BytesRelease => {
@@ -1376,6 +1415,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
                     | DestroyAction::TraitObject
+                    | DestroyAction::RcRelease(_)
+                    | DestroyAction::WeakRelease
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
@@ -1396,6 +1437,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     DestroyAction::Resource(_)
                     | DestroyAction::Callable
                     | DestroyAction::TraitObject
+                    | DestroyAction::RcRelease(_)
+                    | DestroyAction::WeakRelease
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
@@ -1812,6 +1855,11 @@ fn vector_descriptor_symbol(id: PhysicalVectorId) -> String {
     format!("__hew_vector_element_layout_{}", id.0)
 }
 
+/// The payload destructor one shared allocation installs at construction.
+fn shared_payload_drop_symbol(id: hew_mir::physical::PhysicalSharedId) -> String {
+    format!("__hew_shared_payload_{}_drop", id.0)
+}
+
 fn map_key_descriptor_symbol(id: PhysicalMapId) -> String {
     format!("__hew_map_key_{}", id.0)
 }
@@ -1953,6 +2001,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         for glue in &self.module.map_glue {
             self.emit_value_descriptor(&map_value_descriptor_symbol(glue.id), &glue.value)?;
+        }
+        for glue in &self.module.shared_glue {
+            let Some(action) = glue.payload.destroy else {
+                continue;
+            };
+            let layout = self.module.target.layout(&glue.payload.ty).ok_or_else(|| {
+                CodegenError::FailClosed("shared payload has no target layout".into())
+            })?;
+            self.emit_value_drop_callback(&shared_payload_drop_symbol(glue.id), layout, action)?;
         }
         Ok(())
     }
@@ -4150,6 +4207,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     normal,
                     failure,
                 );
+            }
+            PhysicalRuntimeCarrier::SharedHandle(glue) => {
+                self.emit_shared_call(action.family, glue, transfers, result)?;
+                return self.emit_result_edge(result, normal);
+            }
+            PhysicalRuntimeCarrier::Variant(option)
+                if action.family == RuntimeCallFamily::WeakUpgradeRc =>
+            {
+                return self.emit_weak_upgrade(option, transfers, required_result()?, normal);
             }
             _ => {}
         }

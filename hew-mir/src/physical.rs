@@ -116,6 +116,10 @@ pub struct PhysicalMapId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalSetId(pub u32);
 
+/// Module-local identity of a shared handle's payload copy/drop recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PhysicalSharedId(pub u32);
+
 /// Module-local identity of an exact resource release contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhysicalResourceId(pub u32);
@@ -149,6 +153,16 @@ pub struct PhysicalVectorDescriptor {
     pub element: ResolvedTy,
 }
 
+/// An `Rc<T>` or `Weak<T>` handle and the exact payload the allocation holds.
+/// Both spellings of one payload share the allocation, so both carry the same
+/// payload recipe: `Rc.new` installs it as the allocation's destructor and
+/// `Rc.get`/`Rc.set` read and replace the value it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalSharedDescriptor {
+    pub ty: ResolvedTy,
+    pub payload: ResolvedTy,
+}
+
 /// One exact demanded aggregate descriptor in the physical type inventory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalAggregateDescriptor {
@@ -174,6 +188,7 @@ pub struct PhysicalTypeInventory {
     vectors: BTreeMap<ResolvedTy, PhysicalVectorDescriptor>,
     maps: BTreeMap<ResolvedTy, PhysicalMapDescriptor>,
     sets: BTreeMap<ResolvedTy, PhysicalSetDescriptor>,
+    shared: BTreeMap<ResolvedTy, PhysicalSharedDescriptor>,
 }
 
 impl PhysicalTypeInventory {
@@ -208,6 +223,10 @@ impl PhysicalTypeInventory {
 
     pub fn vectors(&self) -> impl Iterator<Item = &PhysicalVectorDescriptor> {
         self.vectors.values()
+    }
+
+    pub fn shared(&self) -> impl Iterator<Item = &PhysicalSharedDescriptor> {
+        self.shared.values()
     }
 }
 
@@ -393,6 +412,10 @@ pub enum CloneAction {
     Bitwise,
     StringRetain,
     BytesRetain,
+    /// Retain one more strong reference to a shared allocation.
+    RcRetain,
+    /// Retain one more weak reference to a shared allocation.
+    WeakRetain,
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
@@ -414,6 +437,13 @@ pub enum DestroyAction {
     Callable,
     StringRelease,
     BytesRelease,
+    /// Release one strong reference. When it was the last, the runtime runs
+    /// the payload's release recipe - which the glue identity names - before
+    /// the allocation goes.
+    RcRelease(PhysicalSharedId),
+    /// Release one weak reference. A weak handle never owns the payload, so
+    /// this releases nothing a program can observe.
+    WeakRelease,
     Aggregate(PhysicalAggregateId),
     Variant(PhysicalVariantId),
     Vector(PhysicalVectorId),
@@ -548,6 +578,14 @@ pub struct PhysicalMapGlue {
     pub ty: ResolvedTy,
     pub key: PhysicalValueRecipe,
     pub value: PhysicalValueRecipe,
+}
+
+/// Payload recipe shared by every operation over one shared allocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalSharedGlue {
+    pub id: PhysicalSharedId,
+    pub ty: ResolvedTy,
+    pub payload: PhysicalValueRecipe,
 }
 
 /// Element recipe shared by set operations and ordinary copy/drop.
@@ -910,6 +948,8 @@ pub enum PhysicalRuntimeCarrier {
         operation: PhysicalSetOp,
         glue: PhysicalSetId,
     },
+    /// The shared allocation's payload recipe and layout.
+    SharedHandle(PhysicalSharedId),
 }
 
 /// One no-unwind runtime ABI operation: the verified SIR operation itself plus
@@ -1237,6 +1277,7 @@ pub struct PhysicalModule {
     pub vector_glue: Vec<PhysicalVectorGlue>,
     pub map_glue: Vec<PhysicalMapGlue>,
     pub set_glue: Vec<PhysicalSetGlue>,
+    pub shared_glue: Vec<PhysicalSharedGlue>,
     /// Which releases run no user-visible action, so the runtime may walk them
     /// iteratively instead of nesting a native frame per level.
     pub pure_releases: PureDataReleases,
@@ -1325,6 +1366,7 @@ pub fn lower_physical_module(
         vector_glue,
         map_glue,
         set_glue,
+        shared_glue,
         ids,
     } = build_glue(module)?;
 
@@ -1455,6 +1497,7 @@ pub fn lower_physical_module(
         vector_glue,
         map_glue,
         set_glue,
+        shared_glue,
         type_facts: module.type_facts.clone(),
         callables,
         functions,
@@ -1477,6 +1520,7 @@ struct PhysicalGlueIds {
     vectors: BTreeMap<ResolvedTy, PhysicalVectorId>,
     maps: BTreeMap<ResolvedTy, PhysicalMapId>,
     sets: BTreeMap<ResolvedTy, PhysicalSetId>,
+    shared: BTreeMap<ResolvedTy, PhysicalSharedId>,
 }
 
 struct PhysicalGlue {
@@ -1487,6 +1531,7 @@ struct PhysicalGlue {
     vector_glue: Vec<PhysicalVectorGlue>,
     map_glue: Vec<PhysicalMapGlue>,
     set_glue: Vec<PhysicalSetGlue>,
+    shared_glue: Vec<PhysicalSharedGlue>,
     ids: PhysicalGlueIds,
 }
 
@@ -1557,6 +1602,15 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             Ok((set.ty.clone(), PhysicalSetId(index)))
         })
         .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
+    let shared_ids = inventory
+        .shared()
+        .enumerate()
+        .map(|(index, shared)| {
+            let index = u32::try_from(index)
+                .map_err(|_| PhysicalError::new("physical shared handle count exceeds u32"))?;
+            Ok((shared.ty.clone(), PhysicalSharedId(index)))
+        })
+        .collect::<Result<BTreeMap<_, _>, PhysicalError>>()?;
     let resources = inventory
         .resources()
         .enumerate()
@@ -1573,6 +1627,7 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         vectors: vector_ids,
         maps: map_ids,
         sets: set_ids,
+        shared: shared_ids,
     };
     let value_recipe = |ty: &ResolvedTy| physical_value_recipe(module, &ids, ty);
     let aggregate_glue = aggregates
@@ -1679,6 +1734,23 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
             })
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
+    let shared_glue = inventory
+        .shared()
+        .map(|descriptor| {
+            let payload = value_recipe(&descriptor.payload)?;
+            if payload.own == OwnKind::Owned && payload.destroy.is_none() {
+                return Err(PhysicalError::new(format!(
+                    "shared payload `{}` lacks a complete value recipe",
+                    descriptor.payload.user_facing()
+                )));
+            }
+            Ok(PhysicalSharedGlue {
+                id: ids.shared[&descriptor.ty],
+                ty: descriptor.ty.clone(),
+                payload,
+            })
+        })
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
     let environment_glue = inventory
         .types()
         .filter_map(|ty| {
@@ -1721,8 +1793,22 @@ fn build_glue(module: &SemModule) -> Result<PhysicalGlue, PhysicalError> {
         vector_glue,
         map_glue,
         set_glue,
+        shared_glue,
         ids,
     })
+}
+
+/// The payload of a canonical `Rc<T>`/`Weak<T>` handle.
+#[must_use]
+pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
 }
 
 fn aggregate_shape_ref(
@@ -1753,6 +1839,8 @@ fn clone_action_for_type(
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::Retain if ty.is_builtin(BuiltinType::Rc) => CloneAction::RcRetain,
+        CloneKind::Retain if ty.is_builtin(BuiltinType::Weak) => CloneAction::WeakRetain,
         CloneKind::DeepCopy if encoding_format(ty).is_some() => {
             CloneAction::Encoding(encoding_format(ty).expect("checked encoding receiver"))
         }
@@ -1804,6 +1892,10 @@ fn destroy_action_for_type(ty: &ResolvedTy, ids: &PhysicalGlueIds) -> Option<Des
         ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        _ if ty.is_builtin(BuiltinType::Rc) => {
+            ids.shared.get(ty).copied().map(DestroyAction::RcRelease)
+        }
+        _ if ty.is_builtin(BuiltinType::Weak) => Some(DestroyAction::WeakRelease),
         ResolvedTy::Array(_, _) if ids.vectors.contains_key(ty) => {
             Some(DestroyAction::Array(ids.vectors[ty]))
         }
@@ -1876,6 +1968,7 @@ pub fn physical_type_inventory(module: &SemModule) -> PhysicalTypeInventory {
         vectors: BTreeMap::new(),
         maps: BTreeMap::new(),
         sets: BTreeMap::new(),
+        shared: BTreeMap::new(),
     };
     let demanded = inventory.types.iter().cloned().collect::<Vec<_>>();
     for ty in demanded {
@@ -1923,6 +2016,7 @@ fn collect_inventory_type(
         || inventory.vectors.contains_key(ty)
         || inventory.maps.contains_key(ty)
         || inventory.sets.contains_key(ty)
+        || inventory.shared.contains_key(ty)
     {
         return;
     }
@@ -1957,6 +2051,17 @@ fn collect_inventory_type(
             },
         );
         collect_inventory_type(module, inventory, element);
+        return;
+    }
+    if let Some(payload) = shared_handle_payload(ty) {
+        inventory.shared.insert(
+            ty.clone(),
+            PhysicalSharedDescriptor {
+                ty: ty.clone(),
+                payload: payload.clone(),
+            },
+        );
+        collect_inventory_type(module, inventory, payload);
         return;
     }
     match collection_type_arguments(ty) {
@@ -3748,6 +3853,7 @@ impl FunctionLowerer<'_> {
             RuntimePhysicalForm::Map => self.map_carrier(family, args, result)?,
             RuntimePhysicalForm::Set => self.set_carrier(family, args, result)?,
             RuntimePhysicalForm::Vector => self.vector_carrier(family, args, result)?,
+            RuntimePhysicalForm::SharedHandle => self.shared_carrier(family, args, result)?,
             RuntimePhysicalForm::NodeResult => self.node_result_carrier(family, args, result)?,
             RuntimePhysicalForm::VariantResult => {
                 let CallResult::Value(value) = result else {
@@ -3798,6 +3904,36 @@ impl FunctionLowerer<'_> {
     }
 
     /// Fixed arrays share the vector glue and the vector operation vocabulary.
+    /// The shared allocation one `Rc` operation reaches. `Rc.new` names it
+    /// through its result; every other form names it through its receiver.
+    fn shared_carrier(
+        &self,
+        family: RuntimeCallFamily,
+        args: &[hew_sir::BoundaryOperand],
+        result: &CallResult,
+    ) -> Result<PhysicalRuntimeCarrier, PhysicalError> {
+        let handle = if family == RuntimeCallFamily::RcNew {
+            let CallResult::Value(value) = result else {
+                return Err(PhysicalError::new("`Rc.new` has no result value"));
+            };
+            value.ty.clone()
+        } else {
+            let receiver = args
+                .first()
+                .ok_or_else(|| PhysicalError::new("shared handle operation has no receiver"))?;
+            self.storage[self.value(receiver.operand.value)?.0 as usize]
+                .ty
+                .clone()
+        };
+        let glue = self.glue_ids.shared.get(&handle).copied().ok_or_else(|| {
+            PhysicalError::new(format!(
+                "shared handle `{}` has no physical glue identity",
+                handle.user_facing()
+            ))
+        })?;
+        Ok(PhysicalRuntimeCarrier::SharedHandle(glue))
+    }
+
     fn vector_carrier(
         &self,
         family: RuntimeCallFamily,
@@ -4696,6 +4832,17 @@ fn map_glue(module: &PhysicalModule, id: PhysicalMapId) -> Result<&PhysicalMapGl
         .ok_or_else(|| PhysicalError::new(format!("unknown physical map glue {}", id.0)))
 }
 
+fn shared_glue(
+    module: &PhysicalModule,
+    id: PhysicalSharedId,
+) -> Result<&PhysicalSharedGlue, PhysicalError> {
+    module
+        .shared_glue
+        .get(id.0 as usize)
+        .filter(|glue| glue.id == id)
+        .ok_or_else(|| PhysicalError::new(format!("unknown physical shared glue {}", id.0)))
+}
+
 fn set_glue(module: &PhysicalModule, id: PhysicalSetId) -> Result<&PhysicalSetGlue, PhysicalError> {
     module
         .set_glue
@@ -4717,7 +4864,10 @@ fn verify_clone_action(
             | (CloneKind::DeepCopy, CloneAction::Encoding(_))
             | (
                 CloneKind::Retain,
-                CloneAction::StringRetain | CloneAction::BytesRetain
+                CloneAction::StringRetain
+                    | CloneAction::BytesRetain
+                    | CloneAction::RcRetain
+                    | CloneAction::WeakRetain
             )
             | (
                 CloneKind::FieldWise,
@@ -4747,6 +4897,8 @@ fn verify_clone_action(
             CloneAction::Bitwise => own == OwnKind::None,
             CloneAction::StringRetain => ty == &ResolvedTy::String && own == OwnKind::Owned,
             CloneAction::BytesRetain => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            CloneAction::RcRetain => ty.is_builtin(BuiltinType::Rc) && own == OwnKind::Owned,
+            CloneAction::WeakRetain => ty.is_builtin(BuiltinType::Weak) && own == OwnKind::Owned,
             CloneAction::Aggregate(id) => {
                 let glue = aggregate_glue(module, id)?;
                 glue.ty == *ty
@@ -4823,6 +4975,13 @@ fn verify_destroy_action(
             }
             DestroyAction::StringRelease => ty == &ResolvedTy::String && own == OwnKind::Owned,
             DestroyAction::BytesRelease => ty == &ResolvedTy::Bytes && own == OwnKind::Owned,
+            DestroyAction::RcRelease(id) => {
+                let glue = shared_glue(module, id)?;
+                glue.ty == *ty
+                    && own == OwnKind::Owned
+                    && glue.payload.destroy.is_some() == (glue.payload.own == OwnKind::Owned)
+            }
+            DestroyAction::WeakRelease => ty.is_builtin(BuiltinType::Weak) && own == OwnKind::Owned,
             DestroyAction::Aggregate(id) => {
                 let glue = aggregate_glue(module, id)?;
                 glue.ty == *ty

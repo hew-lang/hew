@@ -15,7 +15,11 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         };
         if matches!(
             action,
-            DestroyAction::StringRelease | DestroyAction::BytesRelease | DestroyAction::Encoding(_)
+            DestroyAction::StringRelease
+                | DestroyAction::BytesRelease
+                | DestroyAction::Encoding(_)
+                | DestroyAction::RcRelease(_)
+                | DestroyAction::WeakRelease
         ) {
             return Ok(pointer.const_null());
         }
@@ -158,10 +162,14 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 }
             }
             // A trait object's release is a synchronous vtable drop slot; it
-            // owns no cooperative child to close.
+            // owns no cooperative child to close. A shared handle's payload
+            // release is the destructor the runtime holds in the allocation
+            // header, which likewise runs synchronously.
             DestroyAction::TraitObject
             | DestroyAction::StringRelease
             | DestroyAction::BytesRelease
+            | DestroyAction::RcRelease(_)
+            | DestroyAction::WeakRelease
             | DestroyAction::Encoding(_) => {}
         }
         Ok(())

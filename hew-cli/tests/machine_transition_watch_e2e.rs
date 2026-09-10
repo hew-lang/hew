@@ -569,15 +569,9 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \x20   state Open,\n\
          \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   ,on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
-         \x20   on Reset: Failed => Idle {\n\
-         \x20       Conn.Idle\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
+         \x20   on Reset: Failed => Idle,\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\
@@ -630,8 +624,8 @@ fn supervisor_child_with_machine_state_fails_closed() {
          \x20   }\n\
          \x20   state Off,\n\
          \x20   state On,\n\
-         \x20   on Flip: Off => On { Light.On }\n\
-         \x20   on Flip: On => Off { Light.Off }\n\
+         \x20   on Flip: Off => On,\n\
+         \x20   on Flip: On => Off,\n\
          }\n\
          \n\
          actor Worker {\n\
@@ -695,12 +689,8 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \x20   state Open,\n\
          \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   ,on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\
@@ -781,8 +771,8 @@ fn vec_machine_element_stores_and_releases_each_value() {
          \x20   state Idle,\n\
          \x20   state Open,\n\
          \x20   state Failed { reason: string, },\n\
-         \x20   on Connect: Idle => Open { Conn.Open }\n\
-         \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
+         \x20   on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
          }\n\
@@ -936,12 +926,8 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \x20   state Open,\n\
          \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   ,on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\

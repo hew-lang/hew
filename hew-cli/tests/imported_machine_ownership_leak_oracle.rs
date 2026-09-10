@@ -24,7 +24,7 @@ pub machine PayloadLifecycle {
     events { Reset, }
     state Empty,
     state Loaded { label: string, },
-    on Reset: Loaded => Empty { Empty }
+    on Reset: Loaded => Empty,
     default { state }
 }
 

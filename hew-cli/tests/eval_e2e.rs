@@ -2931,8 +2931,8 @@ fn trait_bound_probe1_bounded_machine_runs() {
          \x20   }\n\
          \x20   state Empty,\n\
          \x20   state Tagged { value: T, }\n\
-         \x20   ,on Tag: Empty => Tagged { Tagged { value: event.value } }\n\
-         \x20   on Tag: Tagged => Tagged reenter { Tagged { value: event.value } }\n\
+         \x20   ,on Tag: Empty => Tagged { value: event.value }\n\
+         \x20   on Tag: Tagged => Tagged reenter { value: event.value }\n\
          }\n\
          fn main() {\n\
          \x20   var t: Tagger<i64> = .Empty;\n\
@@ -2984,10 +2984,10 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
          \x20   }\n\
          \x20   state Empty,\n\
          \x20   state Full { first: A, second: B, }\n\
-         \x20   ,on Load: Empty => Full { Full { first: event.first, second: event.second } }\n\
-         \x20   on Load: Full => Full reenter { Full { first: event.first, second: event.second } }\n\
-         \x20   on Clear: Empty => Empty reenter { Pair.Empty }\n\
-         \x20   on Clear: Full => Empty { Pair.Empty }\n\
+         \x20   ,on Load: Empty => Full { first: event.first, second: event.second }\n\
+         \x20   on Load: Full => Full reenter { first: event.first, second: event.second }\n\
+         \x20   on Clear: Empty => Empty reenter,\n\
+         \x20   on Clear: Full => Empty,\n\
          }\n\
          fn main() {\n\
          \x20   var p: Pair<i64, i64> = .Empty;\n\

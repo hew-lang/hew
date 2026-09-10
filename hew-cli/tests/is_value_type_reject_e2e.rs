@@ -149,9 +149,7 @@ const MACHINE_IS: &str = "machine Tank {\n\
      state Filling,\n\
      state Draining,\n\
      \n\
-     on Fill: Filling => Draining {\n\
-     Tank.Draining\n\
-     }\n\
+     on Fill: Filling => Draining,\n\
      \n\
      default { state }\n\
      }\n\

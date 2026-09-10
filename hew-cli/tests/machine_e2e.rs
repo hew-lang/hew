@@ -32,7 +32,7 @@ fn ordinary_machine_diagram_retains_typed_outputs_and_dynamic_targets() {
 }
 
 fn machine_fixture() -> &'static str {
-    "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
+    "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On,\n    on Toggle: On => Off,\n}\n"
 }
 
 fn missing_import_fixture() -> &'static str {
@@ -41,9 +41,9 @@ fn missing_import_fixture() -> &'static str {
      \x20   state Red,\n\
      \x20   state Green,\n\
      \x20   state Yellow,\n\
-     \x20   on Tick: Red => Green { .Green }\n\
-     \x20   on Tick: Green => Yellow { .Yellow }\n\
-     \x20   on Tick: Yellow => Red { .Red }\n\
+     \x20   on Tick: Red => Green,\n\
+     \x20   on Tick: Green => Yellow,\n\
+     \x20   on Tick: Yellow => Red,\n\
      }\n\
      fn main() {\n\
      \x20   let _ = fs.read(\"test.txt\");\n\
@@ -373,7 +373,7 @@ fn default_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Filling,\n\
      \x20   state Draining,\n\
-     \x20   on Drain: Filling => Draining { .Draining }\n\
+     \x20   on Drain: Filling => Draining,\n\
      \x20   default { state }\n\
      }\n"
 }
@@ -387,10 +387,10 @@ fn reenter_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Zero,\n\
      \x20   state NonZero { value: i64, }\n\
-     \x20   ,on Inc: Zero => NonZero { .NonZero { value: 1 } }\n\
-     \x20   on Inc: NonZero => NonZero reenter { .NonZero { value: self.value + 1 } }\n\
-     \x20   on Reset: NonZero => Zero { .Zero }\n\
-     \x20   on Reset: Zero => Zero reenter { .Zero }\n\
+     \x20   ,on Inc: Zero => NonZero { value: 1 }\n\
+     \x20   on Inc: NonZero => NonZero reenter { value: state.value + 1 }\n\
+     \x20   on Reset: NonZero => Zero,\n\
+     \x20   on Reset: Zero => Zero reenter,\n\
      }\n"
 }
 
@@ -408,7 +408,7 @@ fn emits_fixture() -> &'static str {
      \x20   state Idle,\n\
      \x20   state Active,\n\
      \x20   on Trigger: Idle => Active { emit Signal {}; .Active }\n\
-     \x20   on Trigger: Active => Idle { .Idle }\n\
+     \x20   on Trigger: Active => Idle,\n\
      \x20   default { state }\n\
      }\n"
 }
@@ -422,8 +422,8 @@ fn generic_fixture() -> &'static str {
      \x20   }\n\
      \x20   state Empty,\n\
      \x20   state Full { value: T, }\n\
-     \x20   ,on Put(value): Empty => Full { Full { value: value } }\n\
-     \x20   on Take: Full => Empty { Empty }\n\
+     \x20   ,on Put(value): Empty => Full { value: value }\n\
+     \x20   on Take: Full => Empty,\n\
      }\n"
 }
 
@@ -780,8 +780,8 @@ fn machine_diagram_json_no_wildcard_rows() {
                   \x20   events { Flip, Reset, }\n\
                   \x20   state A,\n\
                   \x20   state B,\n\
-                  \x20   on Flip: A => B { .B }\n\
-                  \x20   on Reset: _ => A { .A }\n\
+                  \x20   on Flip: A => B,\n\
+                  \x20   on Reset: _ => A,\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("toggle.hew");
@@ -821,8 +821,8 @@ fn machine_diagram_json_event_fields_present() {
                   \x20   events { Send { payload: i64, }, Ack, }\n\
                   \x20   state Idle,\n\
                   \x20   state Waiting,\n\
-                  \x20   on Send: Idle => Waiting { .Waiting }\n\
-                  \x20   on Ack: Waiting => Idle { .Idle }\n\
+                  \x20   on Send: Idle => Waiting,\n\
+                  \x20   on Ack: Waiting => Idle,\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("sender.hew");
@@ -867,8 +867,8 @@ fn local_and_imported_fixture() -> &'static str {
      \x20   events { Push, }\n\
      \x20   state Closed,\n\
      \x20   state Open,\n\
-     \x20   on Push: Closed => Open { .Open }\n\
-     \x20   on Push: Open => Closed { .Closed }\n\
+     \x20   on Push: Closed => Open,\n\
+     \x20   on Push: Open => Closed,\n\
      }\n\
      fn main() {\n\
      \x20   var d: Door = .Closed;\n\

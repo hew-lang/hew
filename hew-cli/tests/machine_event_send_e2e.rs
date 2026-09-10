@@ -28,27 +28,13 @@ const POSITIVE: &str = r"machine TcpState {
     state SynReceived,
     state Established,
 
-    on Syn: Closed => SynReceived {
-        TcpState.SynReceived
-    }
-    on Ack: Closed => Closed reenter {
-        TcpState.Closed
-    }
-    on Syn: SynReceived => SynReceived reenter {
-        TcpState.SynReceived
-    }
-    on Ack: SynReceived => Established {
-        TcpState.Established
-    }
-    on Syn: Established => Established reenter {
-        TcpState.Established
-    }
-    on Ack: Established => Established reenter {
-        TcpState.Established
-    }
-    on Reset: _ => Closed {
-        TcpState.Closed
-    }
+    on Syn: Closed => SynReceived,
+    on Ack: Closed => Closed reenter,
+    on Syn: SynReceived => SynReceived reenter,
+    on Ack: SynReceived => Established,
+    on Syn: Established => Established reenter,
+    on Ack: Established => Established reenter,
+    on Reset: _ => Closed,
 }
 
 actor ConnectionManager {
@@ -77,12 +63,8 @@ const NEGATIVE: &str = r#"machine Sensor {
     state Idle,
     state Active,
 
-    on Reading: _ => Active {
-        Sensor.Active
-    }
-    on Reset: _ => Idle {
-        Sensor.Idle
-    }
+    on Reading: _ => Active,
+    on Reset: _ => Idle,
 }
 
 actor Collector {

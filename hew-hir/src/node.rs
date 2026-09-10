@@ -1129,46 +1129,6 @@ pub enum HirStmtKind {
         value: HirExpr,
         fields: Vec<HirDestructureField>,
     },
-    /// `let Pat = scrutinee else { <divergent block> };` — the let-else
-    /// bind-or-diverge primitive.
-    ///
-    /// Unlike a pattern condition (whose bindings are scoped to the arm), a
-    /// let-else's `bindings` ESCAPE into the enclosing scope:
-    /// after the statement, the success-path binders are live for the rest of
-    /// the enclosing block. Semantic lowering evaluates the scrutinee and
-    /// branches on its variant: success binds the payload fields in the
-    /// enclosing scope; mismatch executes `else_body`. The checker requires
-    /// the latter to diverge, so continuation cannot observe unbound payloads.
-    LetElse {
-        /// The matched expression. Its resolved type is the enum being
-        /// destructured.
-        scrutinee: Box<HirExpr>,
-        /// Zero-based variant index of the success-path constructor (e.g. the
-        /// index of `Ok` in `Result`).
-        variant_idx: u32,
-        /// Payload bindings introduced by the success-path pattern. These are
-        /// allocated in the ENCLOSING scope and escape the statement. For an
-        /// aggregate payload field (e.g. the tuple in `Ok((n, s))`) this holds
-        /// a synthetic `__payload_*` temp binding for the whole field; the
-        /// nested leaf binders (`n`, `s`) are produced by `success_prelude`.
-        bindings: Vec<HirMatchArmBinding>,
-        /// Destructure statements for aggregate payload subpatterns
-        /// (`Ok((n, s))`, `Ok(Point { x, y })`). They run on the SUCCESS path,
-        /// after the top-level payload fields are bound and before the
-        /// continuation, projecting the synthetic `__payload_*` temps into
-        /// their leaf binders. Each is an explicit aggregate destructure; the
-        /// leaf binders escape into the enclosing scope like the top-level
-        /// `bindings`. Empty when no payload field is an aggregate.
-        success_prelude: Vec<HirStmt>,
-        /// Nested constructor checks on payload fields, evaluated after the
-        /// outer tag check and before the bindings are made live. A failed
-        /// nested check routes to `else_body`, same as a top-level tag
-        /// mismatch.
-        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
-        /// The divergent else block, run when the pattern fails to match. The
-        /// checker has proven it has type `Ty::Never`.
-        else_body: HirBlock,
-    },
     Assign {
         target: HirExpr,
         value: Box<HirExpr>,

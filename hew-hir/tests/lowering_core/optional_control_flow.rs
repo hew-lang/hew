@@ -1,6 +1,6 @@
 use hew_hir::{
-    lower_program_host_target, verify_hir, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
-    ResolvedRef,
+    lower_program_host_target, verify_hir, HirExprKind, HirItem, HirMatchArmPredicate, HirStmtKind,
+    ResolutionCtx, ResolvedRef,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -235,27 +235,40 @@ fn required_optional_binding_preserves_payload_identity_and_failure_branch() {
             _ => None,
         })
         .expect("source function");
-    let HirStmtKind::LetElse {
-        scrutinee,
-        bindings,
-        else_body,
-        ..
-    } = &function.body.statements[0].kind
-    else {
+    // let-else desugars through the shared pattern authority: a match on the
+    // optional value whose single binding escapes via a plain `Let`.
+    let HirStmtKind::Let(binding, Some(match_expr)) = &function.body.statements[0].kind else {
+        panic!("required binding must desugar to a let-bound match");
+    };
+    let HirExprKind::Match { scrutinee, arms } = &match_expr.kind else {
         panic!("required binding must branch on the optional value");
     };
     assert!(
         matches!(&scrutinee.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == function.params[0].id)
     );
-    assert_eq!(bindings.len(), 1);
-    assert_eq!(bindings[0].ty, ResolvedTy::I64);
-    assert_eq!(bindings[0].field_idx, 0);
-    assert_eq!(bindings[0].name, "number");
+    assert_eq!(binding.ty, ResolvedTy::I64);
+    assert_eq!(binding.name, "number");
+    assert!(matches!(
+        arms[0].predicate,
+        HirMatchArmPredicate::EnumVariant { .. }
+    ));
+    assert_eq!(arms[0].bindings.len(), 1);
+    assert_eq!(arms[0].bindings[0].ty, ResolvedTy::I64);
+    assert_eq!(arms[0].bindings[0].field_idx, 0);
+    assert_eq!(arms[0].bindings[0].name, "number");
     assert!(
-        matches!(&function.body.tail.as_ref().expect("payload tail").kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == bindings[0].binding)
+        matches!(&arms[0].body.kind, HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == arms[0].bindings[0].binding)
     );
     assert!(matches!(
-        else_body.statements[0].kind,
+        &function.body.tail.as_ref().expect("payload tail").kind,
+        HirExprKind::BindingRef { resolved: ResolvedRef::Binding(id), .. } if *id == binding.id
+    ));
+    assert!(matches!(arms[1].predicate, HirMatchArmPredicate::Wildcard));
+    let HirExprKind::Block(else_block) = &arms[1].body.kind else {
+        panic!("else arm body is a block");
+    };
+    assert!(matches!(
+        else_block.statements[0].kind,
         HirStmtKind::Return(_)
     ));
 }

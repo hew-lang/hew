@@ -522,26 +522,6 @@ fn walk_stmt(
         }
         HirStmtKind::Return(None) => {}
         HirStmtKind::Defer { body, .. } => walk_expr(body, subst, residual_domain, disc),
-        HirStmtKind::LetElse {
-            scrutinee,
-            bindings,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            for binding in bindings {
-                disc.visit_ty(&binding.ty, &scrutinee.span, subst, residual_domain);
-            }
-            // Aggregate-payload leaf binders (`Ok((n, s))` → `n`, `s`) carry
-            // their own resolved types and projection expressions; visit them
-            // so a generic record/enum reached only through a destructured leaf
-            // is still discovered for monomorphisation.
-            for prelude_stmt in success_prelude {
-                walk_stmt(prelude_stmt, subst, residual_domain, disc);
-            }
-            walk_block(else_body, subst, residual_domain, disc);
-        }
     }
 }
 

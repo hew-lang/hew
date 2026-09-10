@@ -1,5 +1,6 @@
 use hew_hir::{
-    lower_program, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, ResolutionCtx,
+    lower_program, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirStmtKind,
+    ResolutionCtx,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -451,23 +452,18 @@ fn sum(value: Packet) -> i64 {
     else {
         unreachable!()
     };
-    let let_else = function
-        .body
-        .statements
-        .iter()
-        .find_map(|statement| match &statement.kind {
-            hew_hir::HirStmtKind::LetElse {
-                success_prelude,
-                bindings,
-                ..
-            } => Some((success_prelude, bindings)),
-            _ => None,
-        })
-        .expect("struct-variant let-else present");
-    let payload = let_else
-        .1
-        .iter()
-        .find(|binding| binding.field_idx == 0)
-        .expect("let-else payload field must be bound");
-    assert_tuple_payload_destructure(let_else.0, payload, &["a", "b"]);
+    // A let-else with 2+ escaping names desugars to a `Destructure` fed by
+    // the synthesized match, mirroring an ordinary tuple/record let; the
+    // aggregate sub-pattern's own prelude destructure lives inside the
+    // match's success arm, same as plain `match`.
+    let HirStmtKind::Destructure {
+        value: match_expr, ..
+    } = &function.body.statements[0].kind
+    else {
+        panic!("multi-binding let-else must desugar to a destructure of the match result");
+    };
+    let HirExprKind::Match { arms, .. } = &match_expr.kind else {
+        panic!("let-else must branch through a match");
+    };
+    assert_arm_tuple_payload(&arms[0], 0, &["a", "b"]);
 }

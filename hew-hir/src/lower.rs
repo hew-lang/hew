@@ -95,6 +95,67 @@ fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
     path.segments.last().map(String::as_str)
 }
 
+/// Recursively push `id`'s leaves into `out`: a synthetic aggregate carrier
+/// found in `by_source` contributes its own fields (each possibly further
+/// nested) in its place; anything else is a leaf in its own right.
+fn expand_arm_binding_leaf(
+    id: BindingId,
+    name: &str,
+    ty: &ResolvedTy,
+    by_source: &std::collections::HashMap<BindingId, &[HirDestructureField]>,
+    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+) {
+    if let Some(fields) = by_source.get(&id) {
+        for field in *fields {
+            expand_arm_binding_leaf(
+                field.binding.id,
+                &field.binding.name,
+                &field.binding.ty,
+                by_source,
+                out,
+            );
+        }
+    } else {
+        out.push((name.to_string(), id, ty.clone()));
+    }
+}
+
+/// Expand a match arm's top-level payload bindings into the leaves actually
+/// visible in the arm body. A top-level field that one of `prelude`'s
+/// `Destructure` statements further projects (an aggregate subpattern like
+/// `Ok((n, s))`) is a synthetic `__payload_*` carrier the source never
+/// wrote; its own leaf binders (`n`, `s`) take its place, recursing for a
+/// subpattern nested inside another. Keyed by `BindingId`, never by name.
+fn expand_arm_bindings(
+    bindings: &[HirMatchArmBinding],
+    prelude: &[HirStmt],
+) -> Vec<(String, BindingId, ResolvedTy)> {
+    let mut by_source: std::collections::HashMap<BindingId, &[HirDestructureField]> =
+        std::collections::HashMap::new();
+    for stmt in prelude {
+        if let HirStmtKind::Destructure { value, fields } = &stmt.kind {
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } = &value.kind
+            {
+                by_source.insert(*id, fields);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        expand_arm_binding_leaf(
+            binding.binding,
+            &binding.name,
+            &binding.ty,
+            &by_source,
+            &mut out,
+        );
+    }
+    out
+}
+
 /// The body of one arm handed to [`LowerCtx::lower_pattern_arms`].
 ///
 /// `match` arms carry an expression; `if let` and `while let` carry a block
@@ -110,6 +171,11 @@ enum PatternArmBody<'a> {
         body_span: Span,
         fallthrough: ConditionFallthrough<'a>,
     },
+    /// `let PAT = expr else { ... }`'s success arm: pack the arm's bindings
+    /// (see [`LowerCtx::pack_arm_bindings`]) instead of lowering a source
+    /// body. `lower_let_else` destructures the packed value back into fresh
+    /// bindings that escape into the enclosing scope.
+    Bindings(Span),
 }
 
 /// What a pattern condition does when an operand fails: run `if let`'s `else`
@@ -134,6 +200,7 @@ impl PatternArm<'_> {
         match &self.body {
             PatternArmBody::Expr(expr) => expr.1.end,
             PatternArmBody::Condition { body_span, .. } => body_span.end,
+            PatternArmBody::Bindings(span) => span.end,
         }
     }
 }
@@ -7164,18 +7231,6 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Defer { body, .. } => {
             collect_call_sites_in_expr(body, out, trait_out);
         }
-        HirStmtKind::LetElse {
-            scrutinee,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            for stmt in success_prelude {
-                collect_call_sites_in_stmt(stmt, out, trait_out);
-            }
-            collect_call_sites_in_block(else_body, out, trait_out);
-        }
     }
 }
 
@@ -11053,18 +11108,6 @@ impl LowerCtx {
             }
             HirStmtKind::Defer { body, .. } => {
                 self.wrap_var_self_explicit_expr_returns(body, receiver, abi_return_ty);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                for stmt in success_prelude.iter_mut() {
-                    self.wrap_var_self_stmt_returns(stmt, receiver, abi_return_ty);
-                }
-                self.wrap_var_self_explicit_returns_in_block(else_body, receiver, abi_return_ty);
             }
             HirStmtKind::Let(_, None) => {}
         }
@@ -16131,10 +16174,9 @@ impl LowerCtx {
                 else_block,
             } => {
                 // let-else: `let Pat = scrutinee else { <divergent block> };`.
-                // The Ok-path binders escape into the enclosing scope and the
-                // else block (proven divergent by the checker) runs on a failed
-                // match. Lower to the dedicated `HirStmtKind::LetElse` node and
-                // return early — the ordinary-let machinery below does not apply
+                // Desugars through `lower_let_else` to a match on Pat plus a
+                // destructure of its bindings into the enclosing scope — return
+                // early, since the ordinary-let machinery below does not apply
                 // (it binds a single name; let-else binds payload fields).
                 if let Some(else_blk) = else_block {
                     if let Some(value_expr) = value {
@@ -16976,26 +17018,21 @@ impl LowerCtx {
         (prelude, had_error)
     }
 
-    /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
-    /// `HirStmtKind::LetElse` node.
-    ///
-    /// Unlike a pattern condition, the success-path payload bindings are
-    /// allocated in the ENCLOSING scope (no `push_scope`/`pop_scope` brackets
-    /// them) so they escape the statement and are live for the rest of the
-    /// enclosing block. The else block is lowered in its own scope and is
-    /// guaranteed divergent by the type checker (it proved `Ty::Never`); MIR
-    /// runs it on the no-match path so control never reaches an unbound binder.
+    /// Lower `let PAT = scrutinee else { <divergent block> };` through the
+    /// same pattern authority as `match`/`if let`/`while let`: desugar to
+    /// `let tmp = match scrutinee { PAT => <bindings>, _ => <else block> };`
+    /// then destructure `tmp` into fresh bindings that escape into the
+    /// enclosing scope. `<bindings>` is `PAT`'s bound names packed by
+    /// [`Self::pack_arm_bindings`] — `Unit` for none, the value directly for
+    /// one, a name-ordered tuple for more — and the destructure step (a plain
+    /// `Let` or `Destructure` statement) unpacks that shape back into the
+    /// escaping names. The checker has already proven the else block
+    /// diverges (`Ty::Never`), so `pattern_conditional_match`'s wildcard arm
+    /// never falls through to a continuation that could see an unbound
+    /// binder.
     ///
     /// Returns `Some(HirStmt)` on success, `None` on a fail-closed error
-    /// (diagnostics already pushed). Pattern scope: single enum-variant
-    /// constructor patterns (e.g. `Ok(n)`, `Packet.Data { a }`). Or-patterns and
-    /// tuples with a refutable element are not lowered here yet and fail closed;
-    /// `if let` and `while let` accept them through `lower_pattern_arms`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bind-or-diverge path; splitting would obscure the parallel \
-                  error-handling paths"
-    )]
+    /// (diagnostics already pushed by `lower_pattern_arms`).
     fn lower_let_else(
         &mut self,
         pattern: &Spanned<Pattern>,
@@ -17006,168 +17043,88 @@ impl LowerCtx {
         let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
         self.try_register_enum_instantiation(&scrutinee_expr.1);
 
-        let pattern_span = &pattern.1;
-        let key = self.mk_key(pattern_span);
-        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else pattern has no resolution; \
-                 only single payload-bearing enum-variant patterns are supported",
-                "let-else-substrate",
-            );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
-        };
+        let pattern_span = pattern.1.clone();
+        let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)
+            .into_iter()
+            .map(|leaf| PatternArm {
+                pattern: leaf,
+                guard: None,
+                body: PatternArmBody::Bindings(pattern_span.clone()),
+            })
+            .collect();
 
-        // Uniform plan authority: a record-shaped pattern (incl. enum
-        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
-        // fails closed here rather than lowering off the AST-derived resolution.
-        if self.record_shape_missing_plan(pattern) {
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
-        }
-
-        let (PatternKind::VariantCtor, Some(variant_match)) =
-            (resolution.pattern_kind, resolution.variant_match)
+        // `block_result_ty` only matters to `PatternArmBody::Condition`; our
+        // synthesized arms carry `Bindings`, which ignores it.
+        let Some((hir_arms, result_ty)) =
+            self.lower_pattern_arms(&scrutinee_hir, &arms, &ResolvedTy::Unit)
         else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else supports only payload-bearing enum-variant patterns \
-                 (e.g. `Ok(n)`); unit variants, wildcards, literals, plain \
-                 bindings, and or-patterns are reserved for a future lane",
-                "let-else-substrate",
-            );
             let _ = self.lower_block(else_block, &ResolvedTy::Unit);
             return None;
         };
 
-        let Some((_, idx_usize, _)) =
-            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else variant not registered in machine/enum ctor registry",
-                "let-else-substrate",
-            );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
+        // `lower_pattern_arms`'s inference skips `Unit`-typed arms, which is
+        // exactly the "no bindings" shape here, so the fallback is correct.
+        let packed_ty = result_ty.unwrap_or(ResolvedTy::Unit);
+
+        // Every or-pattern leaf binds the same names (the checker requires
+        // it for the shared body to type-check), so any arm's expanded
+        // binding list names the escaping shape; sort by name to match
+        // `pack_arm_bindings`. The arm's aggregate-destructure prelude (if
+        // any) rode along as the leading statements of its wrapped body.
+        let arm0_prelude: &[HirStmt] = match &hir_arms[0].body.kind {
+            HirExprKind::Block(block) => &block.statements,
+            _ => &[],
         };
-        let variant_idx =
-            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
-
-        // Build the payload-binding specs (same shape as if-let / match).
-        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-        let mut binding_error = false;
-        for payload in &resolution.payload_bindings {
-            let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
-                Err(err) => {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        format!("unresolved payload binding type in let-else ({err:?})"),
-                        "let-else-substrate",
-                    );
-                    binding_error = true;
-                    continue;
-                }
-            };
-            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "let-else payload binding field index exceeds u32::MAX",
-                    "let-else-substrate",
-                );
-                binding_error = true;
-                continue;
-            };
-            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-        }
-
-        // The else block runs on the FAILURE path, where the Ok binders are NOT
-        // in scope. Lower it FIRST, in its own scope, BEFORE binding the
-        // payload into the enclosing scope — so the else block cannot see the
-        // escaping binders (matching the checker's failure-path scoping).
-        self.push_scope();
-        let else_body = self.lower_block(else_block, &ResolvedTy::Unit);
-        self.pop_scope();
-
-        // Bind the payload fields into the ENCLOSING scope (no push/pop) so the
-        // Ok-path binders escape and are live for the rest of the enclosing
-        // block — the defining property of let-else.
-        let mut bindings: Vec<HirMatchArmBinding> = if binding_error {
-            Vec::new()
-        } else {
-            binding_specs
+        let mut escapees: Vec<(String, ResolvedTy)> =
+            expand_arm_bindings(&hir_arms[0].bindings, arm0_prelude)
                 .into_iter()
-                .map(|(field_idx, name, ty)| {
-                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                    HirMatchArmBinding {
-                        binding: bound.id,
-                        field_idx,
-                        name,
-                        ty,
-                    }
-                })
-                .collect()
+                .map(|(name, _, ty)| (name, ty))
+                .collect();
+        escapees.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let else_hir_block = self.lower_block(else_block, &packed_ty);
+        let else_ty = else_hir_block.ty.clone();
+        let fallthrough = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
+            ty: else_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(else_hir_block),
+            span: span.clone(),
         };
 
-        // Destructure aggregate payload subpatterns (`Ok((n, s))`) into their
-        // leaf binders, mirroring `match`. The prelude runs on the SUCCESS path
-        // after the top-level payload fields bind; its leaf binders escape into
-        // the enclosing scope just like `bindings`. Plain bindings / wildcards
-        // produce no prelude.
-        let success_prelude = if binding_error {
-            Vec::new()
-        } else if let Some((name, patterns)) = tuple_variant_pattern_parts(&pattern.0) {
-            let (prelude, had_error) = self.lower_constructor_payload_aggregates(
-                name,
-                patterns,
-                &scrutinee_hir.ty,
-                &mut bindings,
-                "let-else-substrate",
-            );
-            binding_error |= had_error;
-            prelude
-        } else if let Some((name, fields)) = struct_variant_pattern_parts(&pattern.0) {
-            let (prelude, had_error) = self.lower_struct_variant_payload_aggregates(
-                name,
-                fields,
-                &scrutinee_hir.ty,
-                &mut bindings,
-                "let-else-substrate",
-            );
-            binding_error |= had_error;
-            prelude
-        } else {
-            Vec::new()
-        };
+        let match_expr =
+            self.pattern_conditional_match(scrutinee_hir, hir_arms, fallthrough, &packed_ty, span);
 
-        let mut payload_variant_predicates =
-            Vec::with_capacity(resolution.payload_variant_patterns.len());
-        let mut pvp_error = false;
-        for pvp in &resolution.payload_variant_patterns {
-            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                payload_variant_predicates.push(pred);
-            } else {
-                pvp_error = true;
-                break;
+        let kind = match escapees.len() {
+            0 => HirStmtKind::Expr(match_expr),
+            1 => {
+                let (name, ty) = escapees.into_iter().next().expect("checked len == 1");
+                let bound = self.bind(name, ty, false, pattern_span.clone());
+                HirStmtKind::Let(bound, Some(match_expr))
             }
-        }
-
-        if binding_error || pvp_error {
-            return None;
-        }
+            _ => {
+                let fields = escapees
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (name, ty))| HirDestructureField {
+                        selector: HirDestructureSelector::Tuple(
+                            u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
+                        ),
+                        binding: self.bind(name, ty, false, pattern_span.clone()),
+                    })
+                    .collect();
+                HirStmtKind::Destructure {
+                    value: match_expr,
+                    fields,
+                }
+            }
+        };
 
         Some(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::LetElse {
-                scrutinee: Box::new(scrutinee_hir),
-                variant_idx,
-                bindings,
-                success_prelude,
-                payload_variant_predicates,
-                else_body,
-            },
+            kind,
             span: span.clone(),
         })
     }
@@ -29500,7 +29457,8 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir = self.lower_pattern_arm_body(&arm.body, block_result_ty);
+            let mut body_hir =
+                self.lower_pattern_arm_body(&arm.body, block_result_ty, &bindings, &body_prelude);
             if !body_prelude.is_empty() {
                 let body_ty = body_hir.ty.clone();
                 let body_span = arm.pattern.1.start..arm.body_end();
@@ -29564,6 +29522,8 @@ impl LowerCtx {
         &mut self,
         body: &PatternArmBody<'_>,
         block_result_ty: &ResolvedTy,
+        bindings: &[HirMatchArmBinding],
+        body_prelude: &[HirStmt],
     ) -> HirExpr {
         match body {
             PatternArmBody::Expr(expr) => self.lower_expr(expr, IntentKind::Read),
@@ -29580,6 +29540,53 @@ impl LowerCtx {
                 block_result_ty,
                 body_span,
             ),
+            PatternArmBody::Bindings(span) => {
+                self.pack_arm_bindings(bindings, body_prelude, span.clone())
+            }
+        }
+    }
+
+    /// Pack a let-else success arm's bindings into the value its synthesized
+    /// match arm returns: `Unit` for none, the binding's own value for
+    /// exactly one, a name-ordered tuple for more. Sorting by name (rather
+    /// than declaration order) keeps every or-pattern leaf's tuple shape
+    /// identical even when the leaves' variants declare the shared binder
+    /// names in different field orders. `lower_let_else` destructures the
+    /// packed value back into fresh, escaping bindings after the match.
+    ///
+    /// `bindings` is expanded through `body_prelude` first: a top-level
+    /// payload field that an aggregate subpattern (`Ok((n, s))`) further
+    /// destructures is a synthetic `__payload_*` carrier, not a name the
+    /// source wrote, so its own leaf binders (`n`, `s`) pack in its place.
+    fn pack_arm_bindings(
+        &mut self,
+        bindings: &[HirMatchArmBinding],
+        body_prelude: &[HirStmt],
+        span: Span,
+    ) -> HirExpr {
+        let mut ordered = expand_arm_bindings(bindings, body_prelude);
+        ordered.sort_by(|a, b| a.0.cmp(&b.0));
+        match ordered.as_slice() {
+            [] => self.make_unit_expr(span),
+            [(name, id, ty)] => self.binding_ref_expr(name.clone(), *id, ty.clone(), span),
+            many => {
+                let elements: Vec<HirExpr> = many
+                    .iter()
+                    .map(|(name, id, ty)| {
+                        self.binding_ref_expr(name.clone(), *id, ty.clone(), span.clone())
+                    })
+                    .collect();
+                let ty = ResolvedTy::Tuple(many.iter().map(|(_, _, ty)| ty.clone()).collect());
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty: ty.clone(),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::TupleLiteral { elements },
+                    span,
+                }
+            }
         }
     }
 
@@ -29713,7 +29720,7 @@ impl LowerCtx {
     /// Walk a rejected arm's body so the checker stream stays complete. The
     /// lowered result is discarded; only the diagnostics it produces matter.
     fn walk_pattern_arm_body(&mut self, body: &PatternArmBody<'_>) {
-        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit);
+        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit, &[], &[]);
     }
 
     /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into
@@ -30442,34 +30449,6 @@ fn collect_general_closure_captures_walk_block(
             HirStmtKind::Defer { body, .. } => {
                 collect_general_closure_captures_walk(body, outer_bindings, seen, captures);
             }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-                for prelude_stmt in success_prelude {
-                    match &prelude_stmt.kind {
-                        HirStmtKind::Let(_, Some(value))
-                        | HirStmtKind::Destructure { value, .. } => {
-                            collect_general_closure_captures_walk(
-                                value,
-                                outer_bindings,
-                                seen,
-                                captures,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                collect_general_closure_captures_walk_block(
-                    else_body,
-                    outer_bindings,
-                    seen,
-                    captures,
-                );
-            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -30513,28 +30492,6 @@ fn collect_captures_walk_block(
             HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 collect_captures_walk(body, &locally_bound, seen, captures, self_id);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                collect_captures_walk(scrutinee, &locally_bound, seen, captures, self_id);
-                for prelude_stmt in success_prelude {
-                    match &prelude_stmt.kind {
-                        HirStmtKind::Let(binding, Some(value)) => {
-                            collect_captures_walk(value, &locally_bound, seen, captures, self_id);
-                            locally_bound.insert(binding.id);
-                        }
-                        HirStmtKind::Destructure { value, fields } => {
-                            collect_captures_walk(value, &locally_bound, seen, captures, self_id);
-                            locally_bound.extend(fields.iter().map(|field| field.binding.id));
-                        }
-                        _ => {}
-                    }
-                }
-                collect_captures_walk_block(else_body, &locally_bound, seen, captures, self_id);
             }
         }
     }
@@ -31947,24 +31904,6 @@ fn scan_block_for_call_shape(
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 scan_expr_for_call_shape(body, callable, diagnostics);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-                for prelude_stmt in success_prelude {
-                    match &prelude_stmt.kind {
-                        HirStmtKind::Let(_, Some(init))
-                        | HirStmtKind::Destructure { value: init, .. } => {
-                            scan_expr_for_call_shape(init, callable, diagnostics);
-                        }
-                        _ => {}
-                    }
-                }
-                scan_block_for_call_shape(else_body, callable, diagnostics);
             }
         }
     }

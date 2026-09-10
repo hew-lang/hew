@@ -1,4 +1,5 @@
 import std.string;
+import std.stream;
 
 enum Setting {
     Raw(string),
@@ -13,6 +14,15 @@ fn lookup(key: string) -> Setting {
     } else {
         .Missing
     }
+}
+
+// Zero-binding let-else: the unit-variant pattern matches or diverges with
+// no payload to escape at all (`pack_arm_bindings`'s empty-tuple/Unit case).
+fn confirm_missing(key: string) -> string {
+    let .Missing = lookup(key) else {
+        return "present";
+    };
+    "confirmed missing"
 }
 
 fn port(key: string) -> Result<i64, string> {
@@ -47,6 +57,93 @@ fn skip(limit: i64) -> i64 {
     seen
 }
 
+enum Reading {
+    Cached(string),
+    Fresh(string),
+    Stale,
+}
+
+fn reading(kind: i64) -> Reading {
+    if kind == 0 {
+        .Cached(f"cached {kind}")
+    } else if kind == 1 {
+        .Fresh(f"fresh {kind}")
+    } else {
+        .Stale
+    }
+}
+
+// Or-pattern let-else: both leaves bind the same owned name.
+fn read_text(kind: i64) -> string {
+    let .Cached(text) | .Fresh(text) = reading(kind) else {
+        return "stale";
+    };
+    text
+}
+
+enum Config {
+    Named { key: string, value: string },
+    Anonymous,
+}
+
+fn config(flag: i64) -> Config {
+    if flag == 1 {
+        .Named { key: f"role {flag}", value: f"worker {flag}" }
+    } else {
+        .Anonymous
+    }
+}
+
+// Record (enum struct-variant) let-else.
+fn config_value(flag: i64) -> string {
+    let Config.Named { key, value } = config(flag) else {
+        return "anonymous";
+    };
+    f"{key}={value}"
+}
+
+fn labeled(n: i64, label: string) -> (i64, string) {
+    (n, label)
+}
+
+// Tuple let-else with a refutable (literal) element. The tuple's owned
+// second field escapes into `owned_label` on the bind path and must still
+// be released, unleaked, when the diverge path runs without it ever being
+// bound.
+fn describe_labeled(n: i64, label: string) -> string {
+    let (0, owned_label) = labeled(n, label) else {
+        return "missing";
+    };
+    f"zero:{owned_label}"
+}
+
+enum Source {
+    File(Stream<string>, string),
+    Missing,
+}
+
+fn source(has_file: i64) -> Source {
+    if has_file == 1 {
+        match stream.from_file("resource-read.bin") {
+            .Ok(input) => .File(input, "tag"),
+            .Err(_) => panic("fixture open failed"),
+        }
+    } else {
+        .Missing
+    }
+}
+
+// Multi-binding let-else escaping two payload fields at once: an affine
+// (move-only) stream alongside a plain owned string. Both must transfer
+// out of the arm rather than copy — the stream has no Clone impl, so a
+// silent copy-instead-of-move would fail to compile or double-close.
+fn describe_source(has_file: i64) -> string {
+    let .File(input, tag) = source(has_file) else {
+        return "missing";
+    };
+    tag + ":" + input.collect()
+}
+
 fn main() {
     match port("port") {
         .Ok(value) => println(f"port {value}"),
@@ -62,4 +159,20 @@ fn main() {
     }
     println(f"scan {scan(3)}");
     println(f"skip {skip(3)}");
+
+    println(read_text(0));
+    println(read_text(1));
+    println(read_text(2));
+
+    println(config_value(1));
+    println(config_value(0));
+
+    println(describe_labeled(0, f"kept {0}"));
+    println(describe_labeled(5, f"dropped {5}"));
+
+    println(describe_source(1));
+    println(describe_source(0));
+
+    println(confirm_missing("nothing"));
+    println(confirm_missing("port"));
 }

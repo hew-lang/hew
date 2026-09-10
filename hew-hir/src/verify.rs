@@ -258,45 +258,6 @@ impl Verifier {
                 }
                 HirStmtKind::Return(None) => {}
                 HirStmtKind::Defer { body, .. } => self.expr(body),
-                HirStmtKind::LetElse {
-                    scrutinee,
-                    bindings,
-                    payload_variant_predicates,
-                    success_prelude,
-                    else_body,
-                    ..
-                } => {
-                    self.expr(scrutinee);
-                    self.nested_payload_literals(
-                        payload_variant_predicates,
-                        scrutinee.span.clone(),
-                    );
-                    // The Ok-path bindings escape into the enclosing scope —
-                    // register them here so later references resolve.
-                    for binding in bindings {
-                        self.binding(binding.binding, scrutinee.span.clone());
-                    }
-                    // Aggregate payload destructure (e.g. `Ok((n, s))`): the
-                    // prelude's `Let` statements introduce the leaf binders
-                    // (`n`, `s`) that also escape into the enclosing scope.
-                    // Register them and verify their projection values so a
-                    // later reference resolves and is not flagged unresolved.
-                    for prelude_stmt in success_prelude {
-                        match &prelude_stmt.kind {
-                            HirStmtKind::Let(binding, value) => {
-                                self.binding(binding.id, binding.span.clone());
-                                if let Some(value) = value {
-                                    self.expr(value);
-                                }
-                            }
-                            HirStmtKind::Destructure { value, fields } => {
-                                self.destructure_bindings(value, fields);
-                            }
-                            _ => {}
-                        }
-                    }
-                    self.block(else_body);
-                }
             }
         }
         if let Some(tail) = &block.tail {

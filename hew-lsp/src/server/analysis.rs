@@ -183,21 +183,18 @@ pub(super) fn analyze_document(
     extra_pkg_paths: &[std::path::PathBuf],
 ) -> DocumentState {
     let line_offsets = compute_line_offsets(source);
-    let Some(root_path) = uri.to_file_path() else {
-        // A document with no file behind it cannot anchor module resolution.
-        let parse_result = hew_parser::parse(source);
-        return DocumentState {
-            source: source.to_string(),
-            line_offsets,
-            parse_result,
-            type_output: None,
-            dependency_uris: None,
-            diagnostics_by_uri: DiagnosticMap::new(),
-        };
-    };
+    // An untitled buffer has no file to anchor module resolution, so it is
+    // checked as a standalone source under the server's working directory.
+    // Its own text is what the driver reads either way, so both kinds of
+    // document take the same run.
+    let root_path = uri.to_file_path().map_or_else(
+        || std::path::PathBuf::from("./untitled.hew"),
+        std::borrow::Cow::into_owned,
+    );
 
     let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
-    let mut state = hew_compile::run_document_frontend(&root_path.display().to_string(), &options);
+    let mut state =
+        hew_compile::run_source_frontend(source, &root_path.display().to_string(), &options);
     let parse_result = state
         .parse_result
         .take()
@@ -1657,6 +1654,34 @@ pub(super) mod tests {
             std::fs::write(&path, content).expect("write workspace file");
         }
         root
+    }
+
+    /// An untitled buffer has no file behind it, and it still gets checked:
+    /// the editor offers types, hovers and errors before the first save.
+    #[test]
+    fn an_untitled_buffer_is_still_type_checked() {
+        let uri = Url::parse("untitled:Untitled-1").expect("untitled uri parses");
+        let source = "fn main() {\n    let wrong: i32 = \"text\";\n    println(wrong);\n}\n";
+
+        let document = analyze_document(&uri, source, &DashMap::new(), &[]);
+        let type_output = document
+            .type_output
+            .as_ref()
+            .expect("an untitled buffer still reaches the checker");
+        assert!(
+            !type_output.errors.is_empty(),
+            "the deliberate mismatch must be reported"
+        );
+        assert!(
+            document
+                .diagnostics_by_uri
+                .get(&uri)
+                .is_some_and(|diagnostics| diagnostics
+                    .iter()
+                    .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))),
+            "the error must be published against the buffer's own uri, got: {:?}",
+            document.diagnostics_by_uri
+        );
     }
 
     /// The editor and `hew check` report the same thing for the same file.

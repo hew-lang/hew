@@ -1270,6 +1270,9 @@ statements.
 
 - The entry file is identified by `dir_name == file_stem` (e.g.
   `greeting/greeting.hew`). If no such file exists, import resolution fails.
+- The directory is the module's only import spelling. Neither the entry file
+  (`import greeting.greeting;`) nor a peer file is importable on its own; both
+  are refused, naming `greeting`.
 - All other `.hew` files at the **top level** of the directory are peer files.
   Sub-directories are not automatically included; they must be imported
   explicitly.

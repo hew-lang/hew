@@ -1815,6 +1815,35 @@ fn canonical_directory_module_entry_source(source: &Path) -> PathBuf {
     }
 }
 
+/// The shape a dotted import path was turned into a candidate file with: the
+/// directory form `a/b/b.hew` or the flat form `a/b.hew`. Which one a module
+/// resolved through is the only thing that separates the entry-file spelling of
+/// a directory module from a nested module that repeats its own name, so the
+/// resolver carries the form rather than reading it back off the path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CandidateForm {
+    Directory,
+    Flat,
+}
+
+/// Whether a module import named a directory module through its entry file
+/// rather than through the directory itself.
+///
+/// `pkg.dir.dir` matches the FLAT candidate `…/dir/dir.hew`, which is also the
+/// directory candidate of `pkg.dir` — one source under two spellings. Paths
+/// that repeat their last segment and still name a module of their own match a
+/// DIRECTORY candidate instead: `std.crypto.crypto` is
+/// `std/crypto/crypto/crypto.hew`, and a module named after its own package
+/// (`probe.probe` at `probe/src/probe/probe.hew`) resolves the same way.
+fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: CandidateForm) -> bool {
+    let Some((last, rest)) = path.split_last() else {
+        return false;
+    };
+    form == CandidateForm::Flat
+        && rest.last() == Some(last)
+        && canonical.file_stem() == canonical.parent().and_then(Path::file_name)
+}
+
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
 ) -> Option<hew_parser::module::ModuleId> {
@@ -2416,7 +2445,7 @@ fn resolve_file_imports_internal(
                     .iter()
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
-                let mut candidates = Vec::new();
+                let mut candidates: Vec<(PathBuf, CandidateForm)> = Vec::new();
                 let mut locked_project_candidates = Vec::new();
                 let mut installed_package_dir = None;
                 let locked_version = ctx
@@ -2433,17 +2462,23 @@ fn resolve_file_imports_internal(
                     let local_rel = rest_path.iter().collect::<PathBuf>();
                     let local_dir = local_rel.join(format!("{local_last}.hew"));
                     let local_flat = local_rel.with_extension("hew");
-                    candidates.push(ctx.project_dir.join("src").join(&local_dir));
-                    candidates.push(ctx.project_dir.join("src").join(&local_flat));
-                    candidates.push(ctx.project_dir.join(&local_dir));
-                    candidates.push(ctx.project_dir.join(&local_flat));
+                    candidates.push((
+                        ctx.project_dir.join("src").join(&local_dir),
+                        CandidateForm::Directory,
+                    ));
+                    candidates.push((
+                        ctx.project_dir.join("src").join(&local_flat),
+                        CandidateForm::Flat,
+                    ));
+                    candidates.push((ctx.project_dir.join(&local_dir), CandidateForm::Directory));
+                    candidates.push((ctx.project_dir.join(&local_flat), CandidateForm::Flat));
                 }
 
-                candidates.push(source_dir.join(&dir_path));
-                candidates.push(source_dir.join(&rel_path));
+                candidates.push((source_dir.join(&dir_path), CandidateForm::Directory));
+                candidates.push((source_dir.join(&rel_path), CandidateForm::Flat));
                 if !cwd_crosses_root {
-                    candidates.push(cwd.join(&dir_path));
-                    candidates.push(cwd.join(&rel_path));
+                    candidates.push((cwd.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
                 }
 
                 let module_dir = decl.path.iter().collect::<PathBuf>();
@@ -2452,14 +2487,22 @@ fn resolve_file_imports_internal(
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
-                    candidates.push(ctx.project_dir.join(".hew/packages").join(&versioned_rel));
+                    // The version directory sits between the module and its
+                    // entry file, so this is a package root, never a flat file.
+                    candidates.push((
+                        ctx.project_dir.join(".hew/packages").join(&versioned_rel),
+                        CandidateForm::Directory,
+                    ));
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&versioned_rel));
+                        candidates.push((pkg.join(&versioned_rel), CandidateForm::Directory));
                     }
                 }
 
                 if !is_std_import {
-                    candidates.push(ctx.project_dir.join(".hew/packages").join(&rel_path));
+                    candidates.push((
+                        ctx.project_dir.join(".hew/packages").join(&rel_path),
+                        CandidateForm::Flat,
+                    ));
                     let project_package_dir =
                         ctx.project_dir.join(".hew/packages").join(&module_dir);
                     if is_declared_dependency {
@@ -2477,12 +2520,12 @@ fn resolve_file_imports_internal(
                             },
                         ));
                     }
-                    candidates.push(project_package_entry);
+                    candidates.push((project_package_entry, CandidateForm::Directory));
                 }
 
                 if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
-                    candidates.push(pkg.join(&dir_path));
-                    candidates.push(pkg.join(&rel_path));
+                    candidates.push((pkg.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((pkg.join(&rel_path), CandidateForm::Flat));
                     if decl.path.len() > 1 && !is_builtin_module(&module_str) {
                         let rest_dir = decl.path[1..]
                             .iter()
@@ -2492,8 +2535,8 @@ fn resolve_file_imports_internal(
                             .iter()
                             .collect::<PathBuf>()
                             .with_extension("hew");
-                        candidates.push(pkg.join(&rest_dir));
-                        candidates.push(pkg.join(&rest_flat));
+                        candidates.push((pkg.join(&rest_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&rest_flat), CandidateForm::Flat));
                     }
                 }
 
@@ -2503,8 +2546,8 @@ fn resolve_file_imports_internal(
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&tail_dir));
-                        candidates.push(pkg.join(&tail_rel));
+                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
                     }
                 }
 
@@ -2514,8 +2557,8 @@ fn resolve_file_imports_internal(
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&tail_dir));
-                        candidates.push(pkg.join(&tail_rel));
+                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
                     }
                 }
 
@@ -2533,15 +2576,15 @@ fn resolve_file_imports_internal(
                     &discovered_search_paths
                 };
                 for root in search_paths {
-                    candidates.push(root.join(&dir_path));
-                    candidates.push(root.join(&rel_path));
+                    candidates.push((root.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((root.join(&rel_path), CandidateForm::Flat));
                 }
 
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
-                let mut resolved = Vec::new();
-                for candidate in &candidates {
+                let mut resolved: Vec<(PathBuf, CandidateForm)> = Vec::new();
+                for (candidate, form) in &candidates {
                     if let Some(canonical) = resolve_candidate(ctx.documents, candidate) {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
@@ -2549,16 +2592,24 @@ fn resolve_file_imports_internal(
                         {
                             verify_locked_project_package(check)?;
                         }
-                        resolved.push(canonical);
+                        // One file reached by both shapes is a directory module
+                        // named by its directory: the directory candidate wins.
+                        match resolved.iter_mut().find(|(path, _)| *path == canonical) {
+                            Some((_, existing)) => {
+                                if *form == CandidateForm::Directory {
+                                    *existing = CandidateForm::Directory;
+                                }
+                            }
+                            None => resolved.push((canonical, *form)),
+                        }
                     }
                 }
-                resolved.sort();
-                resolved.dedup();
+                resolved.sort_by(|(left, _), (right, _)| left.cmp(right));
 
                 if resolved.len() > 1 {
                     let paths = resolved
                         .iter()
-                        .map(|p| p.display().to_string())
+                        .map(|(path, _)| path.display().to_string())
                         .collect::<Vec<_>>()
                         .join("` and `");
                     return Err(FrontendFailure::coded_message("E_IMPORT_AMBIGUOUS", format!(
@@ -2566,7 +2617,7 @@ fn resolve_file_imports_internal(
                     )));
                 }
 
-                if let Some(canonical) = resolved.into_iter().next() {
+                if let Some((canonical, form)) = resolved.into_iter().next() {
                     // The shipped stdlib directory peers are alternate
                     // spellings of one compiler-owned module. Promote those
                     // imports to the entry source before loading the
@@ -2578,6 +2629,30 @@ fn resolve_file_imports_internal(
                         .is_some()
                     {
                         canonical_directory_module_entry_source(&canonical)
+                    } else if is_module_import
+                        && is_directory_module_entry_alias(&decl.path, &canonical, form)
+                    {
+                        // A directory module is spelled by its directory, and
+                        // its entry file adds no second module (spec 3.5.1).
+                        // Accepting both spellings would let one compilation
+                        // reach one source under two names, so refuse the
+                        // longer one and name the module it aliases.
+                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                        let message = format!(
+                            "cannot import `{source_module}`: `{directory_module}` is a directory module and its entry file is not a module of its own; import `{directory_module}` instead"
+                        );
+                        return Err(match read_source(ctx.documents, source_file) {
+                            Ok(module_source) => FrontendFailure::coded_message_at(
+                                "E_ENTRY_FILE_IMPORT",
+                                message,
+                                items[*idx].1.clone(),
+                                &module_source,
+                                &source_file.display().to_string(),
+                            ),
+                            Err(_) => {
+                                FrontendFailure::coded_message("E_ENTRY_FILE_IMPORT", message)
+                            }
+                        });
                     } else if is_module_import
                         && canonical_directory_module_entry_source(&canonical) != canonical
                         && decl.path.len() >= 2
@@ -2624,7 +2699,7 @@ fn resolve_file_imports_internal(
                     }
                     let tried = candidates
                         .iter()
-                        .map(|candidate| candidate.display().to_string())
+                        .map(|(candidate, _)| candidate.display().to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
                     let hint = if is_declared_dependency {

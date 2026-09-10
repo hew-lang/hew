@@ -132,6 +132,8 @@ pub enum RuntimeValueKind {
     Duration,
     /// A concrete source-owned prelude nominal with no type parameters.
     Named(&'static str),
+    /// A concrete `#[opaque]` runtime-handle nominal with no type parameters.
+    NamedOpaque(&'static str),
     /// A monomorphic enum whose source declaration supplies its exact owner.
     MonomorphicBuiltin(BuiltinType),
     /// The signature's receiver, constrained by canonical builtin identity.
@@ -219,6 +221,7 @@ impl RuntimeValueKind {
             Self::Bytes => ResolvedTy::Bytes,
             Self::Duration => ResolvedTy::Duration,
             Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
+            Self::NamedOpaque(name) => ResolvedTy::named_opaque(name, Vec::new()),
             Self::MonomorphicBuiltin(builtin) => {
                 let fact =
                     crate::builtin_enums::monomorphic_builtin_enum(builtin.canonical_name())?;
@@ -1771,13 +1774,15 @@ pub enum RuntimeCallFamily {
     RegexCapture,
     RegexCompile,
     RegexFreeCapture,
-    /// Value-position regex literal handle materialisation (`let pat = re"..."`).
-    /// Not a real runtime symbol: codegen resolves this entirely by GEP-loading
-    /// the compiled `*HewRegex` handle from `@hew_regex_handles[literal_id]` into
-    /// the destination local (the same load `RegexMatch`/`RegexCapture` perform
-    /// before their actual runtime call). The C-symbol spelling `hew_regex_handle`
-    /// names the synthetic family for the round-trip bijection only; no extern of
-    /// that name is ever declared or called.
+    /// Value-position regex literal materialisation (`let pat = re"..."`).
+    /// Operand zero is the literal's slot index; the result is the handle SIR
+    /// wraps in a `std.text.regex.Pattern`, exactly as `regex.new` wraps the
+    /// handle `hew_regex_new` returns. Codegen GEP-loads the compiled
+    /// `*HewRegex` from `@hew_regex_handles[literal_id]` (the same load
+    /// `RegexMatch` performs) and clones it, because that pattern's scope exit
+    /// frees its handle and the module slot outlives every value built from it.
+    /// The C-symbol spelling `hew_regex_handle` names the synthetic family for
+    /// the round-trip bijection only; the call it emits is `hew_regex_clone`.
     RegexHandle,
     RegexMatch,
 
@@ -4453,6 +4458,13 @@ impl RuntimeCallFamily {
             Self::RegexMatch => {
                 runtime_semantic_contract(SIR_REGEX_MATCH, BitCopy(Bool), SIR_NO_FAILURES)
             }
+            Self::RegexHandle => runtime_semantic_contract(
+                SIR_I64_COPY,
+                BitCopy(RuntimeValueKind::NamedOpaque(
+                    "std.text.regex.PatternHandle",
+                )),
+                SIR_NO_FAILURES,
+            ),
             Self::StringIsEmpty
             | Self::StringIsDigit
             | Self::StringIsAlpha
@@ -4640,6 +4652,7 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::IoHandle(_)
                     | RuntimeValueKind::FileReadHandle(_)
                     | RuntimeValueKind::Named(_)
+                    | RuntimeValueKind::NamedOpaque(_)
                     | RuntimeValueKind::MonomorphicBuiltin(_),
                 ) => RuntimeResultOwnership::Untracked,
             };

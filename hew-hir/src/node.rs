@@ -1205,10 +1205,10 @@ pub enum HirExprKind {
     /// the literal table entry is still allocated via `alloc_regex_literal`.
     ///
     /// `literal_id` is the 0-based index into `HirModule::regex_literals`.
-    /// MIR lowering (slice 4) will load the compiled handle from the
-    /// corresponding global slot. Codegen (slice 5) wires the global.
+    /// Semantic lowering passes it to `RuntimeCallFamily::RegexHandle`, which
+    /// clones the handle codegen compiled into that global slot.
     ///
-    /// Type: `ResolvedTy::Regex` (the opaque regex handle type).
+    /// Type: `std.text.regex.Pattern`, the record `regex.new` also returns.
     RegexLiteralRef {
         literal_id: u32,
         pattern: String,

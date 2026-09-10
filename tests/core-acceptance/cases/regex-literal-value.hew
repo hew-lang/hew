@@ -1,0 +1,41 @@
+// A regex literal in value position materializes a pattern from the module's
+// compiled slot. The pattern owns its handle, so a value built in a loop frees
+// its own clone and the shared slot survives every iteration.
+
+fn main() {
+    let digits = re"^[0-9]+$";
+    println(digits.is_match("123"));
+    // Negative control: the same pattern refuses a non-match.
+    println(digits.is_match("12a"));
+
+    // The literal table dedups by pattern text, so this is the same slot.
+    let again = re"^[0-9]+$";
+    println(again.is_match("7"));
+
+    let word = re"^[a-z]+$";
+    println(word.is_match("hew"));
+    println(word.is_match("Hew"));
+
+    var matched = 0;
+    for _i in 0..3 {
+        let loop_pattern = re"^x+$";
+        if loop_pattern.is_match("xxx") {
+            matched = matched + 1;
+        }
+    }
+    println(f"loop matches: {matched}");
+
+    // A literal used directly as a receiver.
+    println(re"^h.w$".is_match("hew"));
+
+    // An explicit consuming close frees the same clone the scope exit would.
+    var closed = 0;
+    for _i in 0..3 {
+        let owned = re"[a-z]+[0-9]+";
+        if owned.is_match("abc123") {
+            closed = closed + 1;
+        }
+        owned.close();
+    }
+    println(f"closed matches: {closed}");
+}

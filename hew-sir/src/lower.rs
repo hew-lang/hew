@@ -5597,6 +5597,45 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
                 .ok_or_else(|| "range slice must produce a SIR value".to_string())
             }
+            // `re"..."` in value position. The module compiles every literal
+            // once at process entry; this materializes an owned pattern from
+            // the slot the match arms already read.
+            HirExprKind::RegexLiteralRef { literal_id, .. } => {
+                let pattern_ty = self.ty(&expr.ty);
+                let shape = self.service.require_aggregate_shape(&pattern_ty)?;
+                let AggregateShapeRef::Record(id) = shape else {
+                    return Err("a regex literal must produce a named pattern record".to_string());
+                };
+                let [field] = self.service.aggregate_shapes[id.0 as usize]
+                    .fields
+                    .as_slice()
+                else {
+                    return Err("a regex pattern record holds exactly its handle".to_string());
+                };
+                let handle_ty = field.ty.clone();
+                let mut slot = expr.clone();
+                slot.ty = ResolvedTy::I64;
+                slot.kind = HirExprKind::Literal(HirLiteral::Integer(i128::from(*literal_id)));
+                let mut handle = expr.clone();
+                handle.ty = handle_ty;
+                let handle = self
+                    .lower_runtime_operation(
+                        &handle,
+                        hew_types::RuntimeCallFamily::RegexHandle,
+                        &[&slot],
+                        true,
+                    )?
+                    .ok_or_else(|| "a regex literal must produce a SIR value".to_string())?;
+                let pattern = self.emit(
+                    expr,
+                    SemOpKind::AggregateMake {
+                        shape,
+                        fields: vec![Operand { value: handle }],
+                    },
+                )?;
+                self.owned_live.remove(&handle);
+                Ok(pattern)
+            }
             HirExprKind::Block(block) => self
                 .lower_scoped_block(block, binding_use)?
                 .map(|value| value.value)

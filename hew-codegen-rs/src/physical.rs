@@ -4650,29 +4650,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.runtime_call_value(function, &arguments, "string.compare")?;
                 self.store(required_result()?, value)?;
             }
+            PhysicalRuntimeAction::RegexHandle => {
+                let handle = self.load_regex_handle(source(0)?)?;
+                let function = external_unary_ptr(self.ctx, self.llvm, "hew_regex_clone")?;
+                // The module slot outlives every pattern value built from it,
+                // so the value owns an independent handle its scope exit frees.
+                let owned = self.runtime_call_value(function, &[handle.into()], "regex.pattern")?;
+                self.store(required_result()?, owned)?;
+            }
             PhysicalRuntimeAction::RegexMatch => {
-                let count = regex_slot_count(self.module)?.ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "a regex match arm needs a compiled pattern slot".into(),
-                    )
-                })?;
-                let handles = regex_handles(self.llvm)?;
-                let index = self.load(source(0)?, "regex.index")?.into_int_value();
+                let handle = self.load_regex_handle(source(0)?)?;
                 let text = self.load(source(1)?, "regex.text")?;
-                let slot = unsafe {
-                    self.builder
-                        .build_gep(
-                            ptr.array_type(count),
-                            handles.as_pointer_value(),
-                            &[self.ctx.i64_type().const_zero(), index],
-                            "regex.slot",
-                        )
-                        .llvm_ctx("address the compiled regex slot")?
-                };
-                let handle = self
-                    .builder
-                    .build_load(ptr, slot, "regex.handle")
-                    .llvm_ctx("load the compiled regex handle")?;
                 let function = get_or_declare_external(
                     self.llvm,
                     "hew_regex_match",
@@ -5606,6 +5594,31 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         )?;
         self.clear_owned(seed)?;
         self.store(dest, array.into())
+    }
+
+    /// Load the compiled `*HewRegex` for the literal slot named by `index`.
+    /// Every regex action addresses the module's handle array this way; the
+    /// patterns are compiled once in the process entry's prologue.
+    fn load_regex_handle(&self, index: StorageId) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let count = regex_slot_count(self.module)?.ok_or_else(|| {
+            CodegenError::FailClosed("a regex operation needs a compiled pattern slot".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let handles = regex_handles(self.llvm)?;
+        let index = self.load(index, "regex.index")?.into_int_value();
+        let slot = unsafe {
+            self.builder
+                .build_gep(
+                    ptr.array_type(count),
+                    handles.as_pointer_value(),
+                    &[self.ctx.i64_type().const_zero(), index],
+                    "regex.slot",
+                )
+                .llvm_ctx("address the compiled regex slot")?
+        };
+        self.builder
+            .build_load(ptr, slot, "regex.handle")
+            .llvm_ctx("load the compiled regex handle")
     }
 
     fn emit_vector_index_guard(

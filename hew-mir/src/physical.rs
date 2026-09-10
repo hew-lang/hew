@@ -954,6 +954,10 @@ pub enum PhysicalRuntimeAction {
         format: EncodingFormat,
         op: EncodingOp,
     },
+    /// Materialize an owned regex pattern from one compiled regex literal.
+    /// Operand zero is the literal's slot index; the module slot is cloned so
+    /// the result owns its handle.
+    RegexHandle,
     /// Test a borrowed string against one compiled regex literal. Operand
     /// zero is the literal's slot index; operand one is the string.
     RegexMatch,
@@ -1089,6 +1093,7 @@ impl PhysicalRuntimeAction {
             Self::ChannelPairSender => RuntimeCallFamily::ChannelPairSender,
             Self::ChannelPairReceiver => RuntimeCallFamily::ChannelPairReceiver,
             Self::Encoding { format, op } => RuntimeCallFamily::Encoding { format, op },
+            Self::RegexHandle => RuntimeCallFamily::RegexHandle,
             Self::RegexMatch => RuntimeCallFamily::RegexMatch,
             Self::StringConcat => RuntimeCallFamily::StringConcat,
             Self::StringEquals => RuntimeCallFamily::StringEquals,
@@ -2624,6 +2629,7 @@ fn physical_runtime_action(
         RuntimeCallFamily::Encoding { format, op } => {
             PhysicalRuntimeAction::Encoding { format, op }
         }
+        RuntimeCallFamily::RegexHandle => PhysicalRuntimeAction::RegexHandle,
         RuntimeCallFamily::RegexMatch => PhysicalRuntimeAction::RegexMatch,
         RuntimeCallFamily::StringConcat => PhysicalRuntimeAction::StringConcat,
         RuntimeCallFamily::StringEquals => PhysicalRuntimeAction::StringEquals,

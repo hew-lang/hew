@@ -2,7 +2,7 @@
 
 use super::*;
 use hew_mir::physical::PhysicalExternResultAbi;
-use hew_types::{RuntimeCallFamily, RuntimeResultEffect};
+use hew_types::{RuntimeCReturn, RuntimeCallFamily, RuntimeResultEffect};
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::types::AnyType;
 
@@ -13,7 +13,8 @@ impl FunctionEmitter<'_, '_> {
         transfers: &[ArgumentTransfer],
         result: Option<StorageId>,
     ) -> CodegenResult<()> {
-        let contract = family.semantic_contract().ok_or_else(|| {
+        let row = family.row();
+        let contract = row.contract.ok_or_else(|| {
             CodegenError::FailClosed("runtime operation lacks its semantic contract".into())
         })?;
         let updated_receiver = matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_));
@@ -22,7 +23,22 @@ impl FunctionEmitter<'_, '_> {
         // other scalar and handle carriers agree with physical storage.
         let values = transfers
             .iter()
-            .map(|transfer| self.load(argument_source(transfer), "runtime.argument"))
+            .map(|transfer| {
+                let source = argument_source(transfer);
+                // `bytes` is the runtime's `{ptr, u32, u32}` triple and every C
+                // entry takes it by pointer. Everything else crosses by value
+                // out of its storage.
+                if self.storage(source)?.ty == ResolvedTy::Bytes {
+                    if matches!(transfer, ArgumentTransfer::Move(_)) {
+                        return Err(CodegenError::FailClosed(
+                            "a moved byte operand needs its own emission".into(),
+                        ));
+                    }
+                    Ok(self.slots[source.0 as usize].into())
+                } else {
+                    self.load(source, "runtime.argument")
+                }
+            })
             .collect::<CodegenResult<Vec<_>>>()?;
         let parameters = values
             .iter()
@@ -32,27 +48,20 @@ impl FunctionEmitter<'_, '_> {
             .filter(|_| !updated_receiver)
             .map(|id| llvm_type(self.ctx, &self.storage(id)?.layout.repr))
             .transpose()?;
-        let validity = matches!(
-            family,
-            RuntimeCallFamily::FileRead(
-                hew_types::runtime_call::FileReadOp::IsValid
-                    | hew_types::runtime_call::FileReadOp::StreamIsValid
-            )
-        );
-        let presence =
-            family == RuntimeCallFamily::FileRead(hew_types::runtime_call::FileReadOp::HasError);
-        let abi_return = if validity {
-            Some(self.ctx.i32_type().into())
-        } else if presence {
-            Some(self.ctx.bool_type().into())
-        } else {
-            return_type
+        // A runtime entry that answers a question returns a C truth of its own
+        // width; the row says which, and the result lands in the language's
+        // one-byte `bool`.
+        let truth = row.c_return;
+        let abi_return = match truth {
+            RuntimeCReturn::TruthI32 => Some(self.ctx.i32_type().into()),
+            RuntimeCReturn::TruthBool => Some(self.ctx.bool_type().into()),
+            RuntimeCReturn::Storage => return_type,
         };
         let signature = abi_return.map_or_else(
             || self.ctx.void_type().fn_type(&parameters, false),
             |ty| ty.fn_type(&parameters, false),
         );
-        let function = get_or_declare_external(self.llvm, family.c_symbol(), signature)?;
+        let function = get_or_declare_external(self.llvm, row.symbol, signature)?;
         for transfer in transfers {
             if let ArgumentTransfer::Move(source) = transfer {
                 self.clear_owned(*source)?;
@@ -61,27 +70,31 @@ impl FunctionEmitter<'_, '_> {
         let arguments = values.iter().copied().map(Into::into).collect::<Vec<_>>();
         if return_type.is_some() {
             let value = self.runtime_call_value(function, &arguments, "runtime.result")?;
-            let value = if validity || presence {
-                let bit = if validity {
+            let destination = result.expect("value-returning runtime operation");
+            let value = match truth {
+                RuntimeCReturn::Storage => value,
+                RuntimeCReturn::TruthI32 | RuntimeCReturn::TruthBool => {
+                    let bit = if truth == RuntimeCReturn::TruthI32 {
+                        self.builder
+                            .build_int_compare(
+                                IntPredicate::NE,
+                                value.into_int_value(),
+                                self.ctx.i32_type().const_zero(),
+                                "runtime.truth",
+                            )
+                            .llvm_ctx("normalize a runtime truth")?
+                    } else {
+                        value.into_int_value()
+                    };
+                    let bool_ty = llvm_type(self.ctx, &self.storage(destination)?.layout.repr)?
+                        .into_int_type();
                     self.builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            value.into_int_value(),
-                            self.ctx.i32_type().const_zero(),
-                            "resource.valid",
-                        )
-                        .llvm_ctx("normalize resource validity")?
-                } else {
-                    value.into_int_value()
-                };
-                self.builder
-                    .build_int_z_extend(bit, self.ctx.i8_type(), "resource.bool")
-                    .llvm_ctx("store resource Boolean")?
-                    .into()
-            } else {
-                value
+                        .build_int_z_extend(bit, bool_ty, "runtime.bool")
+                        .llvm_ctx("store a runtime Boolean")?
+                        .into()
+                }
             };
-            self.store(result.expect("value-returning runtime operation"), value)?;
+            self.store(destination, value)?;
         } else {
             self.runtime_call_void(function, &arguments, "runtime.operation")?;
             if updated_receiver {

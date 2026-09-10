@@ -4563,32 +4563,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     error_len,
                 )?;
             }
-            RuntimeCallFamily::BytesDecodeUtf8Lossy => {
-                let function =
-                    external_unary_ptr(self.ctx, self.llvm, "hew_bytes_decode_utf8_lossy")?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.slots[source(0)?.0 as usize].into()],
-                    "bytes.decode.utf8.lossy",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringConcat => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_concat",
-                    ptr.fn_type(&[ptr.into(), ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[
-                        self.load(source(0)?, "concat.left")?.into(),
-                        self.load(source(1)?, "concat.right")?.into(),
-                    ],
-                    "string.concat",
-                )?;
-                self.store(required_result()?, value)?;
-            }
             RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAt => {
                 let option = variant_carrier(action)?;
                 let character = action.family == RuntimeCallFamily::StringCharAt;
@@ -4664,21 +4638,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     normal,
                 );
             }
-            RuntimeCallFamily::StringCompare => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_compare",
-                    self.ctx
-                        .i32_type()
-                        .fn_type(&[ptr.into(), ptr.into()], false),
-                )?;
-                let arguments = [
-                    self.load(source(0)?, "compare.left")?.into(),
-                    self.load(source(1)?, "compare.right")?.into(),
-                ];
-                let value = self.runtime_call_value(function, &arguments, "string.compare")?;
-                self.store(required_result()?, value)?;
-            }
             RuntimeCallFamily::RegexHandle => {
                 let handle = self.load_regex_handle(source(0)?)?;
                 let function = external_unary_ptr(self.ctx, self.llvm, "hew_regex_clone")?;
@@ -4716,68 +4675,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     .builder
                     .build_int_z_extend(truth, bool_ty, "regex.match.bool")
                     .llvm_ctx("widen the regex match result")?;
-                self.store(dest, truth.into())?;
-            }
-            RuntimeCallFamily::StringEquals
-            | RuntimeCallFamily::StringStartsWith
-            | RuntimeCallFamily::StringEndsWith
-            | RuntimeCallFamily::StringContains
-            | RuntimeCallFamily::StringIsEmpty
-            | RuntimeCallFamily::StringIsDigit
-            | RuntimeCallFamily::StringIsAlpha
-            | RuntimeCallFamily::StringIsAlphanumeric => {
-                let (symbol, return_type) = match action.family {
-                    RuntimeCallFamily::StringEquals => ("hew_string_equals", self.ctx.i32_type()),
-                    RuntimeCallFamily::StringStartsWith => {
-                        ("hew_string_starts_with", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringEndsWith => {
-                        ("hew_string_ends_with", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringContains => {
-                        ("hew_string_contains", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringIsEmpty => {
-                        ("hew_string_is_empty", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringIsDigit => {
-                        ("hew_string_is_digit", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringIsAlpha => {
-                        ("hew_string_is_alpha", self.ctx.bool_type())
-                    }
-                    RuntimeCallFamily::StringIsAlphanumeric => {
-                        ("hew_string_is_alphanumeric", self.ctx.bool_type())
-                    }
-                    _ => unreachable!("matched string predicate"),
-                };
-                let function = get_or_declare_external(
-                    self.llvm,
-                    symbol,
-                    return_type.fn_type(&vec![ptr.into(); transfers.len()], false),
-                )?;
-                let arguments = (0..transfers.len())
-                    .map(|index| Ok(self.load(source(index)?, "predicate.argument")?.into()))
-                    .collect::<CodegenResult<Vec<_>>>()?;
-                let value = self
-                    .runtime_call_value(function, &arguments, "string.predicate")?
-                    .into_int_value();
-                let truth = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::NE,
-                        value,
-                        return_type.const_zero(),
-                        "string.predicate.truth",
-                    )
-                    .llvm_ctx("normalize string predicate")?;
-                let dest = required_result()?;
-                let bool_ty =
-                    llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?.into_int_type();
-                let truth = self
-                    .builder
-                    .build_int_z_extend(truth, bool_ty, "string.predicate.bool")
-                    .llvm_ctx("widen string predicate result")?;
                 self.store(dest, truth.into())?;
             }
             family @ (RuntimeCallFamily::InstantNow
@@ -4861,268 +4758,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     ],
                     "string.to.bytes",
                 )?;
-            }
-            RuntimeCallFamily::StringRepeat => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_repeat",
-                    ptr.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[
-                        self.load(source(0)?, "repeat.text")?.into(),
-                        self.load(source(1)?, "repeat.count")?.into(),
-                    ],
-                    "string.repeat",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringSplit => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_split",
-                    ptr.fn_type(&[ptr.into(), ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[
-                        self.load(source(0)?, "split.text")?.into(),
-                        self.load(source(1)?, "split.separator")?.into(),
-                    ],
-                    "string.split",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringLines => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_lines",
-                    ptr.fn_type(&[ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "lines.text")?.into()],
-                    "string.lines",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringChars => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_chars",
-                    ptr.fn_type(&[ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "chars.text")?.into()],
-                    "string.chars",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringReplace => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_replace",
-                    ptr.fn_type(&[ptr.into(), ptr.into(), ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[
-                        self.load(source(0)?, "replace.text")?.into(),
-                        self.load(source(1)?, "replace.from")?.into(),
-                        self.load(source(2)?, "replace.to")?.into(),
-                    ],
-                    "string.replace",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringSlice => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_string_slice",
-                    ptr.fn_type(
-                        &[
-                            ptr.into(),
-                            self.ctx.i64_type().into(),
-                            self.ctx.i64_type().into(),
-                        ],
-                        false,
-                    ),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[
-                        self.load(source(0)?, "slice.text")?.into(),
-                        self.load(source(1)?, "slice.start")?.into(),
-                        self.load(source(2)?, "slice.end")?.into(),
-                    ],
-                    "string.slice",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringIndex => {
-                return self.emit_string_index(
-                    source(0)?,
-                    source(1)?,
-                    required_result()?,
-                    normal,
-                    failure.ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "physical string index lacks its cleanup failure edge".into(),
-                        )
-                    })?,
-                );
-            }
-            RuntimeCallFamily::StringSliceCodepoints => {
-                return self.emit_string_slice_codepoints(
-                    source(0)?,
-                    source(1)?,
-                    source(2)?,
-                    required_result()?,
-                    normal,
-                    failure.ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "physical string slice lacks its cleanup failure edge".into(),
-                        )
-                    })?,
-                );
-            }
-            RuntimeCallFamily::StringSliceCodepointsFrom => {
-                return self.emit_string_slice_codepoints_from(
-                    source(0)?,
-                    source(1)?,
-                    required_result()?,
-                    normal,
-                    failure.ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "physical string slice lacks its cleanup failure edge".into(),
-                        )
-                    })?,
-                );
-            }
-            RuntimeCallFamily::StringToUppercase
-            | RuntimeCallFamily::StringToLowercase
-            | RuntimeCallFamily::StringClone
-            | RuntimeCallFamily::StringTrim => {
-                let symbol = match action.family {
-                    RuntimeCallFamily::StringClone => "hew_string_clone",
-                    RuntimeCallFamily::StringTrim => "hew_string_trim",
-                    RuntimeCallFamily::StringToLowercase => "hew_string_to_lowercase",
-                    _ => "hew_string_to_uppercase",
-                };
-                let function = external_unary_ptr(self.ctx, self.llvm, symbol)?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "string.transform.input")?.into()],
-                    "string.transform",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::StringLen | RuntimeCallFamily::StringByteLen => {
-                let symbol = if action.family == RuntimeCallFamily::StringLen {
-                    "hew_string_length"
-                } else {
-                    "hew_string_byte_length"
-                };
-                let function = get_or_declare_external(
-                    self.llvm,
-                    symbol,
-                    self.ctx.i64_type().fn_type(&[ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "string.length.input")?.into()],
-                    "string.length",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::I32ToString
-            | RuntimeCallFamily::U32ToString
-            | RuntimeCallFamily::CharToString => {
-                // `char` crosses the C ABI as the i32 the runtime expects,
-                // so the three share one 32-bit scalar shape.
-                let symbol = match action.family {
-                    RuntimeCallFamily::I32ToString => "hew_int_to_string",
-                    RuntimeCallFamily::U32ToString => "hew_uint_to_string",
-                    _ => "hew_char_to_string",
-                };
-                let function = get_or_declare_external(
-                    self.llvm,
-                    symbol,
-                    ptr.fn_type(&[self.ctx.i32_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "scalar32.to.string.input")?.into()],
-                    "scalar32.to.string",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::U64ToString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_u64_to_string",
-                    ptr.fn_type(&[self.ctx.i64_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "u64.to.string.input")?.into()],
-                    "u64.to.string",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::F64ToString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_float_to_string",
-                    ptr.fn_type(&[self.ctx.f64_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "f64.to.string.input")?.into()],
-                    "f64.to.string",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::U8ToString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_u8_to_string",
-                    ptr.fn_type(&[self.ctx.i8_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "u8.to.string.input")?.into()],
-                    "u8.to.string",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::I64ToString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_i64_to_string",
-                    ptr.fn_type(&[self.ctx.i64_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "i64.to.string.input")?.into()],
-                    "i64.to.string",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::BoolToString => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_bool_to_string",
-                    ptr.fn_type(&[self.ctx.i8_type().into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.load(source(0)?, "bool.to.string.input")?.into()],
-                    "bool.to.string",
-                )?;
-                self.store(required_result()?, value)?;
             }
             RuntimeCallFamily::ProcessExit => {
                 let function = get_or_declare_external(
@@ -5410,11 +5045,58 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "bytes.append.owned",
                 )?;
             }
+            RuntimeCallFamily::StringIndex => {
+                return self.emit_string_index(
+                    source(0)?,
+                    source(1)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string index lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            RuntimeCallFamily::StringSliceCodepoints => {
+                return self.emit_string_slice_codepoints(
+                    source(0)?,
+                    source(1)?,
+                    source(2)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            RuntimeCallFamily::StringSliceCodepointsFrom => {
+                return self.emit_string_slice_codepoints_from(
+                    source(0)?,
+                    source(1)?,
+                    required_result()?,
+                    normal,
+                    failure.ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "physical string slice lacks its cleanup failure edge".into(),
+                        )
+                    })?,
+                );
+            }
+            // Every remaining operation is an ordinary declared call: the row
+            // carries its symbol, its operand contract and its C return. An
+            // operation whose result needs a physical carrier is handled above,
+            // so reaching here with one is malformed IR.
             _ => {
-                return Err(CodegenError::FailClosed(format!(
-                    "runtime operation `{:?}` has no backend emission",
-                    action.family
-                )))
+                if action.carrier != PhysicalRuntimeCarrier::None {
+                    return Err(CodegenError::FailClosed(format!(
+                        "runtime operation `{:?}` reached the declared-call emitter with a carrier",
+                        action.family
+                    )));
+                }
+                self.emit_direct_runtime_call(action.family, transfers, result)?;
             }
         }
         if failure.is_some() {

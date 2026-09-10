@@ -2406,6 +2406,7 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                c_return: RuntimeCReturn::Storage,
                 physical: RuntimePhysicalForm::NotAnAction,
             },
             Self::FileRead(op) => RuntimeOpRow {
@@ -2413,6 +2414,11 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                c_return: match op {
+                    FileReadOp::IsValid | FileReadOp::StreamIsValid => RuntimeCReturn::TruthI32,
+                    FileReadOp::HasError => RuntimeCReturn::TruthBool,
+                    _ => RuntimeCReturn::Storage,
+                },
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::Tcp(op) => RuntimeOpRow {
@@ -2420,6 +2426,7 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract()),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                c_return: RuntimeCReturn::Storage,
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::Encoding { format, op } => RuntimeOpRow {
@@ -2427,6 +2434,7 @@ impl RuntimeCallFamily {
                 contract: Some(op.contract(format)),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
+                c_return: RuntimeCReturn::Storage,
                 physical: RuntimePhysicalForm::Direct,
             },
             Self::SupervisorPool(op) => RuntimeOpRow {
@@ -2442,6 +2450,7 @@ impl RuntimeCallFamily {
                         RuntimePhysicalForm::Direct
                     }
                 },
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorAsk => RuntimeOpRow {
                 symbol: "hew_actor_ask",
@@ -2449,6 +2458,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorAskWithChannel => RuntimeOpRow {
                 symbol: "hew_actor_ask_with_channel",
@@ -2456,6 +2466,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorCooperate => RuntimeOpRow {
                 symbol: "hew_actor_cooperate",
@@ -2463,6 +2474,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorDemonitor => RuntimeOpRow {
                 symbol: "hew_actor_demonitor",
@@ -2470,6 +2482,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorGenSinkComplete => RuntimeOpRow {
                 symbol: "hew_actor_gen_sink_complete",
@@ -2477,6 +2490,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorGenSinkRegister => RuntimeOpRow {
                 symbol: "hew_actor_gen_sink_register",
@@ -2484,6 +2498,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorLink => RuntimeOpRow {
                 symbol: "hew_actor_link",
@@ -2491,6 +2506,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::LinkRemote => RuntimeOpRow {
                 symbol: "hew_node_link_remote_location",
@@ -2498,6 +2514,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorMonitor => RuntimeOpRow {
                 symbol: "hew_actor_monitor",
@@ -2505,6 +2522,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSelf => RuntimeOpRow {
                 symbol: "hew_actor_self",
@@ -2512,6 +2530,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSendById => RuntimeOpRow {
                 symbol: "hew_actor_send_by_id",
@@ -2519,6 +2538,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorSpawn => RuntimeOpRow {
                 symbol: "hew_actor_spawn",
@@ -2526,6 +2546,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorUnlink => RuntimeOpRow {
                 symbol: "hew_actor_unlink",
@@ -2533,6 +2554,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexAlloc => RuntimeOpRow {
                 symbol: "hew_auto_mutex_alloc",
@@ -2540,6 +2562,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexFree => RuntimeOpRow {
                 symbol: "hew_auto_mutex_free",
@@ -2547,6 +2570,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexLock => RuntimeOpRow {
                 symbol: "hew_auto_mutex_lock",
@@ -2554,6 +2578,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::AutoMutexUnlock => RuntimeOpRow {
                 symbol: "hew_auto_mutex_unlock",
@@ -2561,6 +2586,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesAppend => RuntimeOpRow {
                 symbol: "hew_bytes_append",
@@ -2581,6 +2607,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesClear => RuntimeOpRow {
                 symbol: "hew_bytes_clear",
@@ -2595,6 +2622,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesContains => RuntimeOpRow {
                 symbol: "hew_bytes_contains",
@@ -2615,6 +2643,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesDecodeUtf8 => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8",
@@ -2629,6 +2658,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Utf8Decode,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesDecodeUtf8Lossy => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8_lossy",
@@ -2643,6 +2673,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesGet => RuntimeOpRow {
                 symbol: "hew_bytes_get",
@@ -2663,6 +2694,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesIndex => RuntimeOpRow {
                 symbol: "hew_bytes_index",
@@ -2683,6 +2715,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesIsEmpty => RuntimeOpRow {
                 symbol: "hew_bytes_is_empty",
@@ -2697,6 +2730,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesLen => RuntimeOpRow {
                 symbol: "hew_bytes_len",
@@ -2711,6 +2745,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesPop => RuntimeOpRow {
                 symbol: "hew_bytes_pop",
@@ -2728,6 +2763,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::PairWithOption,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesPush => RuntimeOpRow {
                 symbol: "hew_bytes_push",
@@ -2748,6 +2784,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSet => RuntimeOpRow {
                 symbol: "hew_bytes_set",
@@ -2772,6 +2809,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSlice => RuntimeOpRow {
                 symbol: "hew_bytes_slice",
@@ -2796,6 +2834,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesSliceFrom => RuntimeOpRow {
                 symbol: "hew_bytes_slice_from",
@@ -2816,6 +2855,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BytesNew => RuntimeOpRow {
                 symbol: "bytes::new",
@@ -2827,6 +2867,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::BytesConstructor,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenIsRequested => RuntimeOpRow {
                 symbol: "hew_cancel_token_is_requested",
@@ -2834,6 +2875,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenRelease => RuntimeOpRow {
                 symbol: "hew_cancel_token_release",
@@ -2841,6 +2883,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::CancelTokenRetain => RuntimeOpRow {
                 symbol: "hew_cancel_token_retain",
@@ -2848,6 +2891,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelRecvLayout => RuntimeOpRow {
                 symbol: "hew_channel_recv_layout",
@@ -2855,6 +2899,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelSendLayout => RuntimeOpRow {
                 symbol: "hew_channel_send_layout",
@@ -2862,6 +2907,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelTryRecvLayout => RuntimeOpRow {
                 symbol: "hew_channel_try_recv_layout",
@@ -2869,6 +2915,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelSenderClone => RuntimeOpRow {
                 symbol: "hew_channel_sender_clone",
@@ -2883,6 +2930,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelSenderClose => RuntimeOpRow {
                 symbol: "hew_channel_sender_close",
@@ -2897,6 +2945,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelReceiverClose => RuntimeOpRow {
                 symbol: "hew_channel_receiver_close",
@@ -2911,6 +2960,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelPairNew => RuntimeOpRow {
                 symbol: "hew_channel_new",
@@ -2925,6 +2975,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelPairFree => RuntimeOpRow {
                 symbol: "hew_channel_pair_free",
@@ -2939,6 +2990,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorRequestRelease => RuntimeOpRow {
                 symbol: "hew_msg_envelope_release",
@@ -2953,6 +3005,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorCallFree => RuntimeOpRow {
                 symbol: "hew_actor_call_free",
@@ -2967,6 +3020,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ActorRequestTake => RuntimeOpRow {
                 symbol: "hew_actor_ask_wait_take_request",
@@ -2981,6 +3035,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelPairIsValid => RuntimeOpRow {
                 symbol: "hew_channel_pair_is_valid",
@@ -2995,6 +3050,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelPairSender => RuntimeOpRow {
                 symbol: "hew_channel_pair_sender",
@@ -3009,6 +3065,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ChannelPairReceiver => RuntimeOpRow {
                 symbol: "hew_channel_pair_receiver",
@@ -3023,6 +3080,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexClone => RuntimeOpRow {
                 symbol: "hew_duplex_clone",
@@ -3030,6 +3088,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexClose => RuntimeOpRow {
                 symbol: "hew_duplex_close",
@@ -3037,6 +3096,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexCloseHalf => RuntimeOpRow {
                 symbol: "hew_duplex_close_half",
@@ -3044,6 +3104,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexPair => RuntimeOpRow {
                 symbol: "hew_duplex_pair",
@@ -3051,6 +3112,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexPayloadFree => RuntimeOpRow {
                 symbol: "hew_duplex_payload_free",
@@ -3058,6 +3120,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexRecv => RuntimeOpRow {
                 symbol: "hew_duplex_recv",
@@ -3065,6 +3128,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexRecvHalf => RuntimeOpRow {
                 symbol: "hew_duplex_recv_half",
@@ -3072,6 +3136,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexSend => RuntimeOpRow {
                 symbol: "hew_duplex_send",
@@ -3079,6 +3144,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexSendHalf => RuntimeOpRow {
                 symbol: "hew_duplex_send_half",
@@ -3086,6 +3152,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexTryRecv => RuntimeOpRow {
                 symbol: "hew_duplex_try_recv",
@@ -3093,6 +3160,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DuplexTrySend => RuntimeOpRow {
                 symbol: "hew_duplex_try_send",
@@ -3100,6 +3168,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationAbs => RuntimeOpRow {
                 symbol: "hew_duration_abs",
@@ -3114,6 +3183,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationHours => RuntimeOpRow {
                 symbol: "hew_duration_hours",
@@ -3128,6 +3198,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationIsZero => RuntimeOpRow {
                 symbol: "hew_duration_is_zero",
@@ -3142,6 +3213,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationMicros => RuntimeOpRow {
                 symbol: "hew_duration_micros",
@@ -3156,6 +3228,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationMillis => RuntimeOpRow {
                 symbol: "hew_duration_millis",
@@ -3170,6 +3243,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationMins => RuntimeOpRow {
                 symbol: "hew_duration_mins",
@@ -3184,6 +3258,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationNanos => RuntimeOpRow {
                 symbol: "hew_duration_nanos",
@@ -3198,6 +3273,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DurationSecs => RuntimeOpRow {
                 symbol: "hew_duration_secs",
@@ -3212,6 +3288,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DynBoxAlloc => RuntimeOpRow {
                 symbol: "hew_dyn_box_alloc",
@@ -3219,6 +3296,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::DynBoxFree => RuntimeOpRow {
                 symbol: "hew_dyn_box_free",
@@ -3226,6 +3304,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapContainsKeyLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_contains_key_layout",
@@ -3233,6 +3312,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapClearLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_clear_layout",
@@ -3240,6 +3320,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapCloneLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_clone_layout",
@@ -3247,6 +3328,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapEntriesLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_entries_layout",
@@ -3254,6 +3336,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapFreeLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_free_layout",
@@ -3261,6 +3344,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapGetLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_get_layout",
@@ -3268,6 +3352,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashMapLayoutGet,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapInsertLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_insert_layout",
@@ -3275,6 +3360,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapKeysLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_keys_layout",
@@ -3282,6 +3368,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapLenLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_len_layout",
@@ -3289,6 +3376,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapNew => RuntimeOpRow {
                 symbol: "HashMap::new",
@@ -3296,6 +3384,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapNewWithLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_new_with_layout",
@@ -3303,6 +3392,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapRemoveLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_remove_layout",
@@ -3310,6 +3400,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashMapValuesLayout => RuntimeOpRow {
                 symbol: "hew_hashmap_values_layout",
@@ -3317,6 +3408,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetContainsLayout => RuntimeOpRow {
                 symbol: "hew_hashset_contains_layout",
@@ -3324,6 +3416,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetClearLayout => RuntimeOpRow {
                 symbol: "hew_hashset_clear_layout",
@@ -3331,6 +3424,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetCloneLayout => RuntimeOpRow {
                 symbol: "hew_hashset_clone_layout",
@@ -3338,6 +3432,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetFreeLayout => RuntimeOpRow {
                 symbol: "hew_hashset_free_layout",
@@ -3345,6 +3440,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetInsertLayout => RuntimeOpRow {
                 symbol: "hew_hashset_insert_layout",
@@ -3352,6 +3448,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetIsEmptyLayout => RuntimeOpRow {
                 symbol: "hew_hashset_is_empty_layout",
@@ -3359,6 +3456,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetLenLayout => RuntimeOpRow {
                 symbol: "hew_hashset_len_layout",
@@ -3366,6 +3464,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetNew => RuntimeOpRow {
                 symbol: "HashSet::new",
@@ -3373,6 +3472,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetNewWithLayout => RuntimeOpRow {
                 symbol: "hew_hashset_new_with_layout",
@@ -3380,6 +3480,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionConstructor,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetRemoveLayout => RuntimeOpRow {
                 symbol: "hew_hashset_remove_layout",
@@ -3387,6 +3488,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::HashSetToVecLayout => RuntimeOpRow {
                 symbol: "hew_hashset_to_vec_layout",
@@ -3394,6 +3496,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::HashCollectionLayoutOp,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::InstantDurationSince => RuntimeOpRow {
                 symbol: "hew_instant_duration_since",
@@ -3414,6 +3517,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::InstantElapsed => RuntimeOpRow {
                 symbol: "hew_instant_elapsed",
@@ -3428,6 +3532,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::InstantNow => RuntimeOpRow {
                 symbol: "hew_instant_now",
@@ -3439,6 +3544,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
                 symbol: "sqrt",
@@ -3453,6 +3559,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Exp) => RuntimeOpRow {
                 symbol: "exp",
@@ -3467,6 +3574,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Log) => RuntimeOpRow {
                 symbol: "log",
@@ -3481,6 +3589,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Sin) => RuntimeOpRow {
                 symbol: "sin",
@@ -3495,6 +3604,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Cos) => RuntimeOpRow {
                 symbol: "cos",
@@ -3509,6 +3619,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsI64) => RuntimeOpRow {
                 symbol: "abs",
@@ -3523,6 +3634,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MinI64) => RuntimeOpRow {
                 symbol: "min",
@@ -3543,6 +3655,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxI64) => RuntimeOpRow {
                 symbol: "max",
@@ -3563,6 +3676,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::AbsF64) => RuntimeOpRow {
                 symbol: "abs_f",
@@ -3577,6 +3691,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MinF64) => RuntimeOpRow {
                 symbol: "min_f",
@@ -3597,6 +3712,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::MaxF64) => RuntimeOpRow {
                 symbol: "max_f",
@@ -3617,6 +3733,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Pow) => RuntimeOpRow {
                 symbol: "pow",
@@ -3637,6 +3754,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Floor) => RuntimeOpRow {
                 symbol: "floor",
@@ -3651,6 +3769,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Ceil) => RuntimeOpRow {
                 symbol: "ceil",
@@ -3665,6 +3784,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MathIntrinsic(MathIntrinsic::Round) => RuntimeOpRow {
                 symbol: "round",
@@ -3679,6 +3799,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeAllowPeer => RuntimeOpRow {
                 symbol: "Node::allow_peer",
@@ -3686,6 +3807,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeConnect => RuntimeOpRow {
                 symbol: "Node::connect",
@@ -3703,6 +3825,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NodeResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeId => RuntimeOpRow {
                 symbol: "Node::id",
@@ -3710,6 +3833,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeIdentityKey => RuntimeOpRow {
                 symbol: "Node::identity_key",
@@ -3721,6 +3845,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeLoadKeys => RuntimeOpRow {
                 symbol: "Node::load_keys",
@@ -3728,6 +3853,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeLookup => RuntimeOpRow {
                 symbol: "Node::lookup",
@@ -3742,6 +3868,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NodeResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeMonitor => RuntimeOpRow {
                 symbol: "hew_node_monitor_location",
@@ -3749,6 +3876,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeRegister => RuntimeOpRow {
                 symbol: "Node::register",
@@ -3769,6 +3897,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeSetTransport => RuntimeOpRow {
                 symbol: "Node::set_transport",
@@ -3776,6 +3905,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeShutdown => RuntimeOpRow {
                 symbol: "Node::shutdown",
@@ -3787,6 +3917,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::NodeStart => RuntimeOpRow {
                 symbol: "Node::start",
@@ -3804,6 +3935,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NodeResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterRegister => RuntimeOpRow {
                 symbol: "hew_metric_counter_register",
@@ -3811,6 +3943,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterInc => RuntimeOpRow {
                 symbol: "hew_metric_counter_inc",
@@ -3818,6 +3951,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricCounterAdd => RuntimeOpRow {
                 symbol: "hew_metric_counter_add",
@@ -3825,6 +3959,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeRegister => RuntimeOpRow {
                 symbol: "hew_metric_gauge_register",
@@ -3832,6 +3967,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeSet => RuntimeOpRow {
                 symbol: "hew_metric_gauge_set",
@@ -3839,6 +3975,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeInc => RuntimeOpRow {
                 symbol: "hew_metric_gauge_inc",
@@ -3846,6 +3983,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeDec => RuntimeOpRow {
                 symbol: "hew_metric_gauge_dec",
@@ -3853,6 +3991,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricGaugeAdd => RuntimeOpRow {
                 symbol: "hew_metric_gauge_add",
@@ -3860,6 +3999,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRegister => RuntimeOpRow {
                 symbol: "hew_metric_histogram_register",
@@ -3867,6 +4007,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRegisterSimple => RuntimeOpRow {
                 symbol: "hew_metric_histogram_register_simple",
@@ -3874,6 +4015,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricHistogramRecord => RuntimeOpRow {
                 symbol: "hew_metric_histogram_record",
@@ -3881,6 +4023,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricVecRegister => RuntimeOpRow {
                 symbol: "hew_metric_vec_register",
@@ -3888,6 +4031,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::MetricVecWith => RuntimeOpRow {
                 symbol: "hew_metric_vec_with",
@@ -3895,6 +4039,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveReadU64 => RuntimeOpRow {
                 symbol: "hew_observe_read_u64",
@@ -3902,6 +4047,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveScrape => RuntimeOpRow {
                 symbol: "hew_observe_scrape",
@@ -3909,6 +4055,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveSeries => RuntimeOpRow {
                 symbol: "hew_observe_series",
@@ -3916,6 +4063,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ObserveBarrier => RuntimeOpRow {
                 symbol: "hew_observe_barrier",
@@ -3923,6 +4071,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcClone => RuntimeOpRow {
                 symbol: "hew_rc_clone",
@@ -3930,6 +4079,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcDowngrade => RuntimeOpRow {
                 symbol: "hew_rc_downgrade",
@@ -3937,6 +4087,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcDrop => RuntimeOpRow {
                 symbol: "hew_rc_drop",
@@ -3944,6 +4095,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcGet => RuntimeOpRow {
                 symbol: "hew_rc_get",
@@ -3951,6 +4103,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcIsUnique => RuntimeOpRow {
                 symbol: "hew_rc_is_unique",
@@ -3958,6 +4111,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcNew => RuntimeOpRow {
                 symbol: "hew_rc_new",
@@ -3965,6 +4119,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcSet => RuntimeOpRow {
                 symbol: "hew_rc_set",
@@ -3972,6 +4127,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcStrongCount => RuntimeOpRow {
                 symbol: "hew_rc_strong_count",
@@ -3979,6 +4135,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RcWeakCount => RuntimeOpRow {
                 symbol: "hew_rc_weak_count",
@@ -3986,6 +4143,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::WeakCloneRc => RuntimeOpRow {
                 symbol: "hew_weak_clone_rc",
@@ -3993,6 +4151,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::WeakDropRc => RuntimeOpRow {
                 symbol: "hew_weak_drop_rc",
@@ -4000,6 +4159,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::WeakUpgradeRc => RuntimeOpRow {
                 symbol: "hew_weak_upgrade_rc",
@@ -4007,6 +4167,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RecvHalfRecv => RuntimeOpRow {
                 symbol: "hew_recv_half_recv",
@@ -4014,6 +4175,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RecvHalfTryRecv => RuntimeOpRow {
                 symbol: "hew_recv_half_try_recv",
@@ -4021,6 +4183,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RegexCapture => RuntimeOpRow {
                 symbol: "hew_regex_capture",
@@ -4028,6 +4191,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RegexCompile => RuntimeOpRow {
                 symbol: "hew_regex_compile",
@@ -4035,6 +4199,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RegexFreeCapture => RuntimeOpRow {
                 symbol: "hew_regex_free_capture",
@@ -4042,6 +4207,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RegexHandle => RuntimeOpRow {
                 symbol: "hew_regex_handle",
@@ -4056,6 +4222,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RegexMatch => RuntimeOpRow {
                 symbol: "hew_regex_match",
@@ -4076,6 +4243,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::RemotePidSend => RuntimeOpRow {
                 symbol: "hew_remote_pid_send",
@@ -4083,6 +4251,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelCancel => RuntimeOpRow {
                 symbol: "hew_reply_channel_cancel",
@@ -4090,6 +4259,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelFree => RuntimeOpRow {
                 symbol: "hew_reply_channel_free",
@@ -4097,6 +4267,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyChannelNew => RuntimeOpRow {
                 symbol: "hew_reply_channel_new",
@@ -4104,6 +4275,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyPayloadFree => RuntimeOpRow {
                 symbol: "hew_reply_payload_free",
@@ -4111,6 +4283,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ReplyWait => RuntimeOpRow {
                 symbol: "hew_reply_wait",
@@ -4118,6 +4291,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SelectFirst => RuntimeOpRow {
                 symbol: "hew_select_first",
@@ -4125,6 +4299,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SendHalfSend => RuntimeOpRow {
                 symbol: "hew_send_half_send",
@@ -4132,6 +4307,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SendHalfTrySend => RuntimeOpRow {
                 symbol: "hew_send_half_try_send",
@@ -4139,6 +4315,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkClose => RuntimeOpRow {
                 symbol: "hew_sink_close",
@@ -4153,6 +4330,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkPeerClosed => RuntimeOpRow {
                 symbol: "hew_sink_peer_closed",
@@ -4160,6 +4338,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkWrite(StreamElementKind::Bytes) => RuntimeOpRow {
                 symbol: "hew_sink_write_bytes",
@@ -4167,6 +4346,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkWrite(StreamElementKind::String) => RuntimeOpRow {
                 symbol: "hew_sink_write_string",
@@ -4174,6 +4354,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkTryWrite(StreamElementKind::Bytes) => RuntimeOpRow {
                 symbol: "hew_sink_try_write_bytes",
@@ -4181,6 +4362,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SinkTryWrite(StreamElementKind::String) => RuntimeOpRow {
                 symbol: "hew_sink_try_write_string",
@@ -4188,6 +4370,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StreamClose => RuntimeOpRow {
                 symbol: "hew_stream_close",
@@ -4202,6 +4385,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StreamNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_next_layout",
@@ -4209,6 +4393,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StreamSendLayout => RuntimeOpRow {
                 symbol: "hew_stream_send_layout",
@@ -4216,6 +4401,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StreamTryNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_try_next_layout",
@@ -4223,6 +4409,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharAt => RuntimeOpRow {
                 symbol: "hew_string_char_at",
@@ -4243,6 +4430,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharAtUtf8 => RuntimeOpRow {
                 symbol: "hew_string_char_at_utf8",
@@ -4250,6 +4438,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringCharCount => RuntimeOpRow {
                 symbol: "hew_string_char_count",
@@ -4257,6 +4446,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringByteLen => RuntimeOpRow {
                 symbol: "hew_string_byte_length",
@@ -4271,6 +4461,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringConcat => RuntimeOpRow {
                 symbol: "hew_string_concat",
@@ -4291,6 +4482,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringEquals => RuntimeOpRow {
                 symbol: "hew_string_equals",
@@ -4311,6 +4503,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthI32,
             },
             Self::StringCompare => RuntimeOpRow {
                 symbol: "hew_string_compare",
@@ -4331,6 +4524,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringStartsWith => RuntimeOpRow {
                 symbol: "hew_string_starts_with",
@@ -4351,6 +4545,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringEndsWith => RuntimeOpRow {
                 symbol: "hew_string_ends_with",
@@ -4371,6 +4566,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringContains => RuntimeOpRow {
                 symbol: "hew_string_contains",
@@ -4391,6 +4587,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsEmpty => RuntimeOpRow {
                 symbol: "hew_string_is_empty",
@@ -4405,6 +4602,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsDigit => RuntimeOpRow {
                 symbol: "hew_string_is_digit",
@@ -4419,6 +4617,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsAlpha => RuntimeOpRow {
                 symbol: "hew_string_is_alpha",
@@ -4433,6 +4632,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StringIsAlphanumeric => RuntimeOpRow {
                 symbol: "hew_string_is_alphanumeric",
@@ -4447,6 +4647,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::TruthBool,
             },
             Self::StructuralFormat => RuntimeOpRow {
                 symbol: "hew_structural_format",
@@ -4454,6 +4655,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringFind => RuntimeOpRow {
                 symbol: "hew_string_find",
@@ -4474,6 +4676,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::VariantResult,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringGet => RuntimeOpRow {
                 symbol: "hew_string_get",
@@ -4481,6 +4684,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringIndex => RuntimeOpRow {
                 symbol: "hew_string_index",
@@ -4501,6 +4705,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringLen => RuntimeOpRow {
                 symbol: "hew_string_length",
@@ -4515,6 +4720,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringRepeat => RuntimeOpRow {
                 symbol: "hew_string_repeat",
@@ -4535,6 +4741,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringReplace => RuntimeOpRow {
                 symbol: "hew_string_replace",
@@ -4559,6 +4766,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringClone => RuntimeOpRow {
                 symbol: "hew_string_clone",
@@ -4573,6 +4781,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringSplit => RuntimeOpRow {
                 symbol: "hew_string_split",
@@ -4593,6 +4802,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringLines => RuntimeOpRow {
                 symbol: "hew_string_lines",
@@ -4607,6 +4817,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringChars => RuntimeOpRow {
                 symbol: "hew_string_chars",
@@ -4621,6 +4832,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringSliceCodepoints => RuntimeOpRow {
                 symbol: "hew_string_slice_codepoints",
@@ -4645,6 +4857,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringSliceCodepointsFrom => RuntimeOpRow {
                 symbol: "hew_string_slice_codepoints_from",
@@ -4665,6 +4878,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringSlice => RuntimeOpRow {
                 symbol: "hew_string_slice",
@@ -4689,6 +4903,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringToLowercase => RuntimeOpRow {
                 symbol: "hew_string_to_lowercase",
@@ -4703,6 +4918,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringToBytes => RuntimeOpRow {
                 symbol: "hew_string_to_bytes",
@@ -4717,6 +4933,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringToUppercase => RuntimeOpRow {
                 symbol: "hew_string_to_uppercase",
@@ -4731,6 +4948,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StringTrim => RuntimeOpRow {
                 symbol: "hew_string_trim",
@@ -4745,6 +4963,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::U8ToString => RuntimeOpRow {
                 symbol: "hew_u8_to_string",
@@ -4759,6 +4978,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::I32ToString => RuntimeOpRow {
                 symbol: "hew_int_to_string",
@@ -4773,6 +4993,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::I64ToString => RuntimeOpRow {
                 symbol: "hew_i64_to_string",
@@ -4787,6 +5008,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::U32ToString => RuntimeOpRow {
                 symbol: "hew_uint_to_string",
@@ -4801,6 +5023,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::U64ToString => RuntimeOpRow {
                 symbol: "hew_u64_to_string",
@@ -4815,6 +5038,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::F64ToString => RuntimeOpRow {
                 symbol: "hew_float_to_string",
@@ -4829,6 +5053,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::CharToString => RuntimeOpRow {
                 symbol: "hew_char_to_string",
@@ -4843,6 +5068,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::I32,
@@ -4860,6 +5086,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::I32,
@@ -4877,6 +5104,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::I64,
@@ -4894,6 +5122,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::I64,
@@ -4911,6 +5140,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U8,
@@ -4928,6 +5158,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U8,
@@ -4945,6 +5176,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U32,
@@ -4962,6 +5194,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U32,
@@ -4979,6 +5212,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U64,
@@ -4996,6 +5230,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::U64,
@@ -5013,6 +5248,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::F64,
@@ -5030,6 +5266,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::F64,
@@ -5047,6 +5284,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::Bool,
@@ -5064,6 +5302,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::Bool,
@@ -5081,6 +5320,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::Str,
@@ -5098,6 +5338,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Print {
                 kind: PrintKind::Str,
@@ -5115,6 +5356,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::ProcessExit => RuntimeOpRow {
                 symbol: "hew_exit",
@@ -5129,6 +5371,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::StderrWrite => RuntimeOpRow {
                 symbol: "hew_io_write_err",
@@ -5143,6 +5386,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::BoolToString => RuntimeOpRow {
                 symbol: "hew_bool_to_string",
@@ -5157,6 +5401,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorDirectId => RuntimeOpRow {
                 symbol: "hew_supervisor_direct_id",
@@ -5164,6 +5409,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorChildGet => RuntimeOpRow {
                 symbol: "hew_supervisor_child_get",
@@ -5171,6 +5417,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::LocalPidSupervisorChildGet => RuntimeOpRow {
                 symbol: "hew_local_pid_supervisor_child_get",
@@ -5178,6 +5425,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorNestedGet => RuntimeOpRow {
                 symbol: "hew_supervisor_nested_get",
@@ -5185,6 +5433,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorPoolChildGet => RuntimeOpRow {
                 symbol: "hew_supervisor_pool_child_get",
@@ -5192,6 +5441,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::LocalPidSupervisorPoolChildRefGet => RuntimeOpRow {
                 symbol: "hew_local_pid_supervisor_pool_child_ref_get",
@@ -5199,6 +5449,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorPoolLen => RuntimeOpRow {
                 symbol: "hew_supervisor_pool_len",
@@ -5206,6 +5457,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorStop => RuntimeOpRow {
                 symbol: "hew_supervisor_stop",
@@ -5213,6 +5465,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::SupervisorRestartAwaitBlocking => RuntimeOpRow {
                 symbol: "hew_supervisor_restart_await_blocking",
@@ -5220,6 +5473,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TcpAttachLocal => RuntimeOpRow {
                 symbol: "hew_tcp_attach_local",
@@ -5227,6 +5481,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TlsAttachLocal => RuntimeOpRow {
                 symbol: "hew_tls_attach_local",
@@ -5234,6 +5489,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::WebSocketAttachLocal => RuntimeOpRow {
                 symbol: "hew_ws_attach_local",
@@ -5241,6 +5497,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskAwaitBlocking => RuntimeOpRow {
                 symbol: "hew_task_await_blocking",
@@ -5248,6 +5505,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskCompleteThreaded => RuntimeOpRow {
                 symbol: "hew_task_complete_threaded",
@@ -5255,6 +5513,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskCompletionObserve => RuntimeOpRow {
                 symbol: "hew_task_completion_observe",
@@ -5262,6 +5521,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskCompletionUnobserve => RuntimeOpRow {
                 symbol: "hew_task_completion_unobserve",
@@ -5269,6 +5529,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskFree => RuntimeOpRow {
                 symbol: "hew_task_free",
@@ -5276,6 +5537,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::GeneratorFree => RuntimeOpRow {
                 symbol: "hew_checked_generator_free",
@@ -5283,6 +5545,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskGetEnv => RuntimeOpRow {
                 symbol: "hew_task_get_env",
@@ -5290,6 +5553,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskGetError => RuntimeOpRow {
                 symbol: "hew_task_get_error",
@@ -5297,6 +5561,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskGetResult => RuntimeOpRow {
                 symbol: "hew_task_get_result",
@@ -5304,6 +5569,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskNew => RuntimeOpRow {
                 symbol: "hew_task_new",
@@ -5311,6 +5577,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeCancelAfterNs => RuntimeOpRow {
                 symbol: "hew_task_scope_cancel_after_ns",
@@ -5318,6 +5585,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeDestroy => RuntimeOpRow {
                 symbol: "hew_task_scope_destroy",
@@ -5325,6 +5593,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeJoinAll => RuntimeOpRow {
                 symbol: "hew_task_scope_join_all",
@@ -5332,6 +5601,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeNew => RuntimeOpRow {
                 symbol: "hew_task_scope_new",
@@ -5339,6 +5609,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeSetCurrent => RuntimeOpRow {
                 symbol: "hew_task_scope_set_current",
@@ -5346,6 +5617,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskScopeSpawn => RuntimeOpRow {
                 symbol: "hew_task_scope_spawn",
@@ -5353,6 +5625,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskSetEnv => RuntimeOpRow {
                 symbol: "hew_task_set_env",
@@ -5360,6 +5633,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskSetResult => RuntimeOpRow {
                 symbol: "hew_task_set_result",
@@ -5367,6 +5641,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::TaskSpawnThread => RuntimeOpRow {
                 symbol: "hew_task_spawn_thread",
@@ -5374,6 +5649,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::New) => RuntimeOpRow {
                 symbol: "vec.value.new",
@@ -5385,6 +5661,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Len) => RuntimeOpRow {
                 symbol: "vec.value.len",
@@ -5399,6 +5676,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Contains) => RuntimeOpRow {
                 symbol: "vec.value.contains",
@@ -5419,6 +5697,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Index) => RuntimeOpRow {
                 symbol: "vec.value.index",
@@ -5439,6 +5718,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Get) => RuntimeOpRow {
                 symbol: "vec.value.get",
@@ -5462,6 +5742,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Push) => RuntimeOpRow {
                 symbol: "vec.value.push",
@@ -5482,6 +5763,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Set) => RuntimeOpRow {
                 symbol: "vec.value.set",
@@ -5506,6 +5788,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Pop) => RuntimeOpRow {
                 symbol: "vec.value.pop",
@@ -5523,6 +5806,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Remove) => RuntimeOpRow {
                 symbol: "vec.value.remove",
@@ -5546,6 +5830,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Clear) => RuntimeOpRow {
                 symbol: "vec.value.clear",
@@ -5560,6 +5845,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::IndexBorrow) => RuntimeOpRow {
                 symbol: "vec.value.index_borrow",
@@ -5580,6 +5866,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::GetBorrow) => RuntimeOpRow {
                 symbol: "vec.value.get_borrow",
@@ -5600,6 +5887,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::TakeFirst) => RuntimeOpRow {
                 symbol: "vec.value.take_first",
@@ -5617,6 +5905,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::Slice) => RuntimeOpRow {
                 symbol: "vec.value.slice",
@@ -5641,6 +5930,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Vector(VecValueOp::SliceFrom) => RuntimeOpRow {
                 symbol: "vec.value.slice_from",
@@ -5661,6 +5951,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Len) => RuntimeOpRow {
                 symbol: "array.value.len",
@@ -5675,6 +5966,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Index) => RuntimeOpRow {
                 symbol: "array.value.index",
@@ -5695,6 +5987,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::IndexBorrow) => RuntimeOpRow {
                 symbol: "array.value.index_borrow",
@@ -5715,6 +6008,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Array(ArrayValueOp::Set) => RuntimeOpRow {
                 symbol: "array.value.set",
@@ -5739,6 +6033,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::New) => RuntimeOpRow {
                 symbol: "map.value.new",
@@ -5750,6 +6045,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Len) => RuntimeOpRow {
                 symbol: "map.value.len",
@@ -5764,6 +6060,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Index) => RuntimeOpRow {
                 symbol: "map.value.index",
@@ -5787,6 +6084,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Get) => RuntimeOpRow {
                 symbol: "map.value.get",
@@ -5810,6 +6108,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::GetBorrow) => RuntimeOpRow {
                 symbol: "map.value.get_borrow",
@@ -5830,6 +6129,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::ContainsKey) => RuntimeOpRow {
                 symbol: "map.value.contains_key",
@@ -5850,6 +6150,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Insert) => RuntimeOpRow {
                 symbol: "map.value.insert",
@@ -5874,6 +6175,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Remove) => RuntimeOpRow {
                 symbol: "map.value.remove",
@@ -5897,6 +6199,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Clear) => RuntimeOpRow {
                 symbol: "map.value.clear",
@@ -5911,6 +6214,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Keys) => RuntimeOpRow {
                 symbol: "map.value.keys",
@@ -5928,6 +6232,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Values) => RuntimeOpRow {
                 symbol: "map.value.values",
@@ -5945,6 +6250,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Map(MapValueOp::Entries) => RuntimeOpRow {
                 symbol: "map.value.entries",
@@ -5962,6 +6268,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Map,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::New) => RuntimeOpRow {
                 symbol: "set.value.new",
@@ -5973,6 +6280,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Len) => RuntimeOpRow {
                 symbol: "set.value.len",
@@ -5987,6 +6295,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Contains) => RuntimeOpRow {
                 symbol: "set.value.contains",
@@ -6007,6 +6316,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Insert) => RuntimeOpRow {
                 symbol: "set.value.insert",
@@ -6030,6 +6340,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Remove) => RuntimeOpRow {
                 symbol: "set.value.remove",
@@ -6053,6 +6364,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Clear) => RuntimeOpRow {
                 symbol: "set.value.clear",
@@ -6067,6 +6379,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::Set(SetValueOp::Elements) => RuntimeOpRow {
                 symbol: "set.value.elements",
@@ -6084,6 +6397,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Set,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecAppend => RuntimeOpRow {
                 symbol: "hew_vec_append",
@@ -6091,6 +6405,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecClear => RuntimeOpRow {
                 symbol: "hew_vec_clear",
@@ -6098,6 +6413,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecClone => RuntimeOpRow {
                 symbol: "hew_vec_clone",
@@ -6105,6 +6421,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecCloneLayout => RuntimeOpRow {
                 symbol: "hew_vec_clone_layout",
@@ -6112,6 +6429,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecCloneOwned => RuntimeOpRow {
                 symbol: "hew_vec_clone_owned",
@@ -6119,6 +6437,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsLayout => RuntimeOpRow {
                 symbol: "hew_vec_contains_thunk",
@@ -6126,6 +6445,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecTakeAll => RuntimeOpRow {
                 symbol: "hew_vec_take_all",
@@ -6133,6 +6453,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsOwned => RuntimeOpRow {
                 symbol: "hew_vec_contains_owned",
@@ -6140,6 +6461,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_contains_f64",
@@ -6147,6 +6469,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_contains_i32",
@@ -6154,6 +6477,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_contains_i64",
@@ -6161,6 +6485,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecContainsScalar(VecContainsScalarElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_contains_str",
@@ -6168,6 +6493,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Bool) => RuntimeOpRow {
                 symbol: "hew_vec_get_bool",
@@ -6175,6 +6501,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecBool,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::F32) => RuntimeOpRow {
                 symbol: "hew_vec_get_f32",
@@ -6182,6 +6509,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_get_f64",
@@ -6189,6 +6517,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I8) => RuntimeOpRow {
                 symbol: "hew_vec_get_i8",
@@ -6196,6 +6525,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I16) => RuntimeOpRow {
                 symbol: "hew_vec_get_i16",
@@ -6203,6 +6533,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_get_i32",
@@ -6210,6 +6541,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecI32GetSet,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_get_i64",
@@ -6217,6 +6549,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Clone) => RuntimeOpRow {
                 symbol: "hew_vec_get_clone",
@@ -6224,6 +6557,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Take) => RuntimeOpRow {
                 symbol: "hew_vec_take_owned",
@@ -6231,6 +6565,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Layout) => RuntimeOpRow {
                 symbol: "hew_vec_get_layout",
@@ -6238,6 +6573,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Owned) => RuntimeOpRow {
                 symbol: "hew_vec_get_owned",
@@ -6245,6 +6581,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Ptr) => RuntimeOpRow {
                 symbol: "hew_vec_get_ptr",
@@ -6252,6 +6589,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_get_str",
@@ -6259,6 +6597,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::U8) => RuntimeOpRow {
                 symbol: "hew_vec_get_u8",
@@ -6266,6 +6605,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecGet(VecGetElem::U16) => RuntimeOpRow {
                 symbol: "hew_vec_get_u16",
@@ -6273,6 +6613,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecIsEmpty => RuntimeOpRow {
                 symbol: "hew_vec_is_empty",
@@ -6280,6 +6621,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecJoinStr => RuntimeOpRow {
                 symbol: "hew_vec_join_str",
@@ -6287,6 +6629,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecLen => RuntimeOpRow {
                 symbol: "hew_vec_len",
@@ -6294,6 +6637,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecNew => RuntimeOpRow {
                 symbol: "Vec::new",
@@ -6301,6 +6645,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecConstructor,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopBool => RuntimeOpRow {
                 symbol: "hew_vec_pop_bool",
@@ -6308,6 +6653,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopLayout => RuntimeOpRow {
                 symbol: "hew_vec_pop_layout",
@@ -6315,6 +6661,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPopOwned => RuntimeOpRow {
                 symbol: "hew_vec_pop_owned",
@@ -6322,6 +6669,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushBool => RuntimeOpRow {
                 symbol: "hew_vec_push_bool",
@@ -6329,6 +6677,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushLayout => RuntimeOpRow {
                 symbol: "hew_vec_push_layout",
@@ -6336,6 +6685,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushOwned => RuntimeOpRow {
                 symbol: "hew_vec_push_owned",
@@ -6343,6 +6693,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecPushOwnedMove => RuntimeOpRow {
                 symbol: "hew_vec_push_owned_move",
@@ -6350,6 +6701,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6360,6 +6712,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6370,6 +6723,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6380,6 +6734,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6390,6 +6745,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6400,6 +6756,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6410,6 +6767,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6420,6 +6778,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6430,6 +6789,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6440,6 +6800,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Push,
@@ -6450,6 +6811,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6460,6 +6822,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6470,6 +6833,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6480,6 +6844,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6490,6 +6855,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6500,6 +6866,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6510,6 +6877,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6520,6 +6888,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6530,6 +6899,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6540,6 +6910,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Pop,
@@ -6550,6 +6921,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6560,6 +6932,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6570,6 +6943,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6580,6 +6954,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6590,6 +6965,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6600,6 +6976,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecI32GetSet,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6610,6 +6987,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6620,6 +6998,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6630,6 +7009,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6640,6 +7020,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::Set,
@@ -6650,6 +7031,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6660,6 +7042,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6670,6 +7053,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6680,6 +7064,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6690,6 +7075,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6700,6 +7086,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6710,6 +7097,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6720,6 +7108,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6730,6 +7119,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6740,6 +7130,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecScalar {
                 op: VecScalarOp::RemoveAt,
@@ -6750,6 +7141,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecScalarDirect,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtBool => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_bool",
@@ -6757,6 +7149,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtLayout => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_layout",
@@ -6764,6 +7157,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecRemoveAtOwned => RuntimeOpRow {
                 symbol: "hew_vec_remove_at_owned",
@@ -6771,6 +7165,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetBool => RuntimeOpRow {
                 symbol: "hew_vec_set_bool",
@@ -6778,6 +7173,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecBool,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetLayout => RuntimeOpRow {
                 symbol: "hew_vec_set_layout",
@@ -6785,6 +7181,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetOwned => RuntimeOpRow {
                 symbol: "hew_vec_set_owned",
@@ -6792,6 +7189,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSetOwnedMove => RuntimeOpRow {
                 symbol: "hew_vec_set_owned_move",
@@ -6799,6 +7197,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Bytesize) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_bytesize",
@@ -6806,6 +7205,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::F64) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_f64",
@@ -6813,6 +7213,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::I32) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_i32",
@@ -6820,6 +7221,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::I64) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_i64",
@@ -6827,6 +7229,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Layout) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_layout",
@@ -6834,6 +7237,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Owned) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_owned",
@@ -6841,6 +7245,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Ptr) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_ptr",
@@ -6848,6 +7253,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VecSliceRange(VecSliceElem::Str) => RuntimeOpRow {
                 symbol: "hew_vec_slice_range_str",
@@ -6855,6 +7261,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
             Self::VtableDispatchPanicOnOob => RuntimeOpRow {
                 symbol: "hew_vtable_dispatch_panic_on_oob",
@@ -6862,6 +7269,7 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
             },
         }
     }
@@ -7131,6 +7539,16 @@ impl RuntimeCallFamily {
         self.row().abi_shape
     }
 
+    /// The collection and encoding contracts, which the two consume-verdict
+    /// readers below trust for every argument position.
+    ///
+    /// WHY the filter: every operation now publishes its row, but only these
+    /// families' contracts have been audited position by position. Reading the
+    /// rest would change lowering, not just labels. WHEN obsolete: once each
+    /// remaining row's argument effects are audited against its runtime entry.
+    /// WHAT the real fix is: delete this filter and read `row().contract` for
+    /// every operation, leaving the fail-closed default only for a row that
+    /// publishes no contract.
     const fn collection_semantic_contract(self) -> Option<RuntimeSemanticContract> {
         match self {
             Self::Array(_)
@@ -7823,6 +8241,22 @@ impl RuntimeCallFamily {
     }
 }
 
+/// The C entry's return type, when it is not simply the result storage's own
+/// representation.
+///
+/// A runtime entry that answers a question returns a C truth whose width is
+/// its own business; the language's `bool` storage is one byte. The backend
+/// narrows and widens from this field rather than from a per-operation arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeCReturn {
+    /// The C return is the result storage's representation, or void.
+    Storage,
+    /// A 32-bit status: nonzero is true.
+    TruthI32,
+    /// A 1-bit truth.
+    TruthBool,
+}
+
 /// How physical MIR realizes one runtime operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimePhysicalForm {
@@ -7876,6 +8310,7 @@ pub struct RuntimeOpRow {
     pub staging: RuntimeStaging,
     pub abi_shape: RuntimeCallAbiShape,
     pub physical: RuntimePhysicalForm,
+    pub c_return: RuntimeCReturn,
 }
 
 /// ABI-routing shape for collection calls that require bespoke codegen.

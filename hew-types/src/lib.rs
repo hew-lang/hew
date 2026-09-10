@@ -94,11 +94,11 @@ pub use resolved_ty::{
 };
 pub use runtime_call::{
     vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,
-    MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCallDescriptor,
-    RuntimeCallFamily, RuntimeDropDescriptor, RuntimeInstantiatedContract, RuntimeLogicalFailure,
-    RuntimeOpRow, RuntimePhysicalForm, RuntimeResultEffect, RuntimeSemanticContract,
-    RuntimeStaging, RuntimeValueKind, RuntimeVariantResultKind, StreamElementKind, VecGetElem,
-    VecSliceElem, VecValueOp,
+    MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCReturn,
+    RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, RuntimeInstantiatedContract,
+    RuntimeLogicalFailure, RuntimeOpRow, RuntimePhysicalForm, RuntimeResultEffect,
+    RuntimeSemanticContract, RuntimeStaging, RuntimeValueKind, RuntimeVariantResultKind,
+    StreamElementKind, VecGetElem, VecSliceElem, VecValueOp,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{

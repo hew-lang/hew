@@ -1637,6 +1637,96 @@ pub(super) mod tests {
         root
     }
 
+    /// The editor and `hew check` report the same thing for the same file.
+    ///
+    /// Both sides run the shared driver, so what this pins is that the LSP
+    /// hands it the same configuration the CLI does - project discovery from
+    /// the manifest, the same module search paths, the same lint levels - and
+    /// that the conversion to LSP diagnostics loses no code, position or
+    /// severity. The fixture carries a regex literal (the implicit
+    /// `std.text.regex` import), a type error and a lint warning so both
+    /// severities and a resolved import are in the compared set.
+    #[test]
+    fn editor_diagnostics_equal_hew_check_for_the_same_file() {
+        const SOURCE: &str = "fn probe() -> i32 {\n\
+             let unused = 1;\n\
+             let pattern = re\"a+\";\n\
+             if pattern.is_match(\"aaa\") { 1 } else { 0 }\n\
+             }\n\
+             \n\
+             fn main() {\n\
+             let wrong: i32 = \"text\";\n\
+             println(probe());\n\
+             println(wrong);\n\
+             }\n";
+
+        let root = make_temp_workspace_dir(&[
+            (
+                "hew.toml",
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+            ),
+            ("main.hew", SOURCE),
+        ]);
+        let path = root.join("main.hew");
+        let uri = Url::from_file_path(&path).expect("workspace path is absolute");
+
+        let failure = hew_compile::check_file(
+            &path.display().to_string(),
+            &hew_compile::FrontendOptions::default(),
+        )
+        .expect_err("the fixture has a deliberate type error");
+
+        let line_offsets = compute_line_offsets(SOURCE);
+        let expected = build_frontend_diagnostics_by_uri(
+            &uri,
+            SOURCE,
+            &line_offsets,
+            &failure.diagnostics,
+            Some(&failure),
+        );
+        let published = analyze_document(&uri, SOURCE, &DashMap::new(), &[]).diagnostics_by_uri;
+
+        let identities = |map: &DiagnosticMap| {
+            let mut rows: Vec<String> = map
+                .iter()
+                .flat_map(|(uri, diagnostics)| {
+                    diagnostics.iter().map(move |diagnostic| {
+                        format!(
+                            "{uri:?} {:?} {:?} {:?}",
+                            diagnostic.code, diagnostic.range, diagnostic.severity
+                        )
+                    })
+                })
+                .collect();
+            rows.sort();
+            rows
+        };
+
+        let expected_rows = identities(&expected);
+        assert!(
+            !expected_rows.is_empty(),
+            "the fixture must produce diagnostics for the comparison to mean anything"
+        );
+        assert!(
+            expected
+                .values()
+                .flatten()
+                .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+                && expected
+                    .values()
+                    .flatten()
+                    .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::WARNING)),
+            "the fixture must exercise both severities, got: {expected_rows:?}"
+        );
+        assert_eq!(
+            identities(&published),
+            expected_rows,
+            "editor diagnostics must match `hew check` for the same file"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Diagnostics the LSP publishes for `uri` after analyzing `source`.
     fn published_for(
         uri: &Url,

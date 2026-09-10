@@ -658,6 +658,21 @@ fn a_declared_closed_keeps_its_signature_beside_the_handle_builtin() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
+/// Negative control for the guard: with no declaration in scope both handle
+/// builtins keep their own signature on a real pid.
+#[test]
+fn an_undeclared_close_and_closed_still_take_a_handle() {
+    let source = "actor Worker { receive fn ping() {} }\n\
+         fn main() {\n\
+             let worker = spawn Worker();\n\
+             let _sent = worker.ping();\n\
+             close(worker);\n\
+             closed(worker);\n\
+         }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
 /// Negative control: without a declaration the builtin still owns the name and
 /// still refuses a two-argument call.
 #[test]

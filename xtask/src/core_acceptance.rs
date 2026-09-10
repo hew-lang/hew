@@ -23,15 +23,58 @@ struct Case {
     fixtures: Option<PathBuf>,
     suites: Vec<String>,
     timeout_seconds: u64,
+    /// A case without a `kind` is `run`: compile and execute at O0 and O2.
+    #[serde(default)]
+    kind: CaseKind,
     expected: ExpectedOutcome,
+}
+
+/// What a case proves. `Run` (the default, and today's only behaviour)
+/// compiles and executes the source at O0 and O2 against an exact
+/// stdout/stderr/exit expectation. `Check` runs `hew check` once against the
+/// source and asserts the exact set of diagnostics it reports; it never
+/// builds or executes a binary. Safety (ASan/LSan) stays a suite selected by
+/// `suites`, not a case kind — a `check` case is never sanitizer-compiled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum CaseKind {
+    #[default]
+    Run,
+    Check,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ExpectedOutcome {
+    #[serde(default)]
     stdout: String,
     #[serde(default)]
     stderr: String,
+    #[serde(default)]
     exit: i32,
+    /// `kind = "check"` only: the exact diagnostics `hew check --format json`
+    /// must report, matched as a set on `(code, line, column)` with an
+    /// optional message substring.
+    #[serde(default)]
+    diagnostics: Vec<ExpectedDiagnostic>,
+}
+
+/// One expected diagnostic for a `check` case.
+///
+/// `code` is the JSON diagnostic's `code` field verbatim — the stable `kind`
+/// discriminant `hew check --format json` emits (see
+/// `hew-cli/src/diagnostic_json.rs`). For a diagnostic whose specific error
+/// lives under a generic discriminant (`InvalidOperation` covers several
+/// distinct `E_*` checks today), `code` is that generic string and `message`
+/// is what actually pins down which one: the `E_*`/`W_*` token is embedded in
+/// the message text, not the JSON code, until each such check earns its own
+/// discriminant.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct ExpectedDiagnostic {
+    code: String,
+    line: usize,
+    column: usize,
+    #[serde(default)]
+    message: Option<String>,
 }
 
 #[derive(Debug)]
@@ -276,6 +319,30 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
         {
             return Err(format!("{} has invalid suite membership", case.id));
         }
+        match case.kind {
+            CaseKind::Run => {
+                if !case.expected.diagnostics.is_empty() {
+                    return Err(format!(
+                        "{} has kind run but declares expected diagnostics (that shape is check-only)",
+                        case.id
+                    ));
+                }
+            }
+            CaseKind::Check => {
+                if case.expected.diagnostics.is_empty() {
+                    return Err(format!(
+                        "{} has kind check but declares no expected diagnostics",
+                        case.id
+                    ));
+                }
+                if case.suites.iter().any(|suite| suite == "safety") {
+                    return Err(format!(
+                        "{} has kind check but belongs to the safety suite; safety stays a suite, not a kind",
+                        case.id
+                    ));
+                }
+            }
+        }
         let source = root.join("tests/core-acceptance").join(&case.source);
         if !source.is_file() {
             return Err(format!(
@@ -364,13 +431,101 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     fn run_case(&self, case: &Case) -> bool {
-        let mut passed = true;
-        for profile in [Profile::O0, Profile::O2] {
-            if !self.run_profile(case, profile) {
-                passed = false;
+        match case.kind {
+            CaseKind::Run => {
+                let mut passed = true;
+                for profile in [Profile::O0, Profile::O2] {
+                    if !self.run_profile(case, profile) {
+                        passed = false;
+                    }
+                }
+                passed
+            }
+            CaseKind::Check => self.run_check(case),
+        }
+    }
+
+    /// Run a `kind = "check"` case once: `hew check --format json` against
+    /// the source, no build and no execution. The process must exit 1 and
+    /// its stdout must be exactly the JSON diagnostic array the case expects.
+    fn run_check(&self, case: &Case) -> bool {
+        let source = self.root.join("tests/core-acceptance").join(&case.source);
+        let mut command = Command::new(&self.options.hew_bin);
+        command
+            .arg("check")
+            .arg(&source)
+            .arg("--format")
+            .arg("json")
+            .current_dir(self.root);
+        let result = match run_command(&mut command, self.timeout(case)) {
+            Ok(result) => result,
+            Err(err) => {
+                println!(
+                    "FAIL {} profile=check class=environment-failure detail={err}",
+                    case.id
+                );
+                return false;
+            }
+        };
+        match result {
+            CommandResult::TimedOut { stdout, stderr } => {
+                println!(
+                    "FAIL {} profile=check class=timeout timeout_seconds={}{}{}",
+                    case.id,
+                    self.timeout(case).as_secs(),
+                    summarise(&stdout),
+                    summarise(&stderr)
+                );
+                false
+            }
+            CommandResult::Completed {
+                status,
+                stdout,
+                stderr,
+            } => {
+                let Some(actual_exit) = status.code() else {
+                    println!(
+                        "FAIL {} profile=check class=compiler-crash{}{}",
+                        case.id,
+                        summarise(&stdout),
+                        summarise(&stderr)
+                    );
+                    return false;
+                };
+                // A rejecting `check` always exits 1: that is the contract
+                // this case kind verifies, not a per-case expectation.
+                if actual_exit != 1 {
+                    println!(
+                        "FAIL {} profile=check class=wrong-exit expected=1 actual={actual_exit}{}{}",
+                        case.id,
+                        summarise(&stdout),
+                        summarise(&stderr)
+                    );
+                    return false;
+                }
+                let actual: Vec<ActualDiagnostic> = match serde_json::from_str(&stdout) {
+                    Ok(diagnostics) => diagnostics,
+                    Err(err) => {
+                        println!(
+                            "FAIL {} profile=check class=environment-failure detail=parse diagnostics json: {err}{}",
+                            case.id,
+                            summarise(&stdout)
+                        );
+                        return false;
+                    }
+                };
+                if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual) {
+                    println!(
+                        "FAIL {} profile=check class=wrong-diagnostics detail={detail}{}",
+                        case.id,
+                        summarise(&stderr)
+                    );
+                    return false;
+                }
+                println!("PASS {} profile=check exit={actual_exit}", case.id);
+                true
             }
         }
-        passed
     }
 
     fn run_profile(&self, case: &Case, profile: Profile) -> bool {
@@ -705,6 +860,71 @@ fn read_capture(path: &Path, stream: &str) -> Result<String> {
         .map_err(|err| format!("read command {stream} capture {}: {err}", path.display()))
 }
 
+/// The slice of `hew check --format json`'s `JsonDiagnostic` this runner
+/// needs. Serde ignores the rest of the object (severity, channel, source,
+/// file, notes, fixes) — the JSON diagnostics array is the one authority,
+/// read directly, never re-derived from the text renderer.
+#[derive(Debug, Deserialize)]
+struct ActualDiagnostic {
+    code: String,
+    span: ActualSpan,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActualSpan {
+    start_line: usize,
+    start_col: usize,
+}
+
+/// Match a case's expected diagnostics against what `hew check` actually
+/// reported, as a set keyed on `(code, line, column)` with an optional
+/// message substring per match. Extra or missing diagnostics both fail: a
+/// `check` case proves the exact diagnostic set, not a subset of it.
+fn diagnostics_match(expected: &[ExpectedDiagnostic], actual: &[ActualDiagnostic]) -> Result<()> {
+    let mut remaining: Vec<&ActualDiagnostic> = actual.iter().collect();
+    let mut missing = Vec::new();
+    for want in expected {
+        let position = remaining.iter().position(|got| {
+            got.code == want.code
+                && got.span.start_line == want.line
+                && got.span.start_col == want.column
+                && match &want.message {
+                    Some(substring) => got.message.contains(substring.as_str()),
+                    None => true,
+                }
+        });
+        match position {
+            Some(index) => {
+                remaining.remove(index);
+            }
+            None => missing.push(format!(
+                "{}@{}:{}{}",
+                want.code,
+                want.line,
+                want.column,
+                want.message
+                    .as_deref()
+                    .map(|m| format!(" ({m:?})"))
+                    .unwrap_or_default()
+            )),
+        }
+    }
+    if missing.is_empty() && remaining.is_empty() {
+        return Ok(());
+    }
+    let extra: Vec<String> = remaining
+        .iter()
+        .map(|got| {
+            format!(
+                "{}@{}:{} ({:?})",
+                got.code, got.span.start_line, got.span.start_col, got.message
+            )
+        })
+        .collect();
+    Err(format!("missing={missing:?} extra={extra:?}"))
+}
+
 fn summarise(text: &str) -> String {
     if text.is_empty() {
         String::new()
@@ -930,5 +1150,226 @@ mod tests {
         let error = read_capture(&directory.path().join("missing"), "stdout")
             .expect_err("missing command output must not masquerade as program output");
         assert!(error.contains("read command stdout capture"));
+    }
+
+    // -----------------------------------------------------------------
+    // Expectation kind: `check`
+    // -----------------------------------------------------------------
+
+    fn make_case(
+        kind: CaseKind,
+        diagnostics: Vec<ExpectedDiagnostic>,
+        suites: &[&str],
+        source_rel: &str,
+    ) -> Case {
+        Case {
+            id: "case-under-test".to_string(),
+            intent: "unit test".to_string(),
+            source: PathBuf::from(source_rel),
+            fixtures: None,
+            suites: suites.iter().map(ToString::to_string).collect(),
+            timeout_seconds: 1,
+            kind,
+            expected: ExpectedOutcome {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit: 0,
+                diagnostics,
+            },
+        }
+    }
+
+    fn manifest_root_with_source(source_rel: &str) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory
+            .path()
+            .join("tests/core-acceptance")
+            .join(source_rel);
+        fs::create_dir_all(source.parent().expect("source has a parent")).unwrap();
+        fs::write(&source, "fn main() {}\n").unwrap();
+        directory
+    }
+
+    #[test]
+    fn case_without_kind_defaults_to_run() {
+        assert_eq!(manifest().cases[0].kind, CaseKind::Run);
+    }
+
+    #[test]
+    fn run_case_rejects_declared_expected_diagnostics() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let case = make_case(
+            CaseKind::Run,
+            vec![ExpectedDiagnostic {
+                code: "InvalidOperation".to_string(),
+                line: 1,
+                column: 1,
+                message: None,
+            }],
+            &["acceptance"],
+            "cases/case.hew",
+        );
+        let manifest = Manifest { cases: vec![case] };
+        let error = validate_manifest(&manifest, directory.path())
+            .expect_err("a run case declaring diagnostics is a check-only shape");
+        assert!(error.contains("check-only"));
+    }
+
+    #[test]
+    fn check_case_requires_expected_diagnostics() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let case = make_case(
+            CaseKind::Check,
+            Vec::new(),
+            &["acceptance"],
+            "cases/case.hew",
+        );
+        let manifest = Manifest { cases: vec![case] };
+        let error = validate_manifest(&manifest, directory.path())
+            .expect_err("a check case with no expected diagnostics must fail validation");
+        assert!(error.contains("declares no expected diagnostics"));
+    }
+
+    #[test]
+    fn check_case_cannot_join_the_safety_suite() {
+        let directory = manifest_root_with_source("cases/case.hew");
+        let case = make_case(
+            CaseKind::Check,
+            vec![ExpectedDiagnostic {
+                code: "InvalidOperation".to_string(),
+                line: 1,
+                column: 1,
+                message: None,
+            }],
+            &["acceptance", "safety"],
+            "cases/case.hew",
+        );
+        let manifest = Manifest { cases: vec![case] };
+        let error = validate_manifest(&manifest, directory.path())
+            .expect_err("safety stays a suite, not a case kind");
+        assert!(error.contains("safety stays a suite"));
+    }
+
+    #[test]
+    fn diagnostics_match_accepts_an_exact_set() {
+        let actual = vec![ActualDiagnostic {
+            code: "InvalidOperation".to_string(),
+            span: ActualSpan {
+                start_line: 10,
+                start_col: 9,
+            },
+            message: "a select needs at least one arm: a source arm".to_string(),
+        }];
+        let expected = vec![ExpectedDiagnostic {
+            code: "InvalidOperation".to_string(),
+            line: 10,
+            column: 9,
+            message: Some("needs at least one arm".to_string()),
+        }];
+        assert!(diagnostics_match(&expected, &actual).is_ok());
+    }
+
+    #[test]
+    fn diagnostics_match_rejects_wrong_position() {
+        let actual = vec![ActualDiagnostic {
+            code: "InvalidOperation".to_string(),
+            span: ActualSpan {
+                start_line: 10,
+                start_col: 9,
+            },
+            message: "a select needs at least one arm".to_string(),
+        }];
+        let wrong_line = vec![ExpectedDiagnostic {
+            code: "InvalidOperation".to_string(),
+            line: 11,
+            column: 9,
+            message: None,
+        }];
+        let error = diagnostics_match(&wrong_line, &actual)
+            .expect_err("naming the wrong line must fail rather than silently pass");
+        assert!(error.contains("missing"));
+        assert!(error.contains("extra"));
+    }
+
+    #[test]
+    fn diagnostics_match_rejects_an_unexpected_extra_diagnostic() {
+        let actual = vec![ActualDiagnostic {
+            code: "UnusedVariable".to_string(),
+            span: ActualSpan {
+                start_line: 4,
+                start_col: 13,
+            },
+            message: "unused variable seen".to_string(),
+        }];
+        let error = diagnostics_match(&[], &actual)
+            .expect_err("an undeclared extra diagnostic must fail the case");
+        assert!(error.contains("extra"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_case_with_a_wrong_position_fails_the_runner() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = manifest_root_with_source("cases/probe.hew");
+        let fake_hew = directory.path().join("fake-hew");
+        let script = concat!(
+            "#!/bin/sh\n",
+            "cat <<'JSON'\n",
+            "[{",
+            r#""code":"InvalidOperation","severity":"error","channel":"user","#,
+            r#""source":"hew-types","file":"probe.hew","#,
+            r#""span":{"start_line":10,"start_col":9,"end_line":10,"end_col":18,"start_byte":0,"end_byte":0},"#,
+            r#""message":"a select needs at least one arm","notes":[],"fixes":[]"#,
+            "}]\n",
+            "JSON\n",
+            "exit 1\n",
+        );
+        fs::write(&fake_hew, script).unwrap();
+        fs::set_permissions(&fake_hew, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let options = Options {
+            suite: "acceptance".to_string(),
+            cases: Vec::new(),
+            hew_bin: fake_hew,
+            timeout_seconds: None,
+        };
+        let runner = Runner {
+            options: &options,
+            root: directory.path(),
+            run_dir: directory.path(),
+            instrumentation_request: "none",
+        };
+
+        let correct_case = make_case(
+            CaseKind::Check,
+            vec![ExpectedDiagnostic {
+                code: "InvalidOperation".to_string(),
+                line: 10,
+                column: 9,
+                message: None,
+            }],
+            &["acceptance"],
+            "cases/probe.hew",
+        );
+        assert!(
+            runner.run_check(&correct_case),
+            "a check case whose expectation matches the real diagnostic position must pass"
+        );
+
+        let wrong_position_case = make_case(
+            CaseKind::Check,
+            vec![ExpectedDiagnostic {
+                code: "InvalidOperation".to_string(),
+                line: 99,
+                column: 9,
+                message: None,
+            }],
+            &["acceptance"],
+            "cases/probe.hew",
+        );
+        assert!(
+            !runner.run_check(&wrong_position_case),
+            "a check case naming the wrong position must fail the runner, not pass it"
+        );
     }
 }

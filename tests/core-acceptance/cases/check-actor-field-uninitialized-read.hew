@@ -1,0 +1,19 @@
+// Reject fixture (D447): a deferred state field has no value until `init`
+// assigns it. Reading it before that first store would read uninitialized
+// state, so the checker refuses the read rather than treating the field as
+// implicitly zeroed.
+//
+// Harness verb: hew check (must fail)
+actor Worker {
+    var label: string,
+    init(name: string) {
+        let _seen = label;
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}

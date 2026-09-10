@@ -1,0 +1,13 @@
+[[case]]
+id = "check-actor-field-deferred-spawn-arg"
+intent = "D447: a state field that `init` initializes is that field's only writer; naming it again as a spawn argument is refused rather than silently picking a winner between the spawn value and init's own store."
+source = "cases/check-actor-field-deferred-spawn-arg.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 18
+column = 38
+message = "E_ACTOR_FIELD_DEFERRED: state field `label` of actor `Worker` is initialized by `init`"

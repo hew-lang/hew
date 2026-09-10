@@ -1,0 +1,20 @@
+// Reject fixture (D447): a state field that `init` initializes is that
+// field's only writer. Naming it again as a spawn argument would make one
+// init body both a first store (at a spawn with no init params) and a
+// replacement (at this spawn, where it collides with the `name` init
+// parameter) for the same field — the checker refuses the ambiguity instead
+// of picking a silent winner.
+//
+// Harness verb: hew check (must fail)
+actor Worker {
+    var label: string,
+    init(name: string) {
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(label: "ready", name: "ready");
+    let _ = worker.label();
+}

@@ -11529,7 +11529,19 @@ impl Checker {
                         continue;
                     }
                     let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
+                    self.env
+                        .define(format!("{owner}.{}", cd.name), ty.clone(), false);
                     self.env.define(cd.name.clone(), ty, false);
+                    // The value environment is one flat scope, so the bare
+                    // binding is visible program-wide once defined. The export
+                    // record is what makes it in scope only where the import
+                    // was written; the use-time gate reads both.
+                    let source_identity = format!("{owner}.{}", cd.name);
+                    self.record_published_bare_const(&cd.name, &source_identity);
+                    self.file_import_const_exports
+                        .entry(cd.name.clone())
+                        .or_default()
+                        .insert(source_identity);
                 }
                 Item::TypeDecl(td) => {
                     if !td.visibility.is_pub() {
@@ -11545,13 +11557,7 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
-                    // File imports publish into this lexical namespace. A
-                    // qualified package exporting the same leaf must not hide
-                    // that binding at the ordinary bare-type scope gate.
-                    if let Some(declaration) = self.identity.declaration_by_path(&td.name) {
-                        let source_identity = declaration.full_path().to_string();
-                        self.record_published_bare_type(&td.name, &source_identity);
-                    }
+                    self.publish_file_import_type_name(owner, &td.name);
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
@@ -11577,6 +11583,8 @@ impl Checker {
                     self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(format!("{}Event", md.name));
+                    self.publish_file_import_type_name(owner, &md.name);
+                    self.publish_file_import_type_name(owner, &format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
@@ -11605,6 +11613,16 @@ impl Checker {
                         continue;
                     }
                     self.trait_defs.insert(tr.name.clone(), info);
+                    if tr.visibility.is_pub() {
+                        self.published_bare_trait_owners
+                            .entry((
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                tr.name.clone(),
+                            ))
+                            .or_default()
+                            .insert(format!("{owner}.{}", tr.name));
+                    }
                 }
                 Item::Actor(ad) => {
                     if !ad.visibility.is_pub() {
@@ -11618,6 +11636,7 @@ impl Checker {
                         continue;
                     }
                     self.register_actor_base(ad, None);
+                    self.publish_file_import_type_name(owner, &ad.name);
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
@@ -11761,10 +11780,36 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
-        // Flat file imports register top-level names without a module namespace,
-        // sharing the root/flat namespace (`None`).
+        // The claim belongs to the IMPORTING file's namespace, the same one the
+        // importer's own declarations claim: a file import that collides with a
+        // declaration the importer wrote is a duplicate, while two modules
+        // importing one file each get their own copy of its names.
+        let importer = self.current_module.clone();
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
-            && self.register_type_namespace_name(None, name, span)
+            && self.register_type_namespace_name(importer.as_deref(), name, span)
+    }
+
+    /// Publish an imported file's type-shaped declaration into the importing
+    /// file's scope, owned by the file that declared it.
+    ///
+    /// This is the type half of the same rule the callable arm applies: the
+    /// declaration keeps the imported file's identity (`{owner}.{name}`) and
+    /// the bare spelling is published only where the import was written. A file
+    /// that did not import it sees the owner-qualified export, so the use-time
+    /// scope gate names the declaring file instead of admitting the bare name
+    /// program-wide.
+    fn publish_file_import_type_name(&mut self, owner: &str, name: &str) {
+        self.record_module_type_export(owner, name);
+        let source_identity = format!("{owner}.{name}");
+        self.record_published_bare_type(name, &source_identity);
+        self.unqualified_to_module.insert(
+            (
+                self.current_module.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ),
+            owner.to_string(),
+        );
     }
 
     fn flat_file_import_already_registered(&mut self, decl: &ImportDecl) -> bool {

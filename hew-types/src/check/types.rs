@@ -2959,6 +2959,13 @@ pub struct Checker {
     /// functions, constants share an env slot for legacy lookup, so this exact
     /// owner set is the ambiguity authority at identifier use sites.
     pub(super) published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
+    /// Constants a file import published, keyed by their bare spelling and
+    /// valued by the owner-qualified source identities. The value environment
+    /// is one flat scope, so defining the bare binding makes it resolvable
+    /// program-wide; this is the export record the use-time scope gate reads to
+    /// refuse it in a file that did not write the import. Module-path imports
+    /// need no entry: they never define the bare spelling at all.
+    pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub(super) effect_graph: super::effects::EffectGraph,
@@ -3971,6 +3978,7 @@ impl Checker {
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),
             published_bare_const_owners: HashMap::new(),
+            file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),

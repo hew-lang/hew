@@ -1868,7 +1868,7 @@ impl Checker {
         // identity is never parsed back into one (rc1-F1 stage D).
         let surface_name = name;
         let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
-        if self.report_bare_const_import_ambiguity(name, span) {
+        if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
         // Module-qualified value constructor reference encoded as a flat
@@ -2165,26 +2165,57 @@ impl Checker {
         Ty::Error
     }
 
-    /// Reject a bare constant binding published by multiple imported owners.
-    /// The value environment retains one compatibility slot, so selecting it
-    /// before this check would silently choose the last registration.
-    fn report_bare_const_import_ambiguity(&mut self, name: &str, span: &Span) -> bool {
+    /// Reject a bare constant binding that is ill-formed for this file: one a
+    /// file import published into ANOTHER file's scope, or one published here
+    /// by more than one owner. The value environment retains a single flat
+    /// slot, so selecting it before this check would admit a name the file
+    /// never imported, or silently choose the last registration.
+    fn report_bare_const_scope_error(&mut self, name: &str, span: &Span) -> bool {
         if name.contains('.') || name.contains("::") {
             return false;
         }
         // A local/parameter in an inner body scope shadows imports normally.
-        // Only an outer import-scope binding can be ambiguous here.
+        // Only an outer import-scope binding can be ill-formed here.
         if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
             return false;
         }
-        let Some(owners) = self.published_bare_const_owners.get(&(
+        let published = self.published_bare_const_owners.get(&(
             self.current_module.clone(),
             self.current_module_idx,
             name.to_string(),
-        )) else {
+        ));
+        if published.is_none() {
+            // A file import publishes its constants into the importing file
+            // only. Reaching the flat env slot from a file that did not write
+            // that import is out of scope, exactly as it is for its types.
+            if let Some(owners) = self.file_import_const_exports.get(name) {
+                let candidates: Vec<String> = owners.iter().cloned().collect();
+                let detail = candidates
+                    .iter()
+                    .filter_map(|identity| identity.rsplit_once('.'))
+                    .map(|(owner, _)| format!("`{owner}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
+                    format!(
+                        "constant `{name}` is not in scope; it is declared by file {detail}, \
+                         which this file does not import"
+                    ),
+                    candidates
+                        .iter()
+                        .map(|candidate| format!("qualify the reference, e.g. `{candidate}`"))
+                        .collect(),
+                );
+                return true;
+            }
+            return false;
+        }
+        let Some(owners) = published else {
             return false;
         };
         if owners.len() < 2 {

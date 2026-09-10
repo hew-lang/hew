@@ -65,5 +65,91 @@ fn main() {
     assert(maxu64.rotate_left(8) == 18446744073709551615);
     assert(maxu64.rotate_right(8) == 18446744073709551615);
 
-    println("integer bit methods hold at i32, i64, u32 and u64 boundaries");
+    // i8: an ordinary positive value.
+    let a8: i8 = 42;
+    assert(a8.count_ones() == 3);
+    assert(a8.count_zeros() == 5);
+    assert(a8.leading_zeros() == 2);
+    assert(a8.trailing_zeros() == 1);
+    assert(a8.swap_bytes() == 42); // one byte: identity, not an LLVM `bswap` call.
+    assert(a8.reverse_bits() == 84);
+    assert(a8.rotate_left(4) == -94);
+    assert(a8.rotate_right(4) == -94); // 8 - 4 == 4: left and right agree.
+
+    // i8 boundary: all bits set.
+    let neg_one8: i8 = -1;
+    assert(neg_one8.count_ones() == 8);
+    assert(neg_one8.leading_zeros() == 0);
+    assert(neg_one8.trailing_zeros() == 0);
+    assert(neg_one8.swap_bytes() == -1);
+    assert(neg_one8.reverse_bits() == -1);
+
+    // i8 boundary: MIN (only the sign bit set) and MAX.
+    let min8: i8 = -128;
+    assert(min8.count_ones() == 1);
+    assert(min8.leading_zeros() == 0);
+    assert(min8.trailing_zeros() == 7);
+    assert(min8.rotate_left(1) == 1);
+    assert(min8.rotate_right(1) == 64);
+    let max8: i8 = 127;
+    assert(max8.count_ones() == 7);
+    assert(max8.leading_zeros() == 1);
+    assert(max8.trailing_zeros() == 0);
+
+    // u8: zero and max boundaries.
+    let zero8: u8 = 0;
+    assert(zero8.leading_zeros() == 8);
+    assert(zero8.trailing_zeros() == 8);
+    let maxu8: u8 = 255;
+    assert(maxu8.count_ones() == 8);
+    assert(maxu8.swap_bytes() == 255);
+    assert(maxu8.rotate_left(4) == 255);
+
+    // i16: an ordinary positive value.
+    let a16: i16 = 4;
+    assert(a16.count_ones() == 1);
+    assert(a16.leading_zeros() == 13);
+    assert(a16.trailing_zeros() == 2);
+    assert(a16.swap_bytes() == 1024);
+    assert(a16.reverse_bits() == 8192);
+    assert(a16.rotate_left(4) == 64);
+    assert(a16.rotate_right(4) == 16384);
+
+    // i16 boundary: all bits set, MIN, MAX.
+    let neg_one16: i16 = -1;
+    assert(neg_one16.count_ones() == 16);
+    assert(neg_one16.leading_zeros() == 0);
+    assert(neg_one16.trailing_zeros() == 0);
+    let min16: i16 = -32768;
+    assert(min16.count_ones() == 1);
+    assert(min16.leading_zeros() == 0);
+    assert(min16.trailing_zeros() == 15);
+    assert(min16.rotate_left(1) == 1);
+    let max16: i16 = 32767;
+    assert(max16.count_ones() == 15);
+    assert(max16.leading_zeros() == 1);
+    assert(max16.trailing_zeros() == 0);
+
+    // u16: zero and max boundaries.
+    let zero16: u16 = 0;
+    assert(zero16.leading_zeros() == 16);
+    let maxu16: u16 = 65535;
+    assert(maxu16.count_ones() == 16);
+    assert(maxu16.rotate_left(4) == 65535);
+
+    // isize/usize: same 64-bit physical width as i64/u64 on every supported
+    // native target, carried as a distinct semantic width.
+    let maxisize: isize = 9223372036854775807;
+    assert(maxisize.count_ones() == 63);
+    assert(maxisize.leading_zeros() == 1);
+    assert(maxisize.trailing_zeros() == 0);
+    let minisize: isize = -9223372036854775808;
+    assert(minisize.count_ones() == 1);
+    assert(minisize.leading_zeros() == 0);
+    let maxusize: usize = 18446744073709551615;
+    assert(maxusize.count_ones() == 64);
+    assert(maxusize.rotate_left(8) == 18446744073709551615);
+    assert(maxusize.rotate_right(8) == 18446744073709551615);
+
+    println("integer bit methods hold at every integer width's boundaries");
 }

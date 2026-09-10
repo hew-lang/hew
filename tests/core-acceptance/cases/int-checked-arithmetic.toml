@@ -1,11 +1,11 @@
 [[case]]
 id = "int-checked-arithmetic"
-intent = "wrapping_add/sub/mul and saturating_add/sub hold at MIN/MAX boundaries for i32, i64, u32 and u64. checked_add/sub/mul are a separate, pre-existing checker-only gap (E_SIR_UNSUPPORTED) not exercised here."
+intent = "wrapping_add/sub/mul, saturating_add/sub/mul and checked_add/sub/mul hold at MIN/MAX boundaries for every integer width Hew has: i8, i16, i32, i64, isize, u8, u16, u32, u64 and usize. checked_mul(-1) at MIN is the classic MIN/-1 overflow; saturating_mul exercises both its same-sign (MAX) and differing-sign (MIN) bound select. checked_div/checked_rem are not exercised: no div/rem/shift variant exists for these opt-out families."
 source = "cases/int-checked-arithmetic.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "wrapping and saturating arithmetic hold at every boundary\n"
+stdout = "wrapping, saturating and checked arithmetic hold at every boundary\n"
 stderr = ""
 exit = 0

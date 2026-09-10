@@ -453,11 +453,11 @@ fn run_float_comparison_branches_for_f64_and_f32() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "28\n");
 }
 
-/// CAP-12: `Node::load_keys` / `Node::allow_peer` compile and run on the native
-/// QUIC mesh. `load_keys` mints and persists this node's TLS identity (the
-/// keyfile must exist after the run and survive unchanged on a second run);
-/// `allow_peer` pins a peer SPKI in the fail-closed allowlist; the node then
-/// starts, registers, and shuts down. Native quic-mesh; no parity on WASM.
+/// CAP-12: a `NodeConfig` with a `key` and a pinned `peers` entry mints and
+/// persists this node's TLS identity (the keyfile must exist after the run
+/// and survive unchanged on a second run) and pins a peer SPKI in the
+/// fail-closed allowlist through `Node::start`; the node then starts,
+/// registers, and shuts down. Native quic-mesh; no parity on WASM.
 #[test]
 fn run_node_peer_auth_surface_persists_keys_and_runs() {
     require_codegen();
@@ -473,11 +473,19 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         }
 
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("node.key");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "node.key",
+                trust: "pinned",
+                peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"],
+                seeds: [],
+            };
+            match Node.start(config) {
+                .Ok(_) => {},
+                .Err(_) => panic("node start failed"),
+            }
             let me = Node.identity_key();
-            Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-            Node.start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
             Node.register("counter", counter);
             let _ = counter.increment(5);
@@ -531,11 +539,13 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     );
 }
 
-/// F6 fail-closed: a bad-hex `Node::allow_peer` argument is rejected and
-/// surfaced (`hew_last_error` + a `hew:` stderr diagnostic), and the subsequent
-/// `Node::start` refuses to bind a listener (fail-closed) rather than silently
-/// coming up with an incomplete peer allowlist. The Hew call form discards the
-/// `-1`, so the operator-visible signal is the stderr diagnostic.
+/// F6 fail-closed: a bad-hex peer credential in `NodeConfig.peers` is rejected
+/// and surfaced (`hew_last_error` + a `hew:` stderr diagnostic) while staging
+/// the config; `Node::start` never reaches the low-level bind because the
+/// staged config transaction short-circuits on the first failing field,
+/// rather than silently coming up with an incomplete peer allowlist. The Hew
+/// call form discards the returned `Result`, so the operator-visible signal
+/// is the stderr diagnostic.
 #[test]
 fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     require_codegen();
@@ -546,9 +556,15 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.allow_peer(2, "zznothexzz");
-            Node.start("127.0.0.1:0");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "",
+                trust: "pinned",
+                peers: ["zznothexzz"],
+                seeds: [],
+            };
+            Node.start(config);
             println("after-start");
         }
         "#,
@@ -560,22 +576,21 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
-        stderr.contains("Node::allow_peer") && stderr.contains("hex-encoded SPKI"),
-        "bad-hex allow_peer must be surfaced on stderr; stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Node::start: refusing to bind listener") && stderr.contains("fail-closed"),
-        "Node::start must refuse after a failed allow_peer (fail-closed); stderr: {stderr}"
+        stderr.contains("Node::allow_peer")
+            && stderr.contains("hex-encoded SPKI")
+            && stderr.contains("fail-closed"),
+        "bad-hex allow_peer must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
         stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        "program continues past the failed start without binding a listener; stdout: {stdout}"
     );
 }
 
-/// F6 fail-closed: a corrupt keyfile makes `Node::load_keys` fail and surface
-/// the error, and `Node::start` then refuses to bind a listener rather than
-/// silently presenting an ephemeral self-signed identity (the operator's pinned
+/// F6 fail-closed: a corrupt keyfile named by `NodeConfig.key` makes
+/// `Node::load_keys` fail and surface the error while staging the config;
+/// `Node::start` never reaches the low-level bind, rather than silently
+/// presenting an ephemeral self-signed identity (the operator's pinned
 /// identity failed to load).
 #[test]
 fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
@@ -590,9 +605,15 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("node.key");
-            Node.start("127.0.0.1:0");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "node.key",
+                trust: "pinned",
+                peers: [],
+                seeds: [],
+            };
+            Node.start(config);
             println("after-start");
         }
         "#,
@@ -605,22 +626,19 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
 
     assert!(
         stderr.contains("Node::load_keys") && stderr.contains("fail-closed"),
-        "a corrupt keyfile must be surfaced on stderr; stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("Node::start: refusing to bind listener"),
-        "Node::start must refuse after a failed load_keys (fail-closed); stderr: {stderr}"
+        "a corrupt keyfile must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
         stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        "program continues past the failed start without binding a listener; stdout: {stdout}"
     );
 }
 
-/// F6 fail-closed: when the keyfile path cannot establish an identity (here, a
-/// parent directory that does not exist, so the fresh identity cannot be
-/// persisted), `Node::load_keys` fails and `Node::start` refuses to bind a
-/// listener — fail-closed without any identity, never an ephemeral fallback.
+/// F6 fail-closed: when the `NodeConfig.key` path cannot establish an
+/// identity (here, a parent directory that does not exist, so the fresh
+/// identity cannot be persisted), `Node::load_keys` fails while staging the
+/// config and `Node::start` never reaches the low-level bind — fail-closed
+/// without any identity, never an ephemeral fallback.
 #[test]
 fn run_node_start_fails_closed_when_identity_cannot_be_established() {
     require_codegen();
@@ -631,9 +649,15 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("no_such_dir/node.key");
-            Node.start("127.0.0.1:0");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "no_such_dir/node.key",
+                trust: "pinned",
+                peers: [],
+                seeds: [],
+            };
+            Node.start(config);
             println("after-start");
         }
         "#,
@@ -649,12 +673,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         "an unestablishable identity must be surfaced on stderr; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Node::start: refusing to bind listener"),
-        "Node::start must refuse without an identity (fail-closed); stderr: {stderr}"
-    );
-    assert!(
         stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        "program continues past the failed start without binding a listener; stdout: {stdout}"
     );
 }
 

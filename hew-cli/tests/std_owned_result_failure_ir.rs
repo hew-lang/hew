@@ -53,13 +53,16 @@ fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &body[..end]
 }
 
-/// Call sites of `symbol` on the wrapper's own control flow, excluding the
-/// `aggregate.drop*` cleanup blocks physical MIR mints for fault propagation.
-/// Those blocks release the same handle on a path the failure arm never takes,
-/// so counting them would conflate two authorities and make "exactly once"
-/// wrong.
+/// Call sites of `symbol` on the wrapper's own failure arm, excluding the
+/// cleanup releases physical MIR mints for fault propagation. Those release the
+/// same handle on a path the failure arm never takes, so counting them would
+/// conflate two authorities and make "exactly once" wrong.
+///
+/// The discriminator is the operand, not the block label: since cleanup
+/// contents became a per-leaf certificate the emitter no longer mints a labelled
+/// `aggregate.drop` block, but it still names the value it releases
+/// `%aggregate.drop.*`.
 fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
-    let mut block = "";
     body.lines()
         .scan(0, |offset, line| {
             let line_start = *offset;
@@ -67,14 +70,9 @@ fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
             Some((line_start, line))
         })
         .filter_map(|(offset, line)| {
-            if let Some(label) = line.split_once(':').map(|(label, _)| label) {
-                if !line.starts_with(char::is_whitespace) && !label.contains(' ') {
-                    block = label;
-                }
-            }
-            (!block.starts_with("aggregate.drop")
-                && (line.contains("call ") || line.contains("invoke "))
-                && line.contains(symbol))
+            ((line.contains("call ") || line.contains("invoke "))
+                && line.contains(symbol)
+                && !line.contains("%aggregate.drop"))
             .then_some(offset)
         })
         .collect()

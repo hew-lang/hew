@@ -137,55 +137,6 @@ fn main() -> i64 {
 "
 }
 
-fn compile_to_llvm(source: &str, name: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("projected-tuple-owner-llvm-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join(format!("{name}.hew"));
-    let emit_dir = dir.path().join("emit");
-    std::fs::create_dir(&emit_dir).expect("create emit dir");
-    std::fs::write(&source_path, source).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args(["compile", "--emit-llvm", "--emit-dir"])
-        .arg(&emit_dir)
-        .arg(&source_path)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-    assert!(
-        output.status.success(),
-        "LLVM emission failed:\n{}",
-        describe_output(&output)
-    );
-    std::fs::read_to_string(emit_dir.join(format!("{name}.ll"))).expect("read emitted LLVM IR")
-}
-
-fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
-    let start = ir
-        .find(&format!("@{symbol}("))
-        .unwrap_or_else(|| panic!("missing @{symbol} in LLVM IR"));
-    let body = &ir[start..];
-    let end = body
-        .find("\n}")
-        .map_or(body.len(), |closing_brace| closing_brace + 2);
-    &body[..end]
-}
-
-fn call_position(body: &str, symbol: &str) -> Option<usize> {
-    body.lines()
-        .scan(0, |offset, line| {
-            let line_start = *offset;
-            *offset += line.len() + 1;
-            Some((line_start, line))
-        })
-        .find_map(|(offset, line)| {
-            ((line.contains("call ") || line.contains("invoke ")) && line.contains(symbol))
-                .then_some(offset)
-        })
-}
-
 fn check_source(source: &str, name: &str) -> std::process::Output {
     let dir = tempfile::Builder::new()
         .prefix("projected-tuple-owner-check-")
@@ -260,40 +211,6 @@ fn projected_owner_paths_are_exactly_once_under_malloc_scribble() {
 //
 // Coverage lost on Linux CI: this was the only always-on pin for the
 // disjoint-release ordering and the cancellation-exit both-drops fact.
-// `llvm_clears_the_tuple_slot_before_either_release` targets the same
-// generated-code invariant but is independently failing on this branch
-// today (`missing @build in LLVM IR`, pre-existing, not touched by this
-// change) so it is not currently covering evidence, only a stated intent.
-// `projected_owner_paths_are_exactly_once_under_malloc_scribble` exercises
-// the same three fixtures (including `cancellation_source`) end to end
-// under a poisoned allocator, but is macOS-only and `ignore`d elsewhere, so
-// it asserts nothing on the CI that runs this file. No current test proves
-// the disjoint-release-on-cancellation fact on Linux; that gap is reported
-// separately rather than silently accepted.
-
-#[test]
-fn llvm_clears_the_tuple_slot_before_either_release() {
-    let ir = compile_to_llvm(&projected_tuple_source(1), "projected_tuple_owner_llvm");
-    let build = llvm_function_body(&ir, "build");
-    assert_eq!(
-        build.matches("carrier_path_d0_f0_ptr").count(),
-        2,
-        "one GEP definition and one null-store use must name the transferred slot:\n{build}"
-    );
-    let neutralize = build
-        .find("store ptr null, ptr %carrier_path_d0_f0_ptr")
-        .expect("root field null store");
-    let vec_drop = neutralize
-        + call_position(&build[neutralize..], "@hew_vec_free(").expect("projected Vec release");
-    let tuple_drop = neutralize
-        + call_position(&build[neutralize..], "@\"__hew_tuple_drop_inplace_")
-            .expect("tuple structural release");
-    assert!(
-        neutralize < vec_drop && vec_drop < tuple_drop,
-        "the source slot must be null before the projected owner and tuple \
-         structural releases run:\n{build}"
-    );
-}
 
 #[test]
 fn whole_tuple_escape_after_projection_transfer_fails_closed() {

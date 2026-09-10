@@ -1,0 +1,7 @@
+pub type Config {
+    host: string,
+}
+
+pub fn endpoint(host: string) -> Config {
+    Config { host: host }
+}

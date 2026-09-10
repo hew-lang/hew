@@ -1,0 +1,11 @@
+[[case]]
+id = "sir-imported-type-actor-state"
+intent = "An actor state field whose record type comes from an imported package-local module carries that module's canonical declaration identity, so the actor's handle has type facts and the receive fn reads the field."
+source = "cases/sir-imported-type-actor-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "h\n"
+stderr = ""
+exit = 0

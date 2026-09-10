@@ -2243,12 +2243,17 @@ impl Checker {
             })
             .collect();
 
-        let mut resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
-            .into_iter()
-            .map(|(name, type_def)| {
-                let resolved = self.resolve_type_def(&type_def);
-                (name, resolved)
-            })
+        // Resolve declarations against the live declaration table. Taking
+        // `type_defs` here left `canonical_nominal_name` with nothing to prove
+        // an import alias against, so a package-local `cfg.Config` kept its
+        // alias spelling while the expression table - finalized just above,
+        // with the table populated - carried the canonical `probe.cfg.Config`.
+        // Only std spellings survived, through the `canonical_std_module_sources`
+        // disjunct.
+        let mut resolved_type_defs: HashMap<String, TypeDef> = self
+            .type_defs
+            .iter()
+            .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
             .collect();
 
         let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)

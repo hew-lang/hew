@@ -1,0 +1,20 @@
+import sir_imported_type_actor_state.cfg;
+
+actor Client {
+    let config: cfg.Config,
+    var seen: string,
+
+    receive fn probe() -> string {
+        seen = config.host.clone();
+        seen.clone()
+    }
+}
+
+fn drive() -> string {
+    let client = spawn Client(config: cfg.endpoint("h"), seen: "");
+    client.probe().expect("probe")
+}
+
+fn main() {
+    println(drive());
+}

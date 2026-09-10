@@ -1813,6 +1813,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_array_free_walk( *mut HewVec)",
+        "wasm32-wasip1": "fn hew_array_free_walk( *mut HewVec)"
+      },
+      "symbol": "hew_array_free_walk"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_array_visit_close( *mut HewVec, *mut c_void)",
         "wasm32-wasip1": "fn hew_array_visit_close( *mut HewVec, *mut c_void)"
       },
@@ -7488,6 +7503,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_hashmap_free_layout_walk( *mut HewLayoutHashMap)",
+        "wasm32-wasip1": "fn hew_hashmap_free_layout_walk( *mut HewLayoutHashMap)"
+      },
+      "symbol": "hew_hashmap_free_layout_walk"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_hashmap_get_borrow_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32",
         "wasm32-wasip1": "fn hew_hashmap_get_borrow_layout( *const HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut c_void, ) -> i32"
       },
@@ -7777,6 +7807,21 @@
         "wasm32-wasip1": "fn hew_hashset_free_layout( *mut HewLayoutHashSet)"
       },
       "symbol": "hew_hashset_free_layout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_hashset_free_layout_walk( *mut HewLayoutHashSet)",
+        "wasm32-wasip1": "fn hew_hashset_free_layout_walk( *mut HewLayoutHashSet)"
+      },
+      "symbol": "hew_hashset_free_layout_walk"
     },
     {
       "availability": [
@@ -19864,6 +19909,21 @@
         "wasm32-wasip1": "fn hew_vec_free_owned( *mut HewVec)"
       },
       "symbol": "hew_vec_free_owned"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_vec_free_owned_walk( *mut HewVec)",
+        "wasm32-wasip1": "fn hew_vec_free_owned_walk( *mut HewVec)"
+      },
+      "symbol": "hew_vec_free_owned_walk"
     },
     {
       "availability": [

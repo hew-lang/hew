@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1650u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -700,6 +700,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
     {"hew_array_free",
      "{\"native\": \"fn hew_array_free( *mut HewVec)\", \"wasm32-wasip1\": "
      "\"fn hew_array_free( *mut HewVec)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_array_free_walk",
+     "{\"native\": \"fn hew_array_free_walk( *mut HewVec)\", "
+     "\"wasm32-wasip1\": \"fn hew_array_free_walk( *mut HewVec)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_array_visit_close",
@@ -2752,6 +2757,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
      "HewLayoutHashMap)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_hashmap_free_layout_walk",
+     "{\"native\": \"fn hew_hashmap_free_layout_walk( *mut "
+     "HewLayoutHashMap)\", \"wasm32-wasip1\": \"fn "
+     "hew_hashmap_free_layout_walk( *mut HewLayoutHashMap)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashmap_get_borrow_layout",
      "{\"native\": \"fn hew_hashmap_get_borrow_layout( *const "
      "HewLayoutHashMap, *const c_void, *mut c_void, *mut bool, *mut *mut "
@@ -2892,6 +2903,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
      "{\"native\": \"fn hew_hashset_free_layout( *mut HewLayoutHashSet)\", "
      "\"wasm32-wasip1\": \"fn hew_hashset_free_layout( *mut "
      "HewLayoutHashSet)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_hashset_free_layout_walk",
+     "{\"native\": \"fn hew_hashset_free_layout_walk( *mut "
+     "HewLayoutHashSet)\", \"wasm32-wasip1\": \"fn "
+     "hew_hashset_free_layout_walk( *mut HewLayoutHashSet)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_hashset_insert_clone_layout",
@@ -7264,6 +7281,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1650] = {
     {"hew_vec_free_owned",
      "{\"native\": \"fn hew_vec_free_owned( *mut HewVec)\", \"wasm32-wasip1\": "
      "\"fn hew_vec_free_owned( *mut HewVec)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_vec_free_owned_walk",
+     "{\"native\": \"fn hew_vec_free_owned_walk( *mut HewVec)\", "
+     "\"wasm32-wasip1\": \"fn hew_vec_free_owned_walk( *mut HewVec)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_vec_from_u8_data",

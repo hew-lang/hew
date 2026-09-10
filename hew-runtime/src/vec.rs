@@ -1703,22 +1703,6 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     unsafe { release_vector(v, false, false) }
 }
 
-/// Free the Vec through the release walker, joining a walk already in progress.
-///
-/// Codegen emits this where physical MIR proved the whole released subtree is
-/// ordinary data, so the chain flattens instead of nesting one native frame per
-/// level.
-///
-/// # Safety
-///
-/// `v` must be a valid `HewVec` pointer (or null). After this call, `v` is
-/// invalid.
-#[no_mangle]
-pub unsafe extern "C" fn hew_vec_free_walk(v: *mut HewVec) {
-    // SAFETY: forwarded allocation contract.
-    unsafe { release_vector(v, false, true) }
-}
-
 /// Release a fixed array's initialized elements from last to first, then its buffer.
 ///
 /// # Safety

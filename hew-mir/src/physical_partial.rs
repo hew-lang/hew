@@ -16,12 +16,21 @@ pub struct PhysicalCleanup {
     site: (BlockId, usize),
     source: StorageId,
     mode: hew_sir::CleanupMode,
+    contents: BTreeMap<StorageId, hew_sir::LeafContents>,
 }
 
 impl PhysicalCleanup {
     #[must_use]
     pub fn mode(&self) -> hew_sir::CleanupMode {
         self.mode
+    }
+
+    /// What SIR proved this leaf holds at this site. A backend releases the
+    /// present contents, skips the absent ones, and tests the initialization
+    /// state only where the incoming paths disagree.
+    #[must_use]
+    pub fn leaf(&self, leaf: StorageId) -> Option<hew_sir::LeafContents> {
+        self.contents.get(&leaf).copied()
     }
 }
 
@@ -59,12 +68,21 @@ impl FunctionLowerer<'_> {
                 operation.0
             ))
         })?;
+        let mut contents = BTreeMap::new();
+        for (place, state) in self
+            .lifetimes
+            .cleanup_contents(operation)
+            .unwrap_or_default()
+        {
+            contents.insert(self.place(place)?, state);
+        }
         Ok(PhysicalCleanup {
             operation,
             function: self.function.callable,
             site,
             source,
             mode,
+            contents,
         })
     }
 
@@ -472,6 +490,7 @@ pub(super) fn verify_cleanup_site(
         super::PhysicalOp::StorageDead {
             storage, cleanup, ..
         } => (*storage, cleanup),
+        super::PhysicalOp::Assign { dest, cleanup, .. } => (*dest, cleanup),
         _ => return Ok(()),
     };
     if cleanup.function != function.callable || cleanup.source != source || cleanup.site != site {

@@ -50,11 +50,36 @@ pub enum CleanupMode {
     Trap,
 }
 
+/// Whether one leaf of a cleanup's content partition holds a value there,
+/// decided by the same availability flow that admits the cleanup. A backend
+/// releases exactly what this says instead of testing every leaf at run time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LeafContents {
+    /// No path reaching the cleanup leaves contents here.
+    Absent,
+    /// Every path reaching the cleanup leaves contents here.
+    Present,
+    /// The paths disagree; the leaf's initialization state decides at run time.
+    Conditional,
+}
+
+impl LeafContents {
+    fn from_state(state: u8) -> Self {
+        match state & (DEAD | LIVE) {
+            LIVE => Self::Present,
+            DEAD => Self::Absent,
+            _ => Self::Conditional,
+        }
+    }
+}
+
 /// Immutable output of the existing lifetime flow for one checked function.
 /// Rebuild after changing its operations or control flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceLifetimes {
     operations: BTreeMap<crate::OpId, CleanupMode>,
+    /// Merged availability bits per content leaf at each cleanup site.
+    contents: BTreeMap<crate::OpId, BTreeMap<crate::PlaceId, u8>>,
     reachable: BTreeSet<BlockId>,
 }
 
@@ -62,6 +87,7 @@ impl PlaceLifetimes {
     fn new() -> Self {
         Self {
             operations: BTreeMap::new(),
+            contents: BTreeMap::new(),
             reachable: BTreeSet::new(),
         }
     }
@@ -76,6 +102,20 @@ impl PlaceLifetimes {
     #[must_use]
     pub fn cleanup(&self, operation: crate::OpId) -> Option<CleanupMode> {
         self.operations.get(&operation).copied()
+    }
+
+    /// What each leaf of a reachable cleanup's content partition holds there.
+    #[must_use]
+    pub fn cleanup_contents(
+        &self,
+        operation: crate::OpId,
+    ) -> Option<BTreeMap<crate::PlaceId, LeafContents>> {
+        self.contents.get(&operation).map(|leaves| {
+            leaves
+                .iter()
+                .map(|(&place, &state)| (place, LeafContents::from_state(state)))
+                .collect()
+        })
     }
 }
 
@@ -1192,7 +1232,9 @@ impl<'a> Flow<'a> {
             };
             if matches!(
                 op.kind,
-                SemOpKind::EndLifetime { .. } | SemOpKind::DestroyValue { .. }
+                SemOpKind::EndLifetime { .. }
+                    | SemOpKind::DestroyValue { .. }
+                    | SemOpKind::StoreAssign { .. }
             ) {
                 lifetimes
                     .operations
@@ -1203,6 +1245,14 @@ impl<'a> Flow<'a> {
                         }
                     })
                     .or_insert(cleanup);
+                // The state here is still the one the cleanup sees: this runs
+                // before the operation's own effect on the partition.
+                if let Some(leaves) = self.cleanup_leaves(&op.kind) {
+                    let entry = lifetimes.contents.entry(op.id).or_default();
+                    for leaf in leaves {
+                        *entry.entry(*leaf).or_insert(0) |= state.places[self.place_indices[leaf]];
+                    }
+                }
             }
             self.local_lifetime(id, &op.kind, cleanup, state, emit);
             if let SemOpKind::DestroyValue { value } = &op.kind {
@@ -1363,6 +1413,25 @@ impl<'a> Flow<'a> {
                 place: Some(place),
                 reason: "local storage is not active on every incoming path",
             });
+        }
+    }
+
+    /// The content partition a cleanup on this operation releases, addressed
+    /// the way physical lowering addresses it: a root releases its whole
+    /// partition, a projected place releases the leaves under its path.
+    fn cleanup_leaves(&self, kind: &SemOpKind) -> Option<&'a [crate::PlaceId]> {
+        let place = match kind {
+            SemOpKind::EndLifetime { place } | SemOpKind::StoreAssign { place, .. } => *place,
+            SemOpKind::DestroyValue { value } => {
+                return self.projections.leaves(OwnerRoot::Value(value.value))
+            }
+            _ => return None,
+        };
+        let projection = self.projections.projection(place)?;
+        if projection.path.is_empty() {
+            self.projections.leaves(projection.root)
+        } else {
+            Some(projection.leaves.as_slice())
         }
     }
 

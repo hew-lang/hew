@@ -83,7 +83,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("pending message lacks its value recipe".into())
             })?;
         if let Some(action) = recipe.destroy {
-            self.destroy_value(source, action)
+            self.destroy_owned_operand(source, action)
         } else {
             self.clear_owned(source)
         }

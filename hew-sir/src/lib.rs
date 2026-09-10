@@ -39,7 +39,7 @@ pub use callable::{
 };
 pub use capability::{derived_capability_components, SemValueMethodPlan};
 pub use dump::{dump_lowering, dump_sir};
-pub use lifetime::{CleanupMode, PlaceLifetimes};
+pub use lifetime::{CleanupMode, LeafContents, PlaceLifetimes};
 pub use lower::{
     lower_module, lower_module_with_demand, lower_module_with_roots, LoweredModule,
     SirLoweringDemand, SirLoweringStatus, SirRootSelectionError, SirSourceStatus,

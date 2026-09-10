@@ -60,8 +60,8 @@ use std::path::Path;
 
 use hew_mir::physical::{
     BlockId, CallableId, OwnKind, PhysicalAggregateDescriptor, PhysicalAggregateGlue,
-    PhysicalAggregateId, PhysicalMapId, PhysicalMapOp, PhysicalResourceDescriptor, PhysicalSetId,
-    PhysicalSetOp, PhysicalTypeInventory, PhysicalValueRecipe, PhysicalVariantArm,
+    PhysicalAggregateId, PhysicalCleanup, PhysicalMapId, PhysicalMapOp, PhysicalResourceDescriptor,
+    PhysicalSetId, PhysicalSetOp, PhysicalTypeInventory, PhysicalValueRecipe, PhysicalVariantArm,
     PhysicalVariantDescriptor, PhysicalVariantGlue, PhysicalVariantId, PhysicalVariantLayout,
     PhysicalVectorGlue, PhysicalVectorId, PhysicalVectorOp, TrapKind,
 };
@@ -3008,7 +3008,11 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 let value = self.clone_value(*source, *action)?;
                 self.store(*dest, value)
             }
-            PhysicalOp::Destroy { source, action, .. } => self.destroy_value(*source, *action),
+            PhysicalOp::Destroy {
+                source,
+                action,
+                cleanup,
+            } => self.destroy_value(*source, *action, cleanup),
             PhysicalOp::Borrow { dest, source } => {
                 let value = self.load(*source, "borrow")?;
                 self.store(*dest, value)
@@ -3019,18 +3023,21 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 dest,
                 source,
                 destroy_old,
+                cleanup,
             } => {
                 if let Some(action) = destroy_old {
-                    self.destroy_value(*dest, *action)?;
+                    self.destroy_value(*dest, *action, cleanup)?;
                 }
                 let value = self.load(*source, "assign")?;
                 self.store(*dest, value)?;
                 self.clear_owned(*source)
             }
             PhysicalOp::StorageDead {
-                storage, destroy, ..
+                storage,
+                destroy,
+                cleanup,
             } => {
-                if self.destroy_place_contents(*storage)? {
+                if self.destroy_certified_contents(*storage, cleanup)? {
                     return Ok(());
                 }
                 // A deferred actor seat (D447) has no local partition: the
@@ -3405,8 +3412,30 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .clone_loaded_value(value, &self.storage(source)?.layout, action)
     }
 
-    fn destroy_value(&self, source: StorageId, action: DestroyAction) -> CodegenResult<()> {
-        if self.destroy_place_contents(source)? {
+    fn destroy_value(
+        &self,
+        source: StorageId,
+        action: DestroyAction,
+        cleanup: &PhysicalCleanup,
+    ) -> CodegenResult<()> {
+        if self.destroy_certified_contents(source, cleanup)? {
+            return Ok(());
+        }
+        let value = self.load(source, "destroy.source")?;
+        self.clear_owned(source)?;
+        self.value_emitter()
+            .destroy_loaded_value(value, &self.storage(source)?.layout, action)
+    }
+
+    /// Release an operand this emitter still owns on an operation's own
+    /// failure path. There is no SIR cleanup site here, so every leaf that
+    /// holds contents at run time is released.
+    pub(super) fn destroy_owned_operand(
+        &self,
+        source: StorageId,
+        action: DestroyAction,
+    ) -> CodegenResult<()> {
+        if self.destroy_initialized_contents(source)? {
             return Ok(());
         }
         let value = self.load(source, "destroy.source")?;

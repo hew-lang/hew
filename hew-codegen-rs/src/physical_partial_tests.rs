@@ -255,6 +255,41 @@ fn fault_cleanup_and_zero_sized_reinitialization_release_each_owner_at_o0_o2() {
     execute(fixture::Case::ZeroSized, false, 1, &[2, 1, 0, 5, 4, 3]);
 }
 
+fn drop_blocks(case: fixture::Case) -> usize {
+    let physical = physical_fixture(case);
+    let ctx = Context::create();
+    let llvm = llvm(&ctx, &physical);
+    let symbol = emitted_symbol(&physical, &physical.callables[0]);
+    llvm.get_function(&symbol)
+        .unwrap()
+        .get_basic_blocks()
+        .iter()
+        .filter(|block| {
+            block
+                .get_name()
+                .to_string_lossy()
+                .starts_with("aggregate.drop")
+        })
+        .count()
+}
+
+/// SIR proves what every cleanup leaf holds, so the emitter reaches an
+/// initialization bit only where the incoming paths disagree about it. A
+/// replacement whose old contents are wholly present, wholly gone or a fixed
+/// mixture releases them straight through; only the branched partition keeps
+/// the run-time test.
+#[test]
+fn only_a_partition_whose_paths_disagree_tests_initialization_bits() {
+    for case in [
+        fixture::Case::LiveReplacement,
+        fixture::Case::DeadReplacement,
+        fixture::Case::MixedReplacement,
+    ] {
+        assert_eq!(drop_blocks(case), 0, "{case:?}");
+    }
+    assert!(drop_blocks(fixture::Case::BranchReplacement) > 0);
+}
+
 #[test]
 fn projected_storage_uses_root_addresses_and_separate_initialization_bits() {
     let physical = physical_fixture(fixture::Case::Permutation);

@@ -12,7 +12,7 @@ pub use hew_sir::{
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
-pub use hew_sir::{SemWireKind, SemWirePlan};
+pub use hew_sir::{LeafContents, SemWireKind, SemWirePlan};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "physical_wire.rs"]
@@ -859,6 +859,7 @@ pub enum PhysicalOp {
         dest: StorageId,
         source: StorageId,
         destroy_old: Option<DestroyAction>,
+        cleanup: PhysicalCleanup,
     },
     StorageDead {
         storage: StorageId,
@@ -2882,6 +2883,7 @@ impl FunctionLowerer<'_> {
                     dest,
                     source,
                     destroy_old: self.optional_destroy(dest)?,
+                    cleanup: self.cleanup_recipe(operation.id, site, dest)?,
                 })
             }
             SemOpKind::EndLifetime { place } => {
@@ -5631,6 +5633,7 @@ fn verify_operation_storage(
             dest,
             source,
             destroy_old,
+            ..
         } => {
             require_same_storage_type(function, *dest, *source, "physical assignment")?;
             let destination = storage(function, *dest)?;
@@ -10242,10 +10245,14 @@ mod tests {
         let PhysicalOp::StorageDead { storage: dest, .. } = *operation else {
             unreachable!("matched storage lifetime end")
         };
+        let PhysicalOp::StorageDead { cleanup, .. } = operation.clone() else {
+            unreachable!("matched storage lifetime end")
+        };
         *operation = PhysicalOp::Assign {
             dest,
             source: StorageId(u32::MAX),
             destroy_old: Some(DestroyAction::StringRelease),
+            cleanup,
         };
         let error = verify_physical_module(&physical)
             .expect_err("invalid assignment storage must fail without indexing it");

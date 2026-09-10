@@ -2,7 +2,7 @@
 
 use std::collections::{btree_map::Entry, BTreeMap};
 
-use hew_mir::physical::{SemParamPassing, StorageOrigin};
+use hew_mir::physical::{LeafContents, PhysicalCleanup, SemParamPassing, StorageOrigin};
 use inkwell::builder::Builder;
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 
@@ -211,12 +211,54 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    pub(super) fn destroy_place_contents(&self, source: StorageId) -> CodegenResult<bool> {
+    /// Release exactly the contents SIR certified for this cleanup site.
+    /// The initialization bits are a run-time cache of the same fact, so an
+    /// absent leaf costs nothing and a present leaf needs no test: only a site
+    /// whose incoming paths disagree reaches the bits.
+    pub(super) fn destroy_certified_contents(
+        &self,
+        source: StorageId,
+        cleanup: &PhysicalCleanup,
+    ) -> CodegenResult<bool> {
+        self.destroy_partition(source, &|leaf| {
+            cleanup.leaf(leaf).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "aggregate leaf {} is outside its certified cleanup partition",
+                    leaf.0
+                ))
+            })
+        })
+    }
+
+    /// Release every leaf that holds contents at run time. This is for an
+    /// emitter-local failure path inside one operation's expansion, which is
+    /// not a SIR cleanup site and carries no certificate.
+    pub(super) fn destroy_initialized_contents(&self, source: StorageId) -> CodegenResult<bool> {
+        self.destroy_partition(source, &|_| Ok(LeafContents::Conditional))
+    }
+
+    fn destroy_partition(
+        &self,
+        source: StorageId,
+        contents: &dyn Fn(StorageId) -> CodegenResult<LeafContents>,
+    ) -> CodegenResult<bool> {
         let Some(projection) = self.function.place_storage.get(&source) else {
             return Ok(false);
         };
         for leaf in projection.leaves.iter().rev() {
-            if let Some(action) = leaf.destroy {
+            let held = contents(leaf.storage)?;
+            // An absent leaf holds nothing and its bit already reads false on
+            // every path that arrives here.
+            if held == LeafContents::Absent {
+                continue;
+            }
+            let Some(action) = leaf.destroy else {
+                self.set_place_initialized(leaf.storage, false)?;
+                continue;
+            };
+            let next = if held == LeafContents::Present {
+                None
+            } else {
                 let initialized = self.place_initialized(leaf.storage)?;
                 let drop = self.ctx.append_basic_block(self.value, "aggregate.drop");
                 let next = self.ctx.append_basic_block(self.value, "aggregate.next");
@@ -224,19 +266,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .build_conditional_branch(initialized, drop, next)
                     .llvm_ctx("test aggregate leaf initialization before destruction")?;
                 self.builder.position_at_end(drop);
-                self.set_place_initialized(leaf.storage, false)?;
-                let value = self.load(leaf.storage, "aggregate.drop.value")?;
-                self.value_emitter().destroy_loaded_value(
-                    value,
-                    &self.storage(leaf.storage)?.layout,
-                    action,
-                )?;
+                Some(next)
+            };
+            self.set_place_initialized(leaf.storage, false)?;
+            let value = self.load(leaf.storage, "aggregate.drop.value")?;
+            self.value_emitter().destroy_loaded_value(
+                value,
+                &self.storage(leaf.storage)?.layout,
+                action,
+            )?;
+            if let Some(next) = next {
                 self.builder
                     .build_unconditional_branch(next)
                     .llvm_ctx("finish aggregate leaf destruction")?;
                 self.builder.position_at_end(next);
-            } else {
-                self.set_place_initialized(leaf.storage, false)?;
             }
         }
         Ok(true)

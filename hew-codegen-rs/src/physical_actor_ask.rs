@@ -185,7 +185,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     .get(&self.storage(*source)?.ty)
                     .and_then(|recipe| recipe.destroy)
                 {
-                    self.destroy_value(*source, action)?;
+                    self.destroy_owned_operand(*source, action)?;
                 } else {
                     self.clear_owned(*source)?;
                 }

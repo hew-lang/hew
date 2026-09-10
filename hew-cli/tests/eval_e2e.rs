@@ -3177,7 +3177,7 @@ fn w4_047_actor_ask_reply_concrete_type_totality() {
          fn main() -> i64 {\n\
          \x20   let w = spawn Doubler;\n\
          \x20   let r = select {\n\
-         \x20       reply = await w.twice(21) => reply.expect(\"ask reply\"),\n\
+         \x20       reply from w.twice(21) => reply.expect(\"ask reply\"),\n\
          \x20       after 1000ms => 0,\n\
          \x20   };\n\
          \x20   r\n\

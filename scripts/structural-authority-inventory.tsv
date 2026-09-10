@@ -65,6 +65,7 @@ signature-application	check_call	hew-types/src/check/calls.rs	stage-1	call-shape
 signature-application	check_call_against_expected_constructor	hew-types/src/check/calls.rs	stage-1	constructor payloads checked against the expected enum or record shape
 signature-application	check_call_with_type	hew-types/src/check/calls.rs	stage-1	explicitly annotated call operands checked against the annotation
 signature-application	check_collection_args	hew-types/src/check/methods.rs	stage-1	builtin collection arguments checked against an ArgTemplate instantiated from the receiver, which binds no user signature
+signature-application	check_condition	hew-types/src/check/patterns.rs	stage-1	pattern conditions (12.5): each let operand binds its pattern against the synthesized scrutinee through bind_pattern and the match resolution table; boolean operands check against bool
 signature-application	check_const	hew-types/src/check/items.rs	stage-1	const initialiser checked against the declared const type
 signature-application	check_discarded_if_chain	hew-types/src/check/statements.rs	stage-1	discarded if-chain arms checked against unit
 signature-application	check_duplex_method	hew-types/src/check/methods.rs	stage-1	builtin Duplex arguments checked against the channel's payload type

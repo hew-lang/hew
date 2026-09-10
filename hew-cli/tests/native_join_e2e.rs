@@ -80,7 +80,7 @@ fn main() {
     let waiter = spawn Waiter();
     let opener = spawn Opener();
     scope within 1s {
-        let (first, second) = join { waiter.wait(gate), opener.open(gate) };
+        let (first, second) = await fork (waiter.wait(gate), opener.open(gate));
         match first { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
         match second { .Ok(value) => report(value), .Err(_) => panic("join failed"), }
     };
@@ -116,10 +116,10 @@ fn main() {
     let second = spawn Maker();
     let left_input = ReceiverInput { maker: first, label: "receiver one" };
     let right_input = ReceiverInput { maker: second, label: "receiver two" };
-    let (left, right) = join {
+    let (left, right) = await fork (
         receiver(left_input).make(second: mark("b"), first: mark("a")),
         receiver(right_input).make(second: late("d"), first: mark("c")),
-    };
+    );
     match left { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
     match right { .Ok(parcel) => report(parcel), .Err(_) => panic("join failed"), }
 }
@@ -137,7 +137,7 @@ fn one_branch_returns_its_result_without_a_tuple_wrapper() {
 actor Echo { receive fn echo(value: string) -> string { value.to_upper() } }
 fn main() {
     let echo = spawn Echo();
-    let result = join { echo.echo("one") };
+    let result = await fork echo.echo("one");
     match result { .Ok(value) => println(value), .Err(_) => panic("join failed"), }
 }
 "#,
@@ -162,7 +162,7 @@ fn main() {
     defer println("parent cleanup");
     let broken = spawn Broken();
     let healthy = spawn Healthy();
-    let (failed, success) = join { broken.fail(), healthy.echo() };
+    let (failed, success) = await fork (broken.fail(), healthy.echo());
     match failed {
         .Err(ActorError.Trapped) => println("ordinary error"),
         .Err(_) => panic("wrong error"),
@@ -180,6 +180,9 @@ fn main() {
 
 #[test]
 fn argument_failure_starts_no_children_and_releases_parent_resources() {
+    // A panic raised while preparing a fork operand's own argument exits with
+    // the ordinary top-level panic status (1); the UserPanic trap code (212)
+    // is a diagnostic label inside the message, not the process exit code.
     run_join(
         r#"
 actor Echo { receive fn echo(value: string) -> string { println("unexpected child"); value } }
@@ -187,11 +190,11 @@ fn fail() -> string { panic("argument failed"); }
 fn main() {
     defer println("parent cleanup");
     let echo = spawn Echo();
-    let _result = join { echo.echo("prepared".to_upper()), echo.echo(fail()) };
+    let _result = await fork (echo.echo("prepared".to_upper()), echo.echo(fail()));
 }
 "#,
         "parent cleanup\n",
-        212,
+        1,
         "argument failed",
     );
 }
@@ -212,7 +215,7 @@ fn main() {
     let second = spawn Slow();
     scope within 20ms {
         defer println("parent cleanup");
-        let _result = join { first.echo("one"), second.echo("two") };
+        let _result = await fork (first.echo("one"), second.echo("two"));
         println("missed deadline");
     } handle failure {
         match failure {

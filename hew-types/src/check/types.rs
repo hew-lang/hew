@@ -489,13 +489,6 @@ pub struct TypeCheckOutput {
     /// so downstream lowering phases consume checker-owned field tags, names,
     /// casing, and version metadata instead of recovering it from source text.
     pub wire_layouts: WireLayoutTable,
-    /// Checker-owned numeric method lowering decisions keyed by method-call span.
-    ///
-    /// Populated for accepted integer opt-out methods:
-    /// `.wrapping_{add,sub,mul}`, `.checked_{add,sub,mul}`, and
-    /// `.saturating_{add,sub,mul}`. HIR/MIR must consume this table instead of
-    /// re-matching method-name strings downstream.
-    pub numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned width-conversion method lowering decisions keyed by
     /// method-call span.
     ///
@@ -1458,7 +1451,6 @@ impl Default for TypeCheckOutput {
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -2118,50 +2110,6 @@ pub enum VecHigherOrderOp {
     /// `v.reduce(f, init)` — `Vec<T> → A` via `f: fn(A, T) -> A` seeded
     /// with `init: A`.
     Reduce,
-}
-
-/// `.checked_add/sub/mul` always lands here: it has no SIR/MIR lowering yet
-/// (a tracked follow-up). `.wrapping_*`/`.saturating_*` at i32/i64/u32/u64
-/// for add/sub (and wrapping mul) lower through `RuntimeCallFamily::IntArith`
-/// instead — the working D465 authority that actually executes. This side
-/// table remains the fallback for the widths and ops `IntArith` does not
-/// cover yet (i8/i16/u8/u16/isize/usize, and `saturating_mul`, which has no
-/// LLVM saturating-multiply intrinsic): those still type-check here and fail
-/// closed at SIR, matching `checked_*`, rather than being refused outright.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericMethodFamily {
-    Wrapping,
-    Checked,
-    Saturating,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericMethodOp {
-    Add,
-    Sub,
-    Mul,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericSignedness {
-    Signed,
-    Unsigned,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericWidth {
-    Bits(u32),
-    Pointer,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NumericMethodLowering {
-    pub family: NumericMethodFamily,
-    pub op: NumericMethodOp,
-    pub result_ty: Ty,
-    pub operand_ty: Ty,
-    pub signedness: NumericSignedness,
-    pub width: NumericWidth,
 }
 
 /// Discriminator for width-conversion method lowering.
@@ -2963,7 +2911,6 @@ pub struct Checker {
     /// for Stage B's unified resolver. See `dispatch.rs` module docs and
     /// `TypeCheckOutput::resolved_calls`.
     pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
-    pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
@@ -4013,7 +3960,6 @@ impl Checker {
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),

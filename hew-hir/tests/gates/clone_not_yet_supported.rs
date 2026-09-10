@@ -164,7 +164,6 @@ fn backstop_fires_when_clone_reaches_hir_without_rewrite() {
     // Drop every side-table entry the clone intercept could have produced,
     // forcing the HIR lowerer onto its fail-closed backstop path.
     tc_output.method_call_rewrites.clear();
-    tc_output.numeric_method_lowerings.clear();
     tc_output.dyn_trait_method_calls.clear();
     tc_output.resolved_calls.clear();
 

@@ -330,40 +330,25 @@ impl CollectionTyCx {
     }
 }
 
-/// Map a checked receiver type to its `RuntimeCallFamily::IntMethod` width.
-/// `RuntimeValueKind` (the runtime-call contract vocabulary) has no i8/i16/
-/// u8/u16/isize/usize kinds yet, so bit-manipulation methods are scoped to
-/// the four widths it does have.
+/// Map a checked receiver type to its `RuntimeCallFamily::IntMethod`/
+/// `IntArith` width, covering every integer width Hew has.
 fn int_method_width(ty: &Ty) -> Option<IntMethodWidth> {
     match ty {
+        Ty::I8 => Some(IntMethodWidth::I8),
+        Ty::I16 => Some(IntMethodWidth::I16),
         Ty::I32 => Some(IntMethodWidth::I32),
         Ty::I64 => Some(IntMethodWidth::I64),
+        Ty::Isize => Some(IntMethodWidth::Isize),
+        Ty::U8 => Some(IntMethodWidth::U8),
+        Ty::U16 => Some(IntMethodWidth::U16),
         Ty::U32 => Some(IntMethodWidth::U32),
         Ty::U64 => Some(IntMethodWidth::U64),
+        Ty::Usize => Some(IntMethodWidth::Usize),
         _ => None,
     }
 }
 
 impl Checker {
-    fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
-        match ty {
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
-            Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize => Some(NumericSignedness::Unsigned),
-            _ => None,
-        }
-    }
-
-    fn numeric_method_width(ty: &Ty) -> Option<NumericWidth> {
-        match ty {
-            Ty::I8 | Ty::U8 => Some(NumericWidth::Bits(8)),
-            Ty::I16 | Ty::U16 => Some(NumericWidth::Bits(16)),
-            Ty::I32 | Ty::U32 => Some(NumericWidth::Bits(32)),
-            Ty::I64 | Ty::U64 => Some(NumericWidth::Bits(64)),
-            Ty::Isize | Ty::Usize => Some(NumericWidth::Pointer),
-            _ => None,
-        }
-    }
-
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         // If deferred admission was already recorded for this span, the
@@ -8012,10 +7997,10 @@ impl Checker {
             }
             // Integer bit-manipulation methods: each lowers to one LLVM
             // intrinsic (ctpop/ctlz/cttz/bswap/bitreverse/fshl/fshr) carried
-            // as `RuntimeCallFamily::IntMethod`. Scoped to i32/i64/u32/u64 —
-            // the widths `RuntimeValueKind` already has rows for; i8/i16/u8/
-            // u16/isize/usize report `UndefinedMethod` rather than silently
-            // picking a wrong width.
+            // as `RuntimeCallFamily::IntMethod`, at every integer width Hew
+            // has. `int_method_width` only misses an untyped `IntLiteral`
+            // receiver (no concrete width yet to pick a row for); that case
+            // reports `UndefinedMethod` rather than silently guessing one.
             (resolved, method)
                 if resolved.is_integer()
                     && matches!(
@@ -8039,8 +8024,8 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!(
-                            "no method `{method}` on `{}`; bit-manipulation methods are \
-                             supported on i32, i64, u32 and u64",
+                            "no method `{method}` on `{}`; bit-manipulation methods need a \
+                             concrete integer width",
                             resolved.user_facing()
                         ),
                     );
@@ -8089,20 +8074,12 @@ impl Checker {
             // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
             // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).
             // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
-            //
-            // `.wrapping_add/sub/mul` and `.saturating_add/sub` at i32/i64/u32/u64
-            // take the working D465 path first: `RuntimeCallFamily::IntArith`
-            // (wrapping: a plain, non-trapping LLVM add/sub/mul; saturating:
-            // `llvm.{s,u}{add,sub}.sat`), which actually executes. Everything
-            // else on this arm — `.checked_*`, any op at i8/i16/u8/u16/isize/
-            // usize, and `.saturating_mul` (no LLVM saturating-multiply
-            // intrinsic) — falls back to the pre-D465 `NumericMethodLowering`
-            // side table: it type-checks but has no SIR/MIR lowering
-            // (`HirExprKind::NumericMethod` is not implemented in the initial
-            // SIR subset — an `E_SIR_UNSUPPORTED` compiler limitation, not a
-            // wrong answer). Extending `IntArith` to more widths and to
-            // saturating/checked multiply is a tracked follow-up; this arm
-            // accepts them today rather than refusing valid syntax.
+            // Every one of these rewrites to `RuntimeCallFamily::IntArith` (D465):
+            // wrapping is a plain, non-trapping LLVM add/sub/mul; saturating add/sub
+            // is `llvm.{s,u}{add,sub}.sat`; saturating multiply is built from
+            // `llvm.{s,u}mul.with.overflow` plus a saturating select (no direct
+            // LLVM intrinsic exists for it); checked add/sub/mul is the matching
+            // `.with.overflow` intrinsic delivered as `Option<T>`.
             //
             // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion
             // family) are handled by the arms above; those arms must appear first so
@@ -8122,96 +8099,51 @@ impl Checker {
                 } else {
                     &method["saturating_".len()..]
                 };
-                if !is_checked {
-                    let kind = match (is_wrapping, op_name) {
-                        (true, "add") => Some(IntArithKind::WrappingAdd),
-                        (true, "sub") => Some(IntArithKind::WrappingSub),
-                        (true, "mul") => Some(IntArithKind::WrappingMul),
-                        (false, "add") => Some(IntArithKind::SaturatingAdd),
-                        (false, "sub") => Some(IntArithKind::SaturatingSub),
-                        _ => None,
-                    };
-                    if let (Some(kind), Some(width)) = (kind, int_method_width(resolved)) {
-                        self.check_arity(args, 1, &format!("`{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, resolved);
-                        }
-                        self.record_runtime_method_family_rewrite(
-                            span,
-                            crate::runtime_call::RuntimeCallFamily::IntArith(kind, width),
-                        );
-                        return resolved.clone();
-                    }
-                }
-                let family = if is_wrapping {
-                    NumericMethodFamily::Wrapping
-                } else if is_checked {
-                    NumericMethodFamily::Checked
-                } else {
-                    NumericMethodFamily::Saturating
+                let kind = match (is_wrapping, is_checked, op_name) {
+                    (true, _, "add") => Some(IntArithKind::WrappingAdd),
+                    (true, _, "sub") => Some(IntArithKind::WrappingSub),
+                    (true, _, "mul") => Some(IntArithKind::WrappingMul),
+                    (false, false, "add") => Some(IntArithKind::SaturatingAdd),
+                    (false, false, "sub") => Some(IntArithKind::SaturatingSub),
+                    (false, false, "mul") => Some(IntArithKind::SaturatingMul),
+                    (false, true, "add") => Some(IntArithKind::CheckedAdd),
+                    (false, true, "sub") => Some(IntArithKind::CheckedSub),
+                    (false, true, "mul") => Some(IntArithKind::CheckedMul),
+                    _ => None,
                 };
-                match op_name {
-                    "add" | "sub" | "mul" => {
-                        self.check_arity(args, 1, &format!("`{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, resolved);
-                        }
-                        let op = match op_name {
-                            "add" => NumericMethodOp::Add,
-                            "sub" => NumericMethodOp::Sub,
-                            "mul" => NumericMethodOp::Mul,
-                            _ => unreachable!("op_name matched add/sub/mul above"),
-                        };
-                        if let (Some(signedness), Some(width)) = (
-                            Self::numeric_method_signedness(resolved),
-                            Self::numeric_method_width(resolved),
-                        ) {
-                            let result_ty = if is_checked {
-                                Ty::option(resolved.clone())
-                            } else {
-                                resolved.clone()
-                            };
-                            let prior = self.numeric_method_lowerings.insert(
-                                SpanKey::in_module(span, self.current_module_idx),
-                                NumericMethodLowering {
-                                    family,
-                                    op,
-                                    result_ty: result_ty.clone(),
-                                    operand_ty: resolved.clone(),
-                                    signedness,
-                                    width,
-                                },
-                            );
-                            debug_assert!(
-                                prior.is_none(),
-                                "duplicate numeric method lowering for span {:?}",
-                                SpanKey::in_module(span, self.current_module_idx)
-                            );
-                            result_ty
-                        } else if is_checked {
-                            Ty::option(resolved.clone())
-                        } else {
-                            resolved.clone()
-                        }
+                let (Some(kind), Some(width)) = (kind, int_method_width(resolved)) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
-                    _ => {
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!(
-                                "no method `{method}` on `{}`; only add, sub, mul are supported \
-                                 in this family",
-                                resolved.user_facing()
-                            ),
-                        );
-                        Ty::Error
-                    }
+                    let reason = if kind.is_none() {
+                        "only add, sub, mul are supported in this family".to_string()
+                    } else {
+                        "needs a concrete integer width".to_string()
+                    };
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{}`; {reason}",
+                            resolved.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                self.check_arity(args, 1, &format!("`{method}`"), span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, resolved);
+                }
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::runtime_call::RuntimeCallFamily::IntArith(kind, width),
+                );
+                if is_checked {
+                    Ty::option(resolved.clone())
+                } else {
+                    resolved.clone()
                 }
             }
             // Local actor-reference methods first check the concrete reference

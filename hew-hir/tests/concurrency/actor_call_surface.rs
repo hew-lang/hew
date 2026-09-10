@@ -106,10 +106,6 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(elem, out);
             }
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            visit_expr(receiver, out);
-            visit_expr(arg, out);
-        }
         HirExprKind::RcIntrinsic {
             receiver, value, ..
         } => {

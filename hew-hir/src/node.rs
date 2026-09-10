@@ -9,10 +9,7 @@ use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch, WireLayoutTable,
 };
-use hew_types::{NumericMethodFamily, VecElementToken};
-use hew_types::{
-    NumericMethodOp, NumericSignedness, NumericWidth, TryConversionKind, WireCodecDirection,
-};
+use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
@@ -1850,22 +1847,6 @@ pub enum HirExprKind {
         /// `TypeCheckOutput::expr_types` at lowering time; carried here so
         /// downstream consumers do not have to plumb `expr_types` separately.
         ret_ty: ResolvedTy,
-    },
-    /// Checker-authoritative integer opt-out method call:
-    /// `.wrapping_*`, `.checked_*`, or `.saturating_*` for add/sub/mul.
-    ///
-    /// Produced only from `TypeCheckOutput::numeric_method_lowerings`.
-    /// Downstream phases must consume the carried discriminators rather than
-    /// re-matching the surface method name.
-    NumericMethod {
-        receiver: Box<HirExpr>,
-        arg: Box<HirExpr>,
-        family: NumericMethodFamily,
-        op: NumericMethodOp,
-        result_ty: ResolvedTy,
-        operand_ty: ResolvedTy,
-        signedness: NumericSignedness,
-        width: NumericWidth,
     },
     /// `CancellationToken.is_cancelled() -> bool`.
     ///

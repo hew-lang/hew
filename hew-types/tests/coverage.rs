@@ -25,8 +25,6 @@ mod generic_lambda_multi_instantiation;
 mod hash_eq_derivation_audit;
 #[path = "coverage/is_allowance.rs"]
 mod is_allowance;
-#[path = "coverage/numeric_method_lowering.rs"]
-mod numeric_method_lowering;
 #[path = "coverage/numerics.rs"]
 mod numerics;
 #[path = "coverage/tail_ok_coercion.rs"]

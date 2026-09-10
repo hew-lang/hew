@@ -737,10 +737,6 @@ fn walk_expr(
         | HirExprKind::Return { value: Some(value) } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(arg, subst, residual_domain, disc);
-        }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }

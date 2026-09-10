@@ -185,7 +185,7 @@ fn actor_panic_is_module_fatal_on_production_wasi() {
 
 fn main() {
     let crasher = spawn Crasher;
-    match await crasher.fail() {
+    match crasher.fail() {
         .Ok(_) => println("contained"),
         .Err(_) => println("contained"),
     }

@@ -62,19 +62,12 @@ mod types;
 mod util;
 mod visibility;
 
-use self::types::{
-    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
-    DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
-    DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
-};
 pub use self::types::{
-    ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
-    DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance, EntryDisplayTarget,
-    EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    type_def_for_spelling, ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution,
+    AssignTargetKind, AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
+    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
     ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
@@ -86,6 +79,13 @@ pub use self::types::{
     UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
+};
+use self::types::{
+    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
+    DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
+    DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
+    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -247,12 +247,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         } else {
             DeclarationMarker::None
         };
-        // `type_defs` is keyed by both the qualified path and its bare-name
-        // twin; a resolved type may carry either spelling.
-        let definition = self.type_defs.get(name).or_else(|| {
-            name.split_once('.')
-                .and_then(|(_, leaf)| self.type_defs.get(leaf))
-        });
+        let definition = crate::check::types::type_def_for_spelling(self.type_defs, name);
         let Some(definition) = definition else {
             if self.supervisors.contains_key(name) {
                 return Some(DeclaredType::default());
@@ -514,10 +509,7 @@ pub(crate) fn declaration_walk_terminates(
         name: &str,
         type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
     ) -> Option<&'a crate::check::types::TypeDef> {
-        type_defs.get(name).or_else(|| {
-            name.split_once('.')
-                .and_then(|(_, local)| type_defs.get(local))
-        })
+        crate::check::types::type_def_for_spelling(type_defs, name)
     }
 
     fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {

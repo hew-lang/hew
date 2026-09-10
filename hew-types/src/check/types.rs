@@ -2395,6 +2395,27 @@ impl PendingLoweringFact {
     }
 }
 
+/// Look up a type definition under either spelling `type_defs` is keyed by.
+///
+/// A qualified declaration is registered under its full path and under the
+/// twin one segment shorter, so a resolved type may carry either. Splitting on
+/// the first dot maps `std.channel.Sender` to `channel.Sender` and
+/// `channel.Sender` to `Sender`, which is the twin in both cases.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "mirrors the concrete HashMap the checker and TypeCheckOutput store"
+)]
+pub fn type_def_for_spelling<'a>(
+    type_defs: &'a HashMap<String, TypeDef>,
+    name: &str,
+) -> Option<&'a TypeDef> {
+    type_defs.get(name).or_else(|| {
+        name.split_once('.')
+            .and_then(|(_, twin)| type_defs.get(twin))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub kind: TypeDefKind,

@@ -130,10 +130,9 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
             reason: EqEligibility::IneligibleOwned(ty.clone()),
             member: String::new(),
         }),
-        Ty::Named { name, args, .. } => match type_defs.get(name).or_else(|| {
-            name.split_once('.')
-                .and_then(|(_, local)| type_defs.get(local))
-        }) {
+        Ty::Named { name, args, .. } => match crate::check::type_def_for_spelling(
+            type_defs, name,
+        ) {
             Some(type_def) if type_def.is_indirect => {
                 Some(EqEligibilityFailure {
                     reason: EqEligibility::IneligibleOwned(ty.clone()),

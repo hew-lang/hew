@@ -112,11 +112,7 @@ fn primitive_copy_layout_on_path(
             Some((elem_size.checked_mul(count)?, elem_align))
         }
         Ty::Named { name, args, .. } => {
-            // Try direct lookup first, then strip module prefix (mirrors lookup_type_def).
-            let type_def = type_defs.get(name.as_str()).or_else(|| {
-                name.split_once('.')
-                    .and_then(|(_, local)| type_defs.get(local))
-            })?;
+            let type_def = crate::check::types::type_def_for_spelling(type_defs, name)?;
             let visit_key = type_def.name.clone();
             if !visiting.insert(visit_key.clone()) {
                 return None;

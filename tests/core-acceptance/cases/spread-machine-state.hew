@@ -9,10 +9,10 @@ machine Till {
     events { Sale, Void, Close, }
     state Empty,
     state Filled { count: i64, label: string, },
-    on Sale: Empty => Filled { Till.Filled { count: 1, label: "open" } }
-    on Sale: Filled => Filled reenter { Till.Filled { ..state, count: state.count + 1 } }
-    on Void: Filled => Filled reenter { Till.Filled { ..state, label: "voided" } }
-    on Close: Filled => Empty { Till.Empty }
+    on Sale: Empty => Filled { count: 1, label: "open" }
+    on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
+    on Void: Filled => Filled reenter { ..state, label: "voided" }
+    on Close: Filled => Empty,
     default { state }
 }
 

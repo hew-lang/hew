@@ -5984,7 +5984,7 @@ fn container_bearing_machine_channel_element_refused() {
             }
             state Empty,
             state Loaded { items: Vec<i64>, },
-            on Load: Empty => .Loaded { Buffered.Loaded { items: event.items } }
+            on Load: Empty => Loaded { items: event.items }
             on Load: _ => _ { state }
         }
 

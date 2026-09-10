@@ -16,9 +16,9 @@ use std::sync::Arc;
 use hew_parser::ast::{
     Block, CallArg, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
     DeclarationOrigin, Expr, FnDecl, Item, Literal, MachineDecl, MachineEvent, MachineState,
-    MachineTransition, MatchArm, NominalPatternPayload, Pattern, PatternField, Program,
-    ResourceMarker, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, VariantDecl, VariantKind, Visibility,
+    MachineTransition, MachineTransitionBodyForm, MatchArm, NominalPatternPayload, Pattern,
+    PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
 };
 
 use crate::error::{TypeError, TypeErrorKind};
@@ -1369,17 +1369,22 @@ fn returns_variant(expr: &Expr, target: &str, source: &str, machine: &str) -> bo
 /// list with the target elided, or no body at all for a unit state, is the one
 /// spelling. A body that carries statements keeps naming the target - `emit`
 /// and local bindings have nowhere else to live.
+///
+/// Only an authored block can be redundant: the implicit and field-list forms
+/// name the target in the head, where it belongs. `on Append(item):` splices a
+/// `let` prelude in front of the authored body, so the authored statements are
+/// the ones past that prelude.
 fn redundant_target_refusal(
     transition: &MachineTransition,
     machine: &MachineDecl,
 ) -> Option<TypeError> {
-    if transition.target_state == "_" {
+    if transition.target_state == "_" || transition.body_form != MachineTransitionBodyForm::Block {
         return None;
     }
     let Expr::Block(block) = &transition.body.0 else {
         return None;
     };
-    if !block.stmts.is_empty() {
+    if block.stmts.len() != transition.event_bindings.len() {
         return None;
     }
     let trailing = block.trailing_expr.as_deref()?;

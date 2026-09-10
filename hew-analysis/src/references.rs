@@ -1473,7 +1473,7 @@ mod tests {
             "    }\n",
             "    state Locked,\n",
             "    state Open,\n",
-            "    on Try: Locked => Open when flag { Open }\n",
+            "    on Try: Locked => Open when flag,\n",
             "}",
         );
         let pr = parse(source);

@@ -1305,6 +1305,14 @@ expect_check_fail_contains \
     "machine_semicolon_body"
 [[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_semicolon_body (reject)"
 
+_fcb=${fail_count}
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/machine_semicolon_body.hew" \
+    'write the identity body: `default { state }`' \
+    "machine_bare_default"
+[[ "${fail_count}" == "${_fcb}" ]] && mark_pass "machine_bare_default (reject)"
+
 # V14 — WASI/WASM parity: V1 must compile under wasm32-unknown-unknown
 # through the shared codegen pipeline. Behavioural parity is inherited
 # from the shared MIR->LLVM lower; this gate pins that the wasm target

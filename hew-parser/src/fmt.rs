@@ -5673,20 +5673,27 @@ machine Socket {
     state Idle,
     state Active { h: Handle, },
 
-    on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }
+    on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }
     on Connect(fd): Active => Active { h: Handle { fd: fd } }
+    on Connect(fd): Active => Active reenter { h: Handle { fd: fd }, ..state }
     on Connect(fd): Active => Idle,
 }
 ";
         let formatted = roundtrip(src);
         assert!(
             formatted
-                .contains("on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }"),
-            "explicit transition block must retain its outer braces; got:\n{formatted}"
+                .contains("on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }"),
+            "computed-target block must retain its outer braces; got:\n{formatted}"
         );
         assert!(
             formatted.contains("on Connect(fd): Active => Active { h: Handle { fd: fd } }"),
             "payload shorthand must remain shorthand; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains(
+                "on Connect(fd): Active => Active reenter { ..state, h: Handle { fd: fd } }"
+            ),
+            "a transition field list writes its spread base first; got:\n{formatted}"
         );
         assert!(
             formatted.contains("on Connect(fd): Active => Idle,"),

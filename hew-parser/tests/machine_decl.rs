@@ -11,13 +11,9 @@ machine Light {
     state Off,
     state On,
 
-    on Toggle: Off => On {
-        On
-    }
+    on Toggle: Off => On,
 
-    on Toggle: On => Off {
-        Off
-    }
+    on Toggle: On => Off,
 }
 
 fn main() {
@@ -192,17 +188,11 @@ machine Counter {
     state Idle,
     state Running { count: Int, },
 
-    on Increment: Idle => Running {
-        Running { count: 1 }
-    }
+    on Increment: Idle => Running { count: 1 }
 
-    on Increment: Running => Running {
-        Running { count: self.count + 1 }
-    }
+    on Increment: Running => Running { count: state.count + 1 }
 
-    on Reset: _ => Idle {
-        Idle
-    }
+    on Reset: _ => Idle,
 }
 ";
     let result = hew_parser::parse(source);
@@ -239,13 +229,9 @@ machine Tcp {
     state Closed,
     state Open { port: Int, },
 
-    on Connect: Closed => Open {
-        Open { port: port }
-    }
+    on Connect: Closed => Open { port: port }
 
-    on Disconnect: _ => Closed {
-        Closed
-    }
+    on Disconnect: _ => Closed,
 }
 ";
     let result = hew_parser::parse(source);
@@ -278,9 +264,7 @@ machine Tcp {
     state Closed,
     state Open { port: Int, },
 
-    on Connect(port): Closed => Open {
-        Open { port: port }
-    }
+    on Connect(port): Closed => Open { port: port }
 }
 ";
     let result = hew_parser::parse(source);
@@ -333,7 +317,7 @@ fn machine_event_head_binding_round_trips_through_formatter() {
     state Closed,
     state Open { port: Int, },
 
-    on Connect(port): Closed => Open { Open { port: port } }
+    on Connect(port): Closed => Open { port: port }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -455,9 +439,7 @@ machine Counter {
         Running { count: 0 }
     }
 
-    on Tick: Running => Running {
-        Running { count: self.count + 1 }
-    }
+    on Tick: Running => Running { count: state.count + 1 }
 }
 ";
     let result = hew_parser::parse(source);
@@ -496,9 +478,9 @@ machine Signal {
         emit Ready {};
         Active
     }
-    on Ready: Idle => Idle reenter { Idle }
-    on Ready: Active => Active reenter { Active }
-    on Start: Active => Active reenter { Active }
+    on Ready: Idle => Idle reenter,
+    on Ready: Active => Active reenter,
+    on Start: Active => Active reenter,
 }
 ";
     let result = hew_parser::parse(source);
@@ -527,9 +509,7 @@ machine Counter {
 
     state Active { n: Int, },
 
-    on Inc: Active => Active reenter {
-        Active { n: self.n + 1 }
-    }
+    on Inc: Active => Active reenter { n: state.n + 1 }
 }
 ";
     let result = hew_parser::parse(source);
@@ -581,7 +561,7 @@ fn composite_parent_rule_expands_to_concrete_source_transitions() {
     // The load-bearing constraint: a parent-level `on E: _ => T` inside a
     // composite expands to ONE transition per member with a CONCRETE source
     // state, never a literal `_` source (which the checker rejects for
-    // `self.field` reads). The composite name is dropped from the flat lists.
+    // `state.field` reads). The composite name is dropped from the flat lists.
     let source = r"
 machine Conn {
     events {
@@ -599,7 +579,7 @@ machine Conn {
         on Disconnect: _ => Disconnected,
     },
 
-    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: Disconnected => Authenticating,
     on Connect: _ => _ { state }
     on Disconnect: _ => _ { state }
 }
@@ -673,7 +653,7 @@ fn composite_block_round_trips_through_formatter() {
         on Disconnect: _ => Disconnected,
     },
 
-    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: Disconnected => Authenticating,
     on Connect: _ => _ { state }
     on Disconnect: _ => _ { state }
 }
@@ -793,8 +773,8 @@ machine Light {
     state Off,
     state On,
 
-    on Toggle: Off => On { On }
-    on Toggle: On => Off { Off }
+    on Toggle: Off => On,
+    on Toggle: On => Off,
 }
 
 machine Lifecycle<T> {
@@ -805,9 +785,7 @@ machine Lifecycle<T> {
     state Created,
     state Running,
 
-    on Start: Created => Running {
-        Running
-    }
+    on Start: Created => Running,
 }
 
 machine Triple<T, U, V> {
@@ -818,9 +796,7 @@ machine Triple<T, U, V> {
     state Empty,
     state Filled,
 
-    on Insert: Empty => Filled {
-        Filled
-    }
+    on Insert: Empty => Filled,
 }
 
 machine Collision<T> {
@@ -914,8 +890,8 @@ machine Bounded<T: Resource, U: Resource + Display> {
     state Idle,
     state Active { handle: T, meta: U, },
 
-    on Start: Idle => Active { Active { handle: event.handle, meta: event.meta } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle, meta: event.meta }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -965,8 +941,8 @@ machine Lifecycle<T: Resource> {
     state Idle,
     state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1013,8 +989,8 @@ machine Container<T> where T: Resource {
     state Idle,
     state Active { item: T, },
 
-    on Start: Idle => Active { Active { item: event.item } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { item: event.item }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1074,8 +1050,8 @@ machine Combined<T: Resource> where T: Display {
     state Idle,
     state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1137,8 +1113,8 @@ machine Multi<T, U> where T: Resource, U: Display + Send {
     state Idle,
     state Active { left: T, right: U, },
 
-    on Start: Idle => Active { Active { left: event.left, right: event.right } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { left: event.left, right: event.right }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1192,8 +1168,8 @@ machine Combined<T: Resource> where T: Display {
     state Idle,
     state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1250,7 +1226,7 @@ fn machine_const_param_minimal_parses() {
 
     state S,
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1275,7 +1251,7 @@ fn machine_const_param_with_default_parses() {
 
     state S,
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1294,7 +1270,7 @@ fn machine_mixed_type_and_const_params_parses() {
 
     state S { val: T, },
 
-    on E: S => S { S { val: event.val } }
+    on E: S => S { val: event.val }
 }
 ";
     let r = hew_parser::parse(src);
@@ -1315,7 +1291,7 @@ fn machine_const_param_rejects_non_usize_width() {
 
     state S;
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1339,7 +1315,7 @@ fn machine_const_param_rejects_const_before_type_param() {
 
     state S;
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1358,7 +1334,7 @@ fn machine_const_param_round_trips_through_formatter() {
 
     state S { val: T, },
 
-    on E: S => S { S { val: event.val } }
+    on E: S => S { val: event.val }
 }
 ";
     let r = hew_parser::parse(src);

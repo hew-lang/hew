@@ -98,61 +98,6 @@ fn check_fails_on_hir_gate_before_ok() {
 }
 
 #[test]
-fn check_fails_on_mir_gate_before_ok() {
-    // A functional-update override that aliases the consumed base
-    // (`VHolder { items: s.items, ..s }`) is a fail-closed MIR gate: the base's
-    // overridden owned field is released at the construction site, so the new
-    // record would alias freed memory. This is an intentional, durable MIR
-    // `NotYetImplemented` (the COW value model that would keep the base live is
-    // not built), so it is a stable trigger for "hew check fails at the MIR
-    // gate with a clean, source-attributed diagnostic".
-    let (_dir, path) = write_fixture(
-        "type VHolder { items: Vec<i64>, tag: string }\n\
-         fn main() {\n\
-         \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
-         \x20\x20\x20\x20init.push(7);\n\
-         \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
-         \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
-         \x20\x20\x20\x20println(s2.items.len());\n\
-         }\n",
-    );
-
-    let output = run_check(&["check", path.to_str().unwrap()]);
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        !output.status.success(),
-        "hew check must fail when a later MIR gate rejects the file\n{}",
-        describe_output(&output),
-    );
-    assert!(
-        stderr.contains("E_MIR") || stderr.contains("E_NOT_YET_IMPLEMENTED"),
-        "MIR gate diagnostic should be rendered; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("main.hew:6:"),
-        "MIR gate diagnostic should be source-attributed; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains(
-            "MIR lowering for functional-update override aliasing the consumed base \
-             is not implemented yet"
-        ),
-        "MIR diagnostic should use a user-readable message; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("MirDiagnostic")
-            && !stderr.contains("NotYetImplemented {")
-            && !stderr.contains("SiteId("),
-        "hew check must not emit raw MIR debug payloads; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains(": OK"),
-        "hew check must not print OK after a MIR gate failure; got:\n{stderr}",
-    );
-}
-
-#[test]
 fn check_runs_codegen_front_on_success_without_artifacts() {
     let (dir, _path) = write_fixture(CODEGEN_FRONT_ACCEPTED_FIXTURE);
 

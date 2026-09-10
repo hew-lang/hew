@@ -32,18 +32,10 @@ same change that lands the mechanism.
 
 ## The `E_LIMIT_*` family
 
-| Code                               | Channel    | Removed by | Refuses                                                                                                                                                                                                       |
-| ---------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `E_LIMIT_COLLECTION_COPY`          | Limitation | v0.7.0     | A whole-binding copy of a value-category collection (`let b = a` on a `Vec`, then a use of `a`). The rule says retain; this lowering consumes. Relabelled at the MIR site, not re-derived in the checker.     |
-| `E_LIMIT_GENERIC_RETURN_INFERENCE` | Limitation | v0.7.0     | A generic return type inferred through `?` or `.expect(reason)`. The turbofish form is the accepted spelling.                                                                                                 |
-| `E_LIMIT_SUPERVISED_STATE`         | Limitation | v0.7.0     | Supervised child state beyond scalars, `string`, and `bytes`. One code for the checker refusal, the init-arg MIR gap, and the init-thunk codegen backstop.                                                    |
-| `E_LIMIT_SELF_NAMED_ALIAS`         | Limitation | v0.7.0     | An alias import of a file whose name repeats its directory (`import std.net.http.http as h;`). The unaliased file, the directory module, and a sibling file under the directory's name all compile.           |
-| `E_LIMIT_RC_FIELD`                 | Limitation | v0.7.0     | A field read through an `Rc<T>` (§3.7.5). `.get()` on a `T: Copy` payload is the accepted form until the borrow-projection lowering lands.                                                                    |
-| `E_LIMIT_DYN_SEND`                 | Limitation | v0.7.0     | Sending a `dyn Trait` value whose concrete type is not `#[wire]`.                                                                                                                                             |
-| `E_LIMIT_INHERENT_VAR_SELF`        | Limitation | v0.7.0     | A `var self` receiver on an inherent `impl` method. The trait form is accepted.                                                                                                                               |
-| `E_LIMIT_OPAQUE_ACTOR`             | Limitation | v0.7.0     | An `#[opaque]` value, or a `#[resource]` wrapper around one, as an actor's init field.                                                                                                                        |
-| `E_LIMIT_DERIVED_ORD`              | Limitation | v0.7.0     | A structurally derivable aggregate ordering comparison whose lexicographic lowering is not implemented.                                                                                                       |
-| `E_ASSOC_BOUND_UNSUPPORTED`        | Limitation | v0.7.0     | An associated-type bound in a `where` clause (`where T.Item: Bound`, §3.8.3). It parses and type-checks but never reaches method resolution, so writing it is an error rather than a bound that does nothing. |
+| Code                  | Channel    | Removed by | Refuses                                                                                                                                    |
+| --------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `E_LIMIT_RC_FIELD`    | Limitation | v0.7.0     | A field read through an `Rc<T>` (§3.7.5). `.get()` on a `T: Copy` payload is the accepted form until the borrow-projection lowering lands. |
+| `E_LIMIT_DERIVED_ORD` | Limitation | v0.7.0     | A structurally derivable aggregate ordering comparison whose lexicographic lowering is not implemented.                                    |
 
 ## User-channel codes in the same family
 
@@ -52,8 +44,6 @@ them.
 
 | Code                                           | Refuses                                                                                                                                                                                                                                                                                |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `E_RANGE_VALUE`                                | A range in value position. Ranges are `for` iterables, by design.                                                                                                                                                                                                                      |
-| `E_DYN_SUPERTRAIT`                             | A supertrait method reached through a trait object in a shape the checker cannot resolve (HEW-SPEC-2026 §2.2.1).                                                                                                                                                                       |
 | `E_BARE_VARIANT_PATTERN`                       | A bare variant in pattern position (`Ok(v)`). Write `.Ok(v)` when the scrutinee selects the enum, `Result.Ok(v)` otherwise.                                                                                                                                                            |
 | `E_BARE_VARIANT_EXPR`                          | A bare variant in expression position, under the same rule.                                                                                                                                                                                                                            |
 | `E_VISIBILITY_PRIVATE`, `E_VISIBILITY_PACKAGE` | A cross-module reference to a private or package item.                                                                                                                                                                                                                                 |
@@ -68,12 +58,9 @@ them.
 The remaining v0.6.0 surface codes are named by the decision that introduces
 them, and their rule lives in the spec section that decision writes — not
 here. Each row is added by the lane that lands the refusal:
-`E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_CALLABLE_MESSAGE_PAYLOAD`,
-`E_USE_AFTER_SEND`, `E_UNKNOWN_ATTRIBUTE`, `E_RESERVED_HANDLER_NAME`,
-`E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SCOPE_IS_STATEMENT`,
-`E_SEND_RESULT_DROPPED`,
-`E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`,
-`E_NO_ASYNC_GEN`.
+`E_IS_VALUE_TYPE`, `E_OPAQUE_MESSAGE_PAYLOAD`, `E_UNKNOWN_ATTRIBUTE`,
+`E_ACTOR_CONTEXT_REQUIRED`, `E_BREAK_VALUE`, `E_SEND_RESULT_DROPPED`,
+`E_GEN_RETURN_SPELLING`, `E_NO_ASYNC_FN`, `E_NO_ASYNC_GEN`.
 
 ## Refusals with no code yet
 

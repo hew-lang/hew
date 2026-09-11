@@ -448,6 +448,7 @@ fn generic_fixture() -> &'static str {
      \x20   state Full { value: T, }\n\
      \x20   ,on Put(value): Empty => Full { value: value }\n\
      \x20   on Take: Full => Empty,\n\
+     \x20   default { state }\n\
      }\n"
 }
 

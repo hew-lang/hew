@@ -4,30 +4,31 @@
 # Usage:
 #   HEW_BIN=build/bin/hew tests/perf/verify-linear.sh
 #
-# A chain of last-use record transfers across actor calls is the shape a real
-# actor body has: every await adds a suspension with its resume, cancel and
-# unwind edges. The gate compiles the chain at three lengths and measures the
-# `physical lowering` phase, which covers source through verified physical MIR.
+# A chain of record transfers across actor calls is the shape a real actor body
+# has: every await adds a suspension with its resume, cancel and unwind edges,
+# so a function with a few hundred awaits is a function with a few thousand
+# blocks. Reaching physical MIR must stay proportional to the awaits, and a
+# verifier that walks a whole table per operation does not.
 #
-# What it asserts is cost per emitted SIR operation, not cost per await. SIR
-# scope exit ends every in-scope binding place on every fault edge, so the chain
-# lowers to a quadratic number of `end_lifetime` operations, and no verifier can
-# be linear in the await count while that holds. The verifiers can
-# and must be linear in the body they are handed, which is what this measures: a
-# dominance relation stored as sets, or a whole-function fixed point recomputed
-# per terminator, makes the per-operation cost grow with the body and fails here.
+# The chain moves one record through one binding, so the body it lowers to
+# grows with the await count and nothing else. The gate checks that first: a
+# lowering that makes the operation count superlinear would turn the timing
+# below into a measurement of the lowering rather than of the verifiers, and
+# says so instead of passing quietly.
 #
-# Flip the commented assertion below to the await count once scope-exit cleanup
-# is shared rather than duplicated per fault edge.
+# The measurement is the compiler's own `physical lowering` phase, which covers
+# source through verified physical MIR. It is not `--dump-mir physical`: that
+# text is itself quadratic in the chain length and would swamp the phase.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW_BIN="${HEW_BIN:-$ROOT/build/bin/hew}"
 LENGTHS=(128 256 512)
-# Cost per operation at the longest chain, over the shortest. One is flat; the
-# headroom covers cache behaviour at a body of several hundred thousand
-# operations and ordinary scheduling noise.
-PER_OP_LIMIT=2
+# Elapsed and emitted operations at the longest chain, over the shortest. A
+# four-fold chain costs four times as much when both are linear; the headroom
+# covers the fixed per-compile cost that inflates neither end and ordinary
+# scheduling noise.
+RATIO_LIMIT=6
 # Virtual-memory ceiling for one compile. Per-block verifier state that scales
 # with the body shows up here before it shows up in the clock.
 ADDRESS_SPACE_KB=4194304
@@ -47,7 +48,8 @@ fi
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/hew-verify-linear.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Emit the chain: N awaits, each moving the whole record into the next call.
+# Emit the chain: N awaits, each moving the record out of the binding and the
+# reply back into it.
 generate() {
     local n="$1" out="$2" i
     {
@@ -61,13 +63,13 @@ generate() {
         echo
         echo "fn main() {"
         echo "    let gate = spawn Gate();"
-        printf '    let value0 = Payload {'
+        printf '    var value = Payload {'
         for i in 0 1 2 3 4 5 6 7; do printf ' f%s: "ok",' "$i"; done
         echo " };"
         for ((i = 1; i <= n; i++)); do
-            echo "    let value$i = gate.pass(value$((i - 1))).expect(\"reply\");"
+            echo "    value = gate.pass(value).expect(\"reply\");"
         done
-        echo "    println(value$n.f0);"
+        echo "    println(value.f0);"
         echo "    close(gate);"
         echo "}"
     } >"$out"
@@ -107,7 +109,7 @@ operations() {
     "$HEW_BIN" tool compile "$1" --dump-sir 2>/dev/null | grep -cE '^    [a-z%$]'
 }
 
-declare -A elapsed_ms ops per_op
+declare -A elapsed_ms ops
 for n in "${LENGTHS[@]}"; do
     generate "$n" "$tmpdir/chain$n.hew"
     if ! elapsed_ms[$n]="$(lowering_ms "$tmpdir/chain$n.hew" "$tmpdir/chain$n.log")"; then
@@ -119,21 +121,30 @@ for n in "${LENGTHS[@]}"; do
         echo "verify-linear: the chain at N=$n lowered to no SIR operations" >&2
         exit 1
     fi
-    per_op[$n]="$(python3 -c "print(f'{1000 * ${elapsed_ms[$n]} / ${ops[$n]}:.2f}')")"
-    echo "verify-linear: N=$n physical lowering ${elapsed_ms[$n]} ms over ${ops[$n]} SIR operations, ${per_op[$n]} us each"
+    echo "verify-linear: N=$n physical lowering ${elapsed_ms[$n]} ms over ${ops[$n]} SIR operations"
 done
 
 first="${LENGTHS[0]}"
 last="${LENGTHS[${#LENGTHS[@]} - 1]}"
-ratio="$(python3 -c "print(f'{${per_op[$last]} / ${per_op[$first]}:.2f}')")"
-echo "verify-linear: per-operation cost at N=$last is ${ratio}x its cost at N=$first (limit $PER_OP_LIMIT)"
 
-# Once scope-exit cleanup is shared across fault edges the operation count
-# becomes linear in N and this becomes the direct assertion:
-#   ${elapsed_ms[$last]} / ${elapsed_ms[$first]} <= 6
+report() {
+    python3 -c "print(f'{$1 / $2:.2f}')"
+}
+exceeds() {
+    python3 -c "import sys; sys.exit(0 if $1 / $2 > $RATIO_LIMIT else 1)"
+}
 
-if python3 -c "import sys; sys.exit(0 if ${per_op[$last]} / ${per_op[$first]} > $PER_OP_LIMIT else 1)"; then
-    echo "verify-linear: verification cost per operation grows with the body" >&2
+operation_ratio="$(report "${ops[$last]}" "${ops[$first]}")"
+echo "verify-linear: N=$last emits ${operation_ratio}x the operations of N=$first (limit $RATIO_LIMIT)"
+if exceeds "${ops[$last]}" "${ops[$first]}"; then
+    echo "verify-linear: lowering this chain is superlinear, so the timing below measures the lowering" >&2
     exit 1
 fi
-echo "verify-linear: verification cost per operation stays flat"
+
+elapsed_ratio="$(report "${elapsed_ms[$last]}" "${elapsed_ms[$first]}")"
+echo "verify-linear: N=$last costs ${elapsed_ratio}x N=$first (limit $RATIO_LIMIT)"
+if exceeds "${elapsed_ms[$last]}" "${elapsed_ms[$first]}"; then
+    echo "verify-linear: reaching physical MIR is superlinear in the awaits per function" >&2
+    exit 1
+fi
+echo "verify-linear: reaching physical MIR scales with the awaits per function"

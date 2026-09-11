@@ -74,7 +74,24 @@ impl FunctionLowerer<'_> {
             .cleanup_contents(operation)
             .unwrap_or_default()
         {
-            contents.insert(self.place(place)?, state);
+            let id = self.place(place)?;
+            let ty = &self.storage[id.0 as usize].ty;
+            // An authored opaque handle's own `close` is its only release, so
+            // contents still held at a cleanup inside that body would have to
+            // re-enter it. SIR's certificate is the evidence: refuse rather
+            // than emit the re-entry or drop a foreign handle silently.
+            if state != hew_sir::LeafContents::Absent
+                && matches!(
+                    self.own_close_body_of(ty),
+                    Some(hew_sir::ResourceRelease::OpaqueClose { .. })
+                )
+            {
+                return Err(PhysicalError::new(format!(
+                    "`{}` must consume its receiver on every path of its own `close`",
+                    ty.user_facing()
+                )));
+            }
+            contents.insert(id, state);
         }
         Ok(PhysicalCleanup {
             operation,

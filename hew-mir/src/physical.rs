@@ -3695,19 +3695,28 @@ impl FunctionLowerer<'_> {
         })
     }
 
-    /// Inside a record resource's own `close`, the receiver is already being
-    /// released: its members drop directly. Selecting the release again would
-    /// re-enter `close`.
-    fn releases_members_of(&self, ty: &ResolvedTy) -> bool {
-        matches!(
-            self.module.resources.get(ty),
-            Some(hew_sir::ResourceRelease::RecordClose { close, .. })
-                if *close == self.function.callable
-        )
+    /// The release this body *is*, when the body being lowered is the exact
+    /// `close` that releases `ty`. Selecting that release again would re-enter
+    /// `close`.
+    pub(super) fn own_close_body_of(&self, ty: &ResolvedTy) -> Option<&hew_sir::ResourceRelease> {
+        let release = self.module.resources.get(ty)?;
+        let close = match release {
+            hew_sir::ResourceRelease::RecordClose { close, .. }
+            | hew_sir::ResourceRelease::OpaqueClose { close, .. } => *close,
+            _ => return None,
+        };
+        (close == self.function.callable).then_some(release)
     }
 
     fn destroy_action(&self, ty: &ResolvedTy) -> Result<DestroyAction, PhysicalError> {
-        if self.releases_members_of(ty) {
+        // A record resource's members drop directly inside its own close. An
+        // authored opaque handle has no members and no release but the close
+        // already running; `cleanup_recipe` proves no cleanup site in that
+        // body still holds one, so the ordinary recipe below never runs there.
+        if matches!(
+            self.own_close_body_of(ty),
+            Some(hew_sir::ResourceRelease::RecordClose { .. })
+        ) {
             return self
                 .glue_ids
                 .aggregates
@@ -4131,35 +4140,45 @@ fn verify_resources(module: &PhysicalModule) -> Result<(), PhysicalError> {
             semantic_type_facts(module, &resource.ty)?,
         )
         .map_err(PhysicalError::new)?;
-        if let hew_sir::ResourceRelease::RecordClose { lifecycle, close } = &resource.release {
+        // A release that runs an authored `close` names the exact callable
+        // that executes it; the backend calls that one and derives nothing.
+        let authored_close = match &resource.release {
+            hew_sir::ResourceRelease::RecordClose { lifecycle, close } => {
+                Some((&lifecycle.close_declaration, *close))
+            }
+            hew_sir::ResourceRelease::OpaqueClose { lifecycle, close } => {
+                Some((&lifecycle.close_declaration, *close))
+            }
+            _ => None,
+        };
+        if let Some((declaration, close)) = authored_close {
             let callable = module
                 .callables
                 .get(close.0 as usize)
-                .ok_or_else(|| PhysicalError::new("record release names no admitted callable"))?;
-            if callable.declaration != lifecycle.close_declaration
+                .ok_or_else(|| PhysicalError::new("authored release names no admitted callable"))?;
+            if callable.declaration != *declaration
                 || callable.params.len() != 1
                 || callable.params[0].ty != resource.ty
                 || callable.return_ty != ResolvedTy::Unit
             {
                 return Err(PhysicalError::new(
-                    "record release callable does not consume one exact owner and return unit",
+                    "authored release callable does not consume one exact owner and return unit",
                 ));
             }
-            if !matches!(
-                required_layout(&module.target, &resource.ty)?.repr,
-                PhysicalRepr::Struct(_)
-            ) {
-                return Err(PhysicalError::new(
-                    "record release requires its exact field-bearing layout",
-                ));
-            }
-            continue;
         }
         let expected = match resource.release.carrier().map_err(PhysicalError::new)? {
             hew_sir::ResourceCarrier::Pointer => PhysicalRepr::Pointer,
             hew_sir::ResourceCarrier::I32 => PhysicalRepr::Integer { bits: 32 },
             hew_sir::ResourceCarrier::Record => {
-                unreachable!("record releases are verified above")
+                if !matches!(
+                    required_layout(&module.target, &resource.ty)?.repr,
+                    PhysicalRepr::Struct(_)
+                ) {
+                    return Err(PhysicalError::new(
+                        "record release requires its exact field-bearing layout",
+                    ));
+                }
+                continue;
             }
         };
         if required_layout(&module.target, &resource.ty)?.repr != expected {

@@ -1,0 +1,10 @@
+[[case]]
+id = "opaque-resource-in-aggregates"
+intent = "An authored `#[resource] #[opaque]` handle owned by a record field, by a vector element, and by a frame cancelled at its suspension runs its own `close` exactly once in each case."
+source = "cases/opaque-resource-in-aggregates.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "record\nclosed\nvector 2\nclosed\nclosed\ncancelled\nwinner\nclosed\npicked 7\n"
+exit = 0

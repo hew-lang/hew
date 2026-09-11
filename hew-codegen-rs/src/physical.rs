@@ -1085,7 +1085,8 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// glue has no unwind successor to carry a failure into, so a failing
     /// release traps: continuing would leave the value half-released with no
     /// owner able to observe it.
-    fn emit_record_close(
+    /// Release one owner by calling the exact `close` MIR named for it.
+    fn emit_authored_close(
         &self,
         value: BasicValueEnum<'ctx>,
         close: CallableId,
@@ -1095,17 +1096,17 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .llvm
             .get_function(&emitted_symbol(self.module, callee))
             .ok_or_else(|| {
-                CodegenError::FailClosed("record release has no emitted close body".into())
+                CodegenError::FailClosed("authored release has no emitted close body".into())
             })?;
         let parameter = callee.params.first().ok_or_else(|| {
-            CodegenError::FailClosed("record release close takes no receiver".into())
+            CodegenError::FailClosed("authored release close takes no receiver".into())
         })?;
         let receiver: BasicMetadataValueEnum<'ctx> = match parameter.carrier {
             ParamCarrier::Direct => value.into(),
             ParamCarrier::Indirect => {
                 let slot = self.entry_scratch(
                     llvm_type(self.ctx, &parameter.layout.repr)?,
-                    "record.close.receiver",
+                    "resource.close.receiver",
                 )?;
                 self.builder
                     .build_store(slot, value)
@@ -1115,7 +1116,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
         };
         let fault = self.entry_scratch(
             self.ctx.ptr_type(AddressSpace::default()).into(),
-            "record.close.fault",
+            "resource.close.fault",
         )?;
         self.builder
             .build_store(
@@ -1125,7 +1126,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .llvm_ctx("clear record release fault slot")?;
         let status = self
             .builder
-            .build_call(function, &[receiver, fault.into()], "record.close.status")
+            .build_call(function, &[receiver, fault.into()], "resource.close.status")
             .llvm_ctx("call record release")?
             .try_as_basic_value()
             .basic()
@@ -1137,13 +1138,15 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 IntPredicate::EQ,
                 status,
                 self.ctx.i32_type().const_zero(),
-                "record.close.ok",
+                "resource.close.ok",
             )
             .llvm_ctx("compare record release status")?;
-        let released = self.ctx.append_basic_block(self.value, "record.close.done");
+        let released = self
+            .ctx
+            .append_basic_block(self.value, "resource.close.done");
         let failed = self
             .ctx
-            .append_basic_block(self.value, "record.close.failed");
+            .append_basic_block(self.value, "resource.close.failed");
         self.builder
             .build_conditional_branch(ok, released, failed)
             .llvm_ctx("branch on record release status")?;
@@ -1153,7 +1156,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .get_declaration(self.llvm, &[])
             .ok_or_else(|| CodegenError::FailClosed("LLVM trap declaration failed".into()))?;
         self.builder
-            .build_call(trap, &[], "record.close.trap")
+            .build_call(trap, &[], "resource.close.trap")
             .llvm_ctx("emit failing record release trap")?;
         self.builder
             .build_unreachable()
@@ -1347,10 +1350,11 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 let resource = self.module.resources.get(id.0 as usize).ok_or_else(|| {
                     CodegenError::FailClosed("resource drop lacks its verified contract".into())
                 })?;
-                if let hew_mir::physical::ResourceRelease::RecordClose { close, .. } =
+                if let hew_mir::physical::ResourceRelease::RecordClose { close, .. }
+                | hew_mir::physical::ResourceRelease::OpaqueClose { close, .. } =
                     &resource.release
                 {
-                    return self.emit_record_close(value, *close);
+                    return self.emit_authored_close(value, *close);
                 }
                 let symbol = resource
                     .release

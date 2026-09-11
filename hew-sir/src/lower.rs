@@ -542,6 +542,9 @@ struct InstanceService<'a> {
     /// How many published aggregate shapes have already been scanned for a
     /// `#[resource]` record whose `close` body drop glue will call.
     scanned_record_closes: usize,
+    /// Authored opaque `#[resource]` closes already demanded, so a repeated
+    /// projection scan does not queue the same body twice.
+    demanded_opaque_closes: std::collections::HashSet<hew_types::DefId>,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
     aggregate_shapes: Vec<SemAggregateShape>,
@@ -1059,6 +1062,7 @@ impl<'a> InstanceService<'a> {
             entry_adapter: None,
             used_templates: std::collections::HashSet::new(),
             scanned_record_closes: 0,
+            demanded_opaque_closes: std::collections::HashSet::new(),
             pending: VecDeque::new(),
             functions: Vec::new(),
             aggregate_shapes: Vec::new(),
@@ -1658,9 +1662,57 @@ impl<'a> InstanceService<'a> {
         }
     }
 
+    /// Demand the `close` body of every authored opaque `#[resource]` the
+    /// module names.
+    ///
+    /// Drop glue is the only caller of such a close, so like a record's the
+    /// demand cannot arrive through the call graph. The projection that
+    /// decides which types carry a published release is the same one consulted
+    /// here, so a named handle and its executable release always agree. It
+    /// runs only once the queue has drained, which bounds the scans to the
+    /// number of authored handles the module reaches.
+    fn demand_opaque_closes(&mut self) {
+        let templates: Vec<SemGenericTemplate> = self
+            .table
+            .generic_templates
+            .iter()
+            .filter(|template| self.used_templates.contains(&template.id))
+            .cloned()
+            .collect();
+        let mentioned = project_type_facts(
+            self.checked_facts.rows(),
+            &self.table.callables,
+            &templates,
+            &self.functions,
+            &self.aggregate_shapes,
+            &self.variant_shapes,
+            &self.vtables,
+            &self.value_capabilities,
+        );
+        let mut closes = Vec::new();
+        for key in mentioned.keys() {
+            let Some(lifecycle) = crate::resource::authored_opaque_lifecycle(self.module, &key.0)
+            else {
+                continue;
+            };
+            let declaration = lifecycle.close_declaration.clone();
+            if self.demanded_opaque_closes.insert(declaration.clone()) {
+                closes.push(declaration);
+            }
+        }
+        for declaration in closes {
+            if let Ok(id) = self.admit_monomorphic(&declaration) {
+                self.request_body(id);
+            }
+        }
+    }
+
     fn lower_pending(&mut self) {
         loop {
             self.demand_record_closes();
+            if self.pending.is_empty() {
+                self.demand_opaque_closes();
+            }
             let Some(callable) = self.pending.pop_front() else {
                 break;
             };
@@ -2323,29 +2375,38 @@ impl<'a> InstanceService<'a> {
                     .map(|release| (key.0.clone(), release))
             })
             .collect();
-        // A record resource's release is a semantic callable, so it is
+        // A release that runs an authored `close` - a `#[resource]` record's
+        // or an authored opaque handle's - is a semantic callable, so it is
         // published here, where the resolved callable table is in hand. A
         // lifecycle whose close body never reached demand publishes no
         // release: the type then has no value contract at all rather than a
         // release nothing can execute.
         for key in type_facts.keys() {
-            let Some(lifecycle) = crate::resource::record_resource_lifecycle(module, &key.0) else {
+            let close_of = |declaration| table.monomorphic_by_declaration.get(declaration).copied();
+            let release = if let Some(lifecycle) =
+                crate::resource::record_resource_lifecycle(module, &key.0)
+            {
+                close_of(&lifecycle.close_declaration).map(|close| {
+                    crate::ResourceRelease::RecordClose {
+                        lifecycle: Box::new(lifecycle.clone()),
+                        close,
+                    }
+                })
+            } else if let Some(lifecycle) =
+                crate::resource::authored_opaque_lifecycle(module, &key.0)
+            {
+                close_of(&lifecycle.close_declaration).map(|close| {
+                    crate::ResourceRelease::OpaqueClose {
+                        lifecycle: Box::new(lifecycle.clone()),
+                        close,
+                    }
+                })
+            } else {
                 continue;
             };
-            let Some(close) = table
-                .monomorphic_by_declaration
-                .get(&lifecycle.close_declaration)
-                .copied()
-            else {
-                continue;
-            };
-            resources.insert(
-                key.0.clone(),
-                crate::ResourceRelease::RecordClose {
-                    lifecycle: Box::new(lifecycle.clone()),
-                    close,
-                },
-            );
+            if let Some(release) = release {
+                resources.insert(key.0.clone(), release);
+            }
         }
         SemModule {
             actors,
@@ -2752,14 +2813,17 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
         .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy)
 }
 
-/// Opaque owners enter ordinary value flow only through an audited lifecycle.
+/// Opaque owners enter ordinary value flow only through an audited lifecycle:
+/// a checker-discovered one names the producers that mint the handle, and an
+/// authored one is the `close` HIR admitted as the type's own release.
 fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Named { builtin: None, is_opaque: true, args, .. } if args.is_empty())
-        && module
-            .type_classes
-            .lifecycle_registry()
-            .opaque_resource_for_ty(ty)
-            .is_some_and(|lifecycle| !lifecycle.producer_declarations.is_empty())
+        && (crate::resource::authored_opaque_lifecycle(module, ty).is_some()
+            || module
+                .type_classes
+                .lifecycle_registry()
+                .opaque_resource_for_ty(ty)
+                .is_some_and(|lifecycle| !lifecycle.producer_declarations.is_empty()))
 }
 
 fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {

@@ -188,12 +188,6 @@ linux	failure	hew-cli::opaque_resource_vec_containment	vec_of_exact_imported_opa
 linux	failure	hew-cli::param_record_field_loop_drop_leak_oracle	projection_store_mid_loop_rejects_at_check_time	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	loop_backedge_cannot_reread_the_cleared_field	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	whole_tuple_escape_after_projection_transfer_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_actor_shutdown_drop_spine_reaches_close	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_admitted_no_w3_029	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_closes_once_on_scope_exit	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_extraction_via_bind_rejected	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_extraction_via_method_rejected	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
-linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_overwrite_rejected	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
 linux	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::record_builtin_handle_overwrite_failclosed	ordinary_record_builtin_handle_overwrites_are_refused	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract

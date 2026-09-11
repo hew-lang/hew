@@ -1,0 +1,54 @@
+// An authored `#[resource] #[opaque]` handle is released by its own `close` on
+// every exit path: ordinary scope exit, an early return, and an error return.
+// The handle is a real runtime deque, so a missing close leaks a heap box and a
+// repeated one double-frees it under the sanitizer.
+#[resource]
+#[opaque]
+type Dq {}
+
+impl Dq {
+    fn close(consume self) {
+        unsafe { hew_deque_free(self) };
+        println("closed");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+fn scope_exit() {
+    let _held = unsafe { hew_deque_new() };
+    println("scope");
+}
+
+fn early_return(stop: bool) {
+    let _held = unsafe { hew_deque_new() };
+    println("early");
+    if stop {
+        return;
+    }
+    println("fell through");
+}
+
+fn failing(width: i64) -> Result<i64, string> {
+    let _held = unsafe { hew_deque_new() };
+    if width < 0 {
+        return Err("negative");
+    }
+    Ok(width)
+}
+
+fn main() {
+    scope_exit();
+    early_return(true);
+    match failing(-1) {
+        .Ok(_) => println("unexpected"),
+        .Err(reason) => println("error " + reason),
+    }
+    match failing(3) {
+        .Ok(width) => println("ok " + to_string(width)),
+        .Err(_) => println("unexpected"),
+    }
+}

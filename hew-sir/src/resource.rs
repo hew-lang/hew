@@ -39,6 +39,16 @@ pub enum ResourceRelease {
         lifecycle: Box<hew_hir::ResourceRecordLifecycle>,
         close: crate::CallableId,
     },
+    /// An authored `#[resource] #[opaque]` handle released by its own `close`.
+    ///
+    /// This form declares no separate release ABI, so HIR records the close
+    /// method as both close and release. The semantic callable is resolved
+    /// once when the module is published, the same way a record's is; the
+    /// handle itself keeps the ordinary opaque pointer carrier.
+    OpaqueClose {
+        lifecycle: Box<hew_hir::OpaqueResourceLifecycle>,
+        close: crate::CallableId,
+    },
 }
 
 /// One exact `extern` declaration: the C endpoint plus the ownership the
@@ -107,22 +117,22 @@ impl ResourceRelease {
     /// # Errors
     /// Record close executes a semantic callable rather than a C endpoint.
     pub fn release_symbol(&self) -> Result<&str, String> {
-        let family = match self {
-            Self::Nominal { release, .. } => return Ok(&release.symbol),
-            Self::Task => RuntimeCallFamily::TaskFree,
-            Self::ActorCall => RuntimeCallFamily::ActorCallFree,
-            Self::Generator => RuntimeCallFamily::GeneratorFree,
-            Self::Stream => RuntimeCallFamily::StreamClose,
-            Self::Sink => RuntimeCallFamily::SinkClose,
-            Self::Sender => RuntimeCallFamily::ChannelSenderClose,
-            Self::Receiver => RuntimeCallFamily::ChannelReceiverClose,
-            Self::RecordClose { .. } => {
-                return Err(
-                    "a record resource is released by its own close body, not an extern call"
+        let family =
+            match self {
+                Self::Nominal { release, .. } => return Ok(&release.symbol),
+                Self::Task => RuntimeCallFamily::TaskFree,
+                Self::ActorCall => RuntimeCallFamily::ActorCallFree,
+                Self::Generator => RuntimeCallFamily::GeneratorFree,
+                Self::Stream => RuntimeCallFamily::StreamClose,
+                Self::Sink => RuntimeCallFamily::SinkClose,
+                Self::Sender => RuntimeCallFamily::ChannelSenderClose,
+                Self::Receiver => RuntimeCallFamily::ChannelReceiverClose,
+                Self::RecordClose { .. } | Self::OpaqueClose { .. } => return Err(
+                    "a resource with an authored close is released by its own close body, not an \
+                     extern call"
                         .into(),
-                )
-            }
-        };
+                ),
+            };
         Ok(family.c_symbol())
     }
 }
@@ -150,9 +160,12 @@ pub(crate) fn resource_release_from_hir(
     } else if ty.is_builtin(hew_types::BuiltinType::Receiver) {
         Some(ResourceRelease::Receiver)
     } else {
-        if record_resource_lifecycle(module, ty).is_some() {
-            // A record resource's release is a semantic callable, so its
-            // authority is published where the callable table is resolved.
+        if record_resource_lifecycle(module, ty).is_some()
+            || authored_opaque_lifecycle(module, ty).is_some()
+        {
+            // A release that runs an authored `close` is a semantic callable,
+            // so its authority is published where the callable table is
+            // resolved rather than here, where only HIR is in hand.
             return None;
         }
         let lifecycle = module
@@ -215,6 +228,23 @@ pub(crate) fn record_resource_lifecycle<'a>(
         .find(|lifecycle| lifecycle.resource_declaration.full_path() == name)
 }
 
+/// The authored `#[resource] #[opaque]` lifecycle for one exact nominal type.
+///
+/// An authored handle declares no separate release ABI, so HIR records its
+/// `close` method as both close and release. That equality is the exact
+/// discriminator: a checker-discovered lifecycle always names a distinct
+/// `extern` release and at least one producer.
+pub(crate) fn authored_opaque_lifecycle<'a>(
+    module: &'a hew_hir::HirModule,
+    ty: &ResolvedTy,
+) -> Option<&'a hew_hir::OpaqueResourceLifecycle> {
+    module
+        .type_classes
+        .lifecycle_registry()
+        .opaque_resource_for_ty(ty)
+        .filter(|lifecycle| lifecycle.release_declaration == lifecycle.close_declaration)
+}
+
 /// Check the release contract independently before any target layout is selected.
 ///
 /// # Errors
@@ -265,6 +295,26 @@ pub fn verify_resource_release(
             Err("a pipe or channel half release requires its exact handle type".into())
         };
     }
+    if let ResourceRelease::OpaqueClose { lifecycle, .. } = release {
+        let ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            is_opaque: true,
+        } = ty
+        else {
+            return Err("an authored opaque release requires an exact opaque nominal type".into());
+        };
+        return if args.is_empty()
+            && lifecycle.resource_declaration.full_path() == name
+            && lifecycle.release_declaration == lifecycle.close_declaration
+            && lifecycle.producer_declarations.is_empty()
+        {
+            Ok(())
+        } else {
+            Err("authored opaque release declaration does not match its nominal owner".into())
+        };
+    }
     if let ResourceRelease::RecordClose { lifecycle, .. } = release {
         let ResolvedTy::Named {
             name,
@@ -289,8 +339,9 @@ pub fn verify_resource_release(
         | ResourceRelease::Sink
         | ResourceRelease::Sender
         | ResourceRelease::Receiver
-        | ResourceRelease::RecordClose { .. } => {
-            unreachable!("handled exact builtin and record releases above")
+        | ResourceRelease::RecordClose { .. }
+        | ResourceRelease::OpaqueClose { .. } => {
+            unreachable!("handled exact builtin and authored-close releases above")
         }
         ResourceRelease::Nominal {
             lifecycle,

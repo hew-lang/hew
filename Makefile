@@ -84,7 +84,7 @@
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: dogfood-compile-measure
+.PHONY: dogfood-compile-measure perf-verify-linear
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
 .PHONY: checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
@@ -1246,6 +1246,14 @@ compiler-measurements: dogfood-compile-measure ## Test: report compile size and 
 HEW_BIN ?= $(RELEASE_LIB_HEW)
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
+
+# Compile-time scaling gate. A chain of awaits in one function must lower to
+# physical MIR in time proportional to its length; the script fails when the
+# longest chain costs more than 6x the shortest.
+#
+#         tests/perf/verify-linear.sh
+perf-verify-linear: hew ## Test: physical lowering stays linear in awaits per function
+	HEW_BIN="$(HEW_BIN)" bash tests/perf/verify-linear.sh
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).

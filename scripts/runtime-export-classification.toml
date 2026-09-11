@@ -3524,6 +3524,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_sink_shutdown"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_stream_collect_string"
 result = "fresh"
 params = ["consume"]

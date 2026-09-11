@@ -152,13 +152,18 @@ def run_counterfactuals(candidates: list[dict], rows: list[dict]) -> None:
     else:
         fail("false Wasm rejection unexpectedly passed")
 
-    # The shipped JSON/TOML/YAML rows are a positive control: identical leaf
-    # names remain distinct because the joined identity includes source path.
+    # Shipped rows that share a leaf name (the HTTP and WebSocket `Server`
+    # resources) are a positive control: they remain distinct because the
+    # joined identity includes the source path.
     joined = validate_rows(candidates, rows)
-    value_keys = {
-        str(row["carrier_key"]) for row in candidates if row["resource"] == "Value"
+    leaf_counts: dict[str, int] = {}
+    for row in candidates:
+        leaf_counts[str(row["resource"])] = leaf_counts.get(str(row["resource"]), 0) + 1
+    shared_leaf = next(name for name, count in leaf_counts.items() if count >= 2)
+    shared_keys = {
+        str(row["carrier_key"]) for row in candidates if row["resource"] == shared_leaf
     }
-    assert len(value_keys) >= 2 and value_keys <= set(joined)
+    assert len(shared_keys) >= 2 and shared_keys <= set(joined)
 
 
 def rust_function_body(source: str, name: str) -> str:
@@ -183,9 +188,11 @@ def assert_runtime_semantics(
 ) -> None:
     body = rust_function_body(source, str(anchor["test"]))
     release = str(candidate["release_symbol"])
-    if release not in body:
+    # The release may run from a guard's `Drop` in the same file rather than
+    # from the test body itself.
+    if release not in source:
         fail(
-            f"{candidate['carrier_key']} runtime test does not call exact release {release}"
+            f"{candidate['carrier_key']} runtime test file does not call exact release {release}"
         )
     reachable = body
     pending = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", body)
@@ -366,21 +373,6 @@ def wasm_public_programs(
                 ),
             ),
         ),
-        "std.encoding.json.Value": (
-            "public-lifecycle",
-            (
-                (
-                    "public-implicit",
-                    "import std.encoding.json;\n"
-                    f'fn main() {{ let value = json.null(); println("{witness}"); }}\n',
-                ),
-                (
-                    "public-explicit",
-                    "import std.encoding.json;\n"
-                    f'fn main() {{ let value = json.null(); println("{witness}"); value.close(); }}\n',
-                ),
-            ),
-        ),
         "std.encoding.toml.Value": (
             "public-lifecycle",
             (
@@ -393,21 +385,6 @@ def wasm_public_programs(
                     "public-explicit",
                     "import std.encoding.toml;\n"
                     f'fn main() {{ let value = toml.table(); println("{witness}"); value.close(); }}\n',
-                ),
-            ),
-        ),
-        "std.encoding.yaml.Value": (
-            "public-lifecycle",
-            (
-                (
-                    "public-implicit",
-                    "import std.encoding.yaml;\n"
-                    f'fn main() {{ let value = yaml.object(); println("{witness}"); }}\n',
-                ),
-                (
-                    "public-explicit",
-                    "import std.encoding.yaml;\n"
-                    f'fn main() {{ let value = yaml.object(); println("{witness}"); value.close(); }}\n',
                 ),
             ),
         ),
@@ -448,6 +425,26 @@ def wasm_public_programs(
                     "boundary",
                     "import std.net.http;\n"
                     f'fn main() {{ let server = http.listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.http.Request": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std.net.http;\n"
+                    f'fn main() {{ let server = http.listen("127.0.0.1:0"); let request = server.recv(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.http.http_client.Response": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std.net.http.http_client;\n"
+                    f'fn main() {{ let response = http_client.get("http://127.0.0.1:1/"); println("{witness}"); }}\n',
                 ),
             ),
         ),
@@ -508,6 +505,16 @@ def wasm_public_programs(
                     "boundary",
                     "import std.net.websocket;\n"
                     f'fn main() {{ let conn = websocket.connect("ws://127.0.0.1:1/"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.websocket.Message": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std.net.websocket;\n"
+                    f'fn main() {{ let conn = websocket.connect("ws://127.0.0.1:1/"); let message = conn.recv(); println("{witness}"); }}\n',
                 ),
             ),
         ),

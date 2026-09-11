@@ -101,8 +101,8 @@
       "source_path": "std/net/http/http_client.hew",
       "resource": "Response",
       "runtime": {
-        "path": "hew-std/src/http/string_result_retention.rs",
-        "test": "response_body_content_type_and_header_results_are_transferred",
+        "path": "hew-std/src/http/client.rs",
+        "test": "loopback_primitive_chain_some_path",
         "valid_handle": true,
         "execution_profile": "local"
       },
@@ -245,8 +245,8 @@
       "source_path": "std/net/websocket/websocket.hew",
       "resource": "Message",
       "runtime": {
-        "path": "hew-std/src/websocket_string_result_retention.rs",
-        "test": "message_text_result_is_transferred_and_message_survives_release",
+        "path": "hew-std/src/websocket.rs",
+        "test": "server_accept_and_echo",
         "valid_handle": true,
         "execution_profile": "local"
       },

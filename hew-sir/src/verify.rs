@@ -1301,6 +1301,10 @@ fn check_function_with_context(
         aggregate_shapes,
         shapes: variant_shapes,
     };
+    // One cleanup-suffix fixed point serves every terminator in the body. It
+    // is a whole-function fact, so recomputing it per terminator costs the
+    // square of the block count on a body with many fallible calls.
+    let cleanup_suffixes = crate::lifetime::cleanup_suffixes(function);
     for block in &function.blocks {
         for op in &block.ops {
             verify_callable_operation(
@@ -1379,6 +1383,7 @@ fn check_function_with_context(
             &blocks,
             callable_context,
             &variants,
+            &cleanup_suffixes,
             &mut diagnostics,
         );
     }
@@ -4699,6 +4704,7 @@ fn verify_terminator_shape(
     blocks: &BTreeMap<BlockId, &crate::SemBlock>,
     callable_context: Option<&CallableContext<'_>>,
     variants: &VariantVerifyContext<'_>,
+    cleanup_suffixes: &BTreeMap<BlockId, usize>,
     diagnostics: &mut Vec<SirDiagnostic>,
 ) {
     let terminator = &block.terminator;
@@ -4932,7 +4938,7 @@ fn verify_terminator_shape(
                 ));
             }
             if !failure_cfg_matches_exit(cleanup, None, blocks)
-                || crate::lifetime::cleanup_suffixes(function).get(&cleanup.target) != Some(&0)
+                || cleanup_suffixes.get(&cleanup.target) != Some(&0)
             {
                 diagnostics.push(diag(
                     function,
@@ -5372,11 +5378,7 @@ fn verify_uses(
             }
             continue;
         }
-        if !dominators
-            .sets
-            .get(&use_block)
-            .is_some_and(|set| set.contains(definition))
-        {
+        if !dominators.dominates(*definition, use_block) {
             diagnostics.push(diag(
                 function,
                 SirDiagnosticKind::NonDominatingUse {

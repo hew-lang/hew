@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): test crash — supervisor should restart this child\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): test crash — supervisor should restart this child\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\n"
 exit = 7

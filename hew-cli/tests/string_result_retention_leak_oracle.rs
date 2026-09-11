@@ -195,6 +195,7 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
+    let _ = observe.barrier();
     println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
@@ -425,6 +426,7 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
+    let _ = observe.barrier();
     println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
@@ -664,6 +666,7 @@ fn main() {
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
         let result = crasher.run();
+        let _ = observe.barrier();
         if observe.read("coroutines.frame_bytes_live").unwrap_or(0) != frame_baseline {
             panic("nested crash left coroutine-frame bytes live");
         }

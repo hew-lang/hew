@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: 5\n  right: 6\nhew: actor crash in Actor (actor 2): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: 5\n  right: 6\nhew: actor crash in Bad.compute (actor 2): UserPanic\n"
 exit = 19

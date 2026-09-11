@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "ONE INITIAL INCARNATION\nzero budget performs no restart\n"
-stderr = "hew: failure: UserPanic (212): zero budget child failed\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): zero budget child failed\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
 exit = 1

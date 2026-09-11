@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "open\nvault\n60\nopen\n100\nvault\n50\n"
-stderr = "hew: failure: ActorUnhandledFailure (213): cannot withdraw 500 from 60\nhew: actor crash in Actor (actor 1): ActorUnhandledFailure\nhew: failure: ActorUnhandledFailure (213): short by 30\nhew: actor crash in Actor (actor 2): ActorUnhandledFailure\n"
+stderr = "hew: failure: ActorUnhandledFailure (213): cannot withdraw 500 from 60\nhew: actor crash in Ledger.withdraw (actor 1): ActorUnhandledFailure\nhew: failure: ActorUnhandledFailure (213): short by 30\nhew: actor crash in Vault.take (actor 2): ActorUnhandledFailure\n"
 exit = 0

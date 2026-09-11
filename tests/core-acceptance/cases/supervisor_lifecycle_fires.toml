@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): supervised lifecycle restart trigger\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): supervised lifecycle restart trigger\nhew: actor crash in Counter.crash_me (actor 1): UserPanic\n"
 exit = 220

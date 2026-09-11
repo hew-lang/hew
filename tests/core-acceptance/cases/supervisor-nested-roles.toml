@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "nested config and retained roles survive subtree replacement\n"
-stderr = "hew: failure: UserPanic (212): restart nested child\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212): restart nested child\nhew: actor crash in Actor (actor 5): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): restart nested child\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart nested child\nhew: actor crash in Worker.fail (actor 5): UserPanic\n"
 exit = 0

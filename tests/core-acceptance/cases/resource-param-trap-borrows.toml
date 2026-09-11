@@ -8,5 +8,5 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "one:20\ntwo failed\nreleased\n"
-stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Actor (actor 1): DivideByZero\n"
+stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Splitter.split (actor 1): DivideByZero\n"
 exit = 1

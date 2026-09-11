@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): restart lifecycle phase writer\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): restart lifecycle phase writer\nhew: actor crash in Worker.crash (actor 1): UserPanic\n"
 exit = 22

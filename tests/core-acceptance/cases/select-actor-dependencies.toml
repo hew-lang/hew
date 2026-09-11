@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "9\nactor cycle rejected\n"
-stderr = "hew: failure: UserPanic (212): local actor wait cycle at select: 1 -> 1\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): local actor wait cycle at select: 1 -> 1\nhew: actor crash in Worker.choose (actor 1): UserPanic\n"
 exit = 1

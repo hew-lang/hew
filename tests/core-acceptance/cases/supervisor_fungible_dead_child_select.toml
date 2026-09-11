@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "DEAD_CHILD_SELECT:46\n"
-stderr = "hew: failure: UserPanic (212): worker crash\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212): worker crash\nhew: actor crash in Actor (actor 3): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): worker crash\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\nhew: failure: UserPanic (212): worker crash\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\n"
 exit = 1

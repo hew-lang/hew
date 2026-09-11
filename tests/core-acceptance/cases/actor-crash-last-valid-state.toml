@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "CHANGED!\nlast valid crash state, fresh restart\n"
-stderr = "hew: failure: UserPanic (212): crash incarnation\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): crash incarnation\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
 exit = 0

@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "generic supervisor config, roles and restarts\n"
-stderr = "hew: failure: UserPanic (212): restart generic child\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212): restart generic child\nhew: actor crash in Actor (actor 5): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): restart generic child\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart generic child\nhew: actor crash in Worker.fail (actor 5): UserPanic\n"
 exit = 0

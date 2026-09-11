@@ -7,5 +7,5 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "212\nUserPanic\n"
-stderr = "hew: failure: UserPanic (212): crash hook payload\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): crash hook payload\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
 exit = 42

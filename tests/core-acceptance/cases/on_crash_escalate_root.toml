@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "PROBE:0\n"
-stderr = "hew: failure: UserPanic (212): forced crash to fire on(crash)\nhew: actor crash in Actor (actor 1): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): forced crash to fire on(crash)\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
 exit = 1

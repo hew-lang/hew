@@ -7,5 +7,5 @@ timeout_seconds = 15
 
 [case.expected]
 stdout = "unhandled EXIT terminated linked actor\n"
-stderr = "hew: failure: UserPanic (212): linked peer failed\nhew: actor crash in Actor (actor 1): UserPanic\nhew: failure: UserPanic (212)\nhew: actor crash in Actor (actor 2): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): linked peer failed\nhew: actor crash in Peer.fail (actor 1): UserPanic\nhew: failure: UserPanic (212)\nhew: actor crash in Linked (actor 2): UserPanic\n"
 exit = 1

@@ -1,0 +1,15 @@
+// The same body, written so the caller can see the result: returning the
+// updated value is what makes the mutation reach anyone.
+fn grow(var items: Vec<i64>) -> Vec<i64> {
+    items.push(9);
+    return items;
+}
+
+fn main() {
+    let items = [1];
+    let grown = grow(items);
+    println(f"{grown.len()}");
+    // Same refusal anchor as `var-param-mutation-lost`, so the two cases
+    // differ only in whether the mutated parameter is returned.
+    let _anchor: i64 = "refusal anchor";
+}

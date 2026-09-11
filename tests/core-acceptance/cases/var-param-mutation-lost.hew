@@ -1,0 +1,15 @@
+// A `var` parameter is the callee's own copy, so this push reaches nobody:
+// `main` still sees one element.
+fn grow(var items: Vec<i64>) {
+    items.push(9);
+}
+
+fn main() {
+    let items = [1];
+    grow(items);
+    println(f"{items.len()}");
+    // The acceptance runner only reads refused programs, and a warning alone
+    // exits 0. This unrelated mismatch is the case's refusal anchor; the
+    // observation is the lost-mutation warning above it.
+    let _anchor: i64 = "refusal anchor";
+}

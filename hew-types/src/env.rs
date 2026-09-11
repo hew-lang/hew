@@ -108,8 +108,20 @@ pub struct Binding {
     pub released_at: Option<Span>,
     /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
+    /// Count of reads that observe the binding's value rather than resolve a
+    /// mutation of it. A read taken while [`TypeEnv::begin_mutation`] names
+    /// this binding is part of the mutation (`n = n + 1`, `v.push(x)`), not an
+    /// observation of its result, so it does not count here.
+    pub observing_reads: u32,
     /// Whether the variable has been reassigned after initial definition
     pub is_written: bool,
+    /// Whether an observing read has happened since the most recent mutation.
+    /// Cleared by [`TypeEnv::mark_written`], set by an observing
+    /// [`TypeEnv::lookup`], and set at [`TypeEnv::exit_loop`] when the loop
+    /// body both observed and mutated the binding — the next iteration reads
+    /// what this one wrote. `false` on a mutated by-value parameter means the
+    /// mutation reached nobody.
+    pub mutation_observed: bool,
     /// Any-path consuming use while checking the current closure body.
     /// This is a body capability fact, independent of the current path's moves.
     pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
@@ -229,6 +241,10 @@ struct LoopScope {
     floor: usize,
     entry: OwnershipSnapshot,
     exits: Vec<OwnershipSnapshot>,
+    /// Each visible binding's `observing_reads` when the body opened, so
+    /// [`TypeEnv::exit_loop`] can tell a body that observed the binding from
+    /// one that only mutated it.
+    observing_reads: HashMap<TypeBindingId, u32>,
 }
 
 /// Ownership state of every visible binding at one point in the control flow.
@@ -283,6 +299,9 @@ pub enum ScopeWarningKind {
     Unused,
     /// Declared `var` but never reassigned — could be `let`
     NeverMutated,
+    /// A by-value `var` parameter was mutated and nothing ever read the
+    /// result: the callee owns the copy, so the write reached nobody.
+    VarParamMutationLost,
 }
 
 /// Lexically-scoped type environment.
@@ -296,6 +315,10 @@ pub struct TypeEnv {
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
     /// Active loop labels, lexical floors and entry ownership snapshots.
     loop_scope_floors: Vec<LoopScope>,
+    /// The binding whose mutation is currently being checked, if any. Reads
+    /// taken while it is set resolve or feed that mutation (`n = n + 1`), so
+    /// they do not count as observations of its result.
+    mutation_root: Option<TypeBindingId>,
     next_binding_id: u32,
 }
 
@@ -307,6 +330,7 @@ impl TypeEnv {
             scopes: vec![HashMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
+            mutation_root: None,
             next_binding_id: 0,
         }
     }
@@ -373,11 +397,18 @@ impl TypeEnv {
 
     /// Record the lexical scope depth immediately before a loop body opens.
     pub fn enter_loop(&mut self, label: Option<&str>) {
+        let observing_reads = self
+            .scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .map(|binding| (binding.id, binding.observing_reads))
+            .collect();
         self.loop_scope_floors.push(LoopScope {
             label: label.map(str::to_string),
             floor: self.deferred_scopes.len(),
             entry: self.ownership_snapshot(),
             exits: Vec::new(),
+            observing_reads,
         });
     }
 
@@ -410,6 +441,16 @@ impl TypeEnv {
         // early edges. They all use the same ownership join as branch arms.
         scope.exits.push(scope.entry.clone());
         scope.exits.push(self.ownership_snapshot());
+        // A loop body that both observed and mutated the binding observes its
+        // own writes on the next iteration, even when the source reads before
+        // it writes. Traversal sees the body once, so credit the observation
+        // here rather than leaving the write looking lost.
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            let floor = scope.observing_reads.get(&binding.id).copied();
+            if binding.is_written && floor.is_some_and(|floor| binding.observing_reads > floor) {
+                binding.mutation_observed = true;
+            }
+        }
         self.merge_ownership(&scope.entry, &scope.exits)
     }
 
@@ -451,7 +492,9 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
+                    observing_reads: 0,
                     is_written: false,
+                    mutation_observed: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: None,
@@ -503,7 +546,9 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 0,
+                    observing_reads: 0,
                     is_written: false,
+                    mutation_observed: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
@@ -582,7 +627,9 @@ impl TypeEnv {
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
+                    observing_reads: 0,
                     is_written: false,
+                    mutation_observed: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: Some(span),
@@ -601,6 +648,7 @@ impl TypeEnv {
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
+        environment.mutation_root = None;
         for scope in &mut environment.deferred_scopes {
             scope.clear();
         }
@@ -620,6 +668,10 @@ impl TypeEnv {
         for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
             if let Some(checked) = body.binding_by_id(binding.id) {
                 binding.read_count = binding.read_count.max(checked.read_count);
+                // A closure that reads the binding observes whatever the
+                // enclosing body wrote into it, whenever the closure runs.
+                binding.observing_reads = binding.observing_reads.max(checked.observing_reads);
+                binding.mutation_observed |= checked.mutation_observed;
             }
         }
     }
@@ -883,10 +935,49 @@ impl TypeEnv {
     }
 
     /// Mark a variable as written (reassigned after definition).
+    ///
+    /// The write starts a fresh observation window: whatever was read before
+    /// it saw the old value, so `mutation_observed` resets here and only a
+    /// later read can set it again.
     pub fn mark_written(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.is_written = true;
+                binding.mutation_observed = false;
+                return;
+            }
+        }
+    }
+
+    /// Enter the checking of a mutation of `name`, returning the previous
+    /// mutation root to hand back to [`TypeEnv::end_mutation`].
+    ///
+    /// Reads taken inside this window resolve the target place or compute the
+    /// new value from the old one; neither observes the mutation's result.
+    pub fn begin_mutation(&mut self, name: &str) -> Option<TypeBindingId> {
+        let previous = self.mutation_root;
+        self.mutation_root = self.lookup_ref(name).map(|binding| binding.id);
+        previous
+    }
+
+    /// Leave a mutation window opened by [`TypeEnv::begin_mutation`].
+    pub fn end_mutation(&mut self, previous: Option<TypeBindingId>) {
+        self.mutation_root = previous;
+    }
+
+    /// Discount the receiver read a mutating method call already took.
+    ///
+    /// `v.push(x)` resolves `v` as an ordinary read before the checker knows
+    /// the method writes back, which is the same target resolution that plain
+    /// assignment undoes with `unmark_used`. Skipped when the receiver is
+    /// already the mutation root, since that read was never counted.
+    pub fn discount_mutation_receiver_read(&mut self, name: &str) {
+        let root = self.mutation_root;
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                if root != Some(binding.id) {
+                    binding.observing_reads = binding.observing_reads.saturating_sub(1);
+                }
                 return;
             }
         }
@@ -904,12 +995,33 @@ impl TypeEnv {
             .expect("cannot pop empty defer-scope stack");
         let mut warnings = Vec::new();
         for (name, binding) in &scope {
-            let Some(span) = &binding.def_span else {
-                continue; // synthetic binding (self, params without spans, etc.)
-            };
             if name.starts_with('_') {
                 continue; // convention: _ prefix means intentionally unused
             }
+            let Some(span) = &binding.def_span else {
+                // A by-value `var` parameter has no `def_span` (it is exempt
+                // from the unused / never-mutated lints), but a mutation of it
+                // that nothing goes on to read is still a defect: the callee
+                // owns the copy, so the write dies with the call frame. A
+                // `consume` parameter took the caller's value outright, and a
+                // receiver writes back, so neither is lost.
+                if binding.origin == BindingOrigin::Parameter
+                    && binding.is_mutable
+                    && binding.parameter_ownership == ParameterOwnership::Borrow
+                    && binding.is_written
+                    && !binding.mutation_observed
+                {
+                    if let Some(span) = &binding.shadow_span {
+                        warnings.push(ScopeWarning {
+                            name: name.clone(),
+                            span: span.clone(),
+                            kind: ScopeWarningKind::VarParamMutationLost,
+                            ty: binding.ty.clone(),
+                        });
+                    }
+                }
+                continue; // synthetic binding (self, params without spans, etc.)
+            };
             if binding.read_count == 0 {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
@@ -932,13 +1044,27 @@ impl TypeEnv {
     /// Look up a variable by name, marking it as used.
     #[must_use]
     pub fn lookup(&mut self, name: &str) -> Option<&Binding> {
+        let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.read_count += 1;
+                Self::record_observing_read(binding, root);
                 return Some(binding);
             }
         }
         None
+    }
+
+    /// Credit one read against the binding's mutation-observation state,
+    /// unless the read belongs to a mutation of that same binding.
+    fn record_observing_read(binding: &mut Binding, mutation_root: Option<TypeBindingId>) {
+        if mutation_root == Some(binding.id) {
+            return;
+        }
+        binding.observing_reads += 1;
+        if binding.is_written {
+            binding.mutation_observed = true;
+        }
     }
 
     /// Widen a binding's recorded type without marking it as used.
@@ -982,9 +1108,11 @@ impl TypeEnv {
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.
     #[must_use]
     pub fn lookup_with_depth(&mut self, name: &str) -> Option<(usize, &Binding)> {
+        let root = self.mutation_root;
         for (i, scope) in self.scopes.iter_mut().enumerate().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.read_count += 1;
+                Self::record_observing_read(binding, root);
                 return Some((i, binding));
             }
         }

@@ -6985,6 +6985,7 @@ impl Checker {
                 ));
             }
         } else if let Some((root, path)) = place {
+            self.env.discount_mutation_receiver_read(&root);
             self.env.mark_written(&root);
             self.reject_borrowed_parameter_mutation(&root, &path, span);
         }
@@ -9251,6 +9252,7 @@ impl Checker {
                                     // binding as written so the unused-mut analysis does
                                     // not flag `var lc = ...; lc.step(...)` as a
                                     // never-reassigned mutable binding.
+                                    self.env.discount_mutation_receiver_read(n);
                                     self.env.mark_written(n);
                                     self.reject_borrowed_parameter_mutation(n, &[], span);
                                 }

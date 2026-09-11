@@ -183,9 +183,12 @@ impl Checker {
 
     fn synthesize_discarded_expression(&mut self, expr: &Expr, span: &Span) -> Ty {
         let root = Self::method_chain_root_binding(expr).map(str::to_string);
+        // Probing the move state is bookkeeping, not a use: `lookup` would
+        // count a read the source never wrote and hide a genuinely unused
+        // binding behind its own discarded method call.
         let root_was_moved = root
             .as_deref()
-            .and_then(|name| self.env.lookup(name))
+            .and_then(|name| self.env.lookup_ref(name))
             .is_some_and(|binding| binding.is_moved);
         let ty = self.synthesize(expr, span);
         // A statement-position send or ask drops its typed delivery outcome,
@@ -1469,6 +1472,16 @@ impl Checker {
                     }
                     _ => target,
                 };
+                // Every read taken while checking this assignment either
+                // resolves the target place or computes the new value from the
+                // old one (`n = n + 1`). Neither observes the result, so the
+                // mutation-observation bookkeeping ignores them.
+                let outer_mutation = self
+                    .assignment_root_binding_name(&target.0)
+                    .map(str::to_string);
+                let outer_mutation = outer_mutation
+                    .as_deref()
+                    .map(|root| self.env.begin_mutation(root));
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
@@ -1516,6 +1529,9 @@ impl Checker {
                     if self.is_actor_self_receiver(&object.0) {
                         self.synthesize(&target.0, &target.1);
                         self.synthesize(&value.0, &value.1);
+                        if let Some(previous) = outer_mutation {
+                            self.env.end_mutation(previous);
+                        }
                         return;
                     }
                     // The object is the base of the target place, not a
@@ -1705,8 +1721,12 @@ impl Checker {
                         self.env.reinit_place(&root, &path);
                     }
                 }
+                if let Some(previous) = outer_mutation {
+                    self.env.end_mutation(previous);
+                }
             }
             Stmt::Expression((expr, es)) => {
+                let mut outer_mutation = None;
                 if let Expr::MethodCall {
                     receiver,
                     method,
@@ -1714,12 +1734,21 @@ impl Checker {
                 } = expr
                 {
                     if method == "set" {
-                        if let Some(name) = self.assignment_root_binding_name(&receiver.0) {
-                            self.env.mark_written(name);
+                        if let Some(name) = self
+                            .assignment_root_binding_name(&receiver.0)
+                            .map(str::to_string)
+                        {
+                            self.env.mark_written(&name);
+                            // `x.set(v)` replaces the binding's value: the
+                            // receiver and argument reads belong to the write.
+                            outer_mutation = Some(self.env.begin_mutation(&name));
                         }
                     }
                 }
                 self.synthesize_discarded_expression(expr, es);
+                if let Some(previous) = outer_mutation {
+                    self.env.end_mutation(previous);
+                }
             }
             Stmt::If {
                 condition,

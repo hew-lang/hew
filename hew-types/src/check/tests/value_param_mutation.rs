@@ -402,3 +402,217 @@ fn record_handle_shared_projection_still_suggests_var() {
         vec!["consider changing this to `var holder`".to_string()]
     );
 }
+
+// A `var` parameter is the callee's own copy, so a write nothing goes on to
+// read reaches nobody. These fix the boundary between a lost write and a
+// write the body, the caller or a closure still observes.
+
+fn lost_mutation_params(source: &str) -> Vec<String> {
+    let (errors, warnings) = parse_and_check(source);
+    assert!(errors.is_empty(), "expected clean check, got: {errors:?}");
+    warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::Lint(LintId::VarParamMutationLost))
+        .map(|w| w.message.clone())
+        .collect()
+}
+
+fn assert_mutation_lost(source: &str, name: &str) {
+    let found = lost_mutation_params(source);
+    assert_eq!(
+        found.len(),
+        1,
+        "expected one lost-mutation warning: {found:?}"
+    );
+    assert!(
+        found[0].contains(&format!("mutation of `var` parameter `{name}` is lost")),
+        "wrong warning text: {found:?}"
+    );
+}
+
+fn assert_no_mutation_lost(source: &str) {
+    let found = lost_mutation_params(source);
+    assert!(
+        found.is_empty(),
+        "expected no lost-mutation warning: {found:?}"
+    );
+}
+
+#[test]
+fn lost_push_through_a_vec_parameter_warns() {
+    assert_mutation_lost("fn grow(var v: Vec<i64>) { v.push(9); }\n", "v");
+}
+
+#[test]
+fn lost_index_assignment_warns() {
+    assert_mutation_lost("fn set_first(var v: Vec<i64>) { v[0] = 9; }\n", "v");
+}
+
+#[test]
+fn scalar_reassigned_and_never_read_warns() {
+    assert_mutation_lost("fn bump(var n: i64) { n = n + 1; }\n", "n");
+}
+
+#[test]
+fn lost_record_field_assignment_warns() {
+    assert_mutation_lost(
+        concat!(
+            "type Holder { items: Vec<i64>, count: i64, }\n",
+            "fn retag(var h: Holder) { h.count = 9; }\n",
+        ),
+        "h",
+    );
+}
+
+/// The loop's own writes are not observations of each other: a body that only
+/// appends still loses everything it appended.
+#[test]
+fn lost_push_inside_a_loop_warns() {
+    assert_mutation_lost(
+        "fn fill(var v: Vec<i64>) { for i in 0..3 { v.push(i); } }\n",
+        "v",
+    );
+}
+
+#[test]
+fn write_before_a_loop_that_only_writes_again_warns() {
+    assert_mutation_lost(
+        "fn fill(var v: Vec<i64>) { v.push(1); for i in 0..3 { v.push(i); } }\n",
+        "v",
+    );
+}
+
+#[test]
+fn returning_the_mutated_parameter_is_not_lost() {
+    assert_no_mutation_lost("fn grow(var v: Vec<i64>) -> Vec<i64> { v.push(9); return v; }\n");
+}
+
+#[test]
+fn reading_after_the_mutation_is_not_lost() {
+    assert_no_mutation_lost("fn bump(var n: i64) -> i64 { n = n + 1; return n + 0; }\n");
+}
+
+/// A read before the write in a loop body is still a read of what the previous
+/// iteration wrote.
+#[test]
+fn a_loop_that_reads_what_it_writes_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "fn accumulate(var n: i64) -> i64 {\n",
+        "    var total = 0;\n",
+        "    for _i in 0..3 { total = total + n; n = n + 1; }\n",
+        "    return total;\n",
+        "}\n",
+    ));
+}
+
+#[test]
+fn moving_the_mutated_parameter_into_a_returned_value_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "type Holder { items: Vec<i64>, }\n",
+        "fn wrap(var v: Vec<i64>) -> Holder { v.push(1); return Holder { items: v }; }\n",
+    ));
+}
+
+#[test]
+fn a_closure_reading_the_mutated_parameter_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "fn doubled(var n: i64) -> i64 {\n",
+        "    n = n + 1;\n",
+        "    let f = || n * 2;\n",
+        "    return f();\n",
+        "}\n",
+    ));
+}
+
+/// An actor handle names shared state: nothing is copied, so nothing is lost.
+#[test]
+fn a_handle_parameter_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "actor Probe {\n",
+        "    var n: i64 = 0,\n",
+        "    receive fn bump() { n = n + 1; }\n",
+        "}\n",
+        "fn poke(var p: Probe) { let _ = p.bump(); }\n",
+    ));
+}
+
+/// `var self` writes back to the caller's binding, which is the whole point of
+/// a mutable receiver.
+#[test]
+fn a_mutable_receiver_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "type Counter { count: i64, }\n",
+        "impl Counter { fn bump(var self) { self.count = self.count + 1; } }\n",
+    ));
+}
+
+/// `consume` took the caller's value outright, so the caller has nothing left
+/// to observe the write with.
+#[test]
+fn a_consumed_parameter_is_not_lost() {
+    assert_no_mutation_lost(concat!(
+        "#[resource]\n",
+        "type Conn { fd: i64, }\n",
+        "impl Conn { fn close(consume self) { println(self.fd); } }\n",
+        "fn retag(consume var c: Conn) { c.fd = 9; }\n",
+    ));
+}
+
+#[test]
+fn an_underscore_parameter_opts_out() {
+    assert_no_mutation_lost("fn bump(var _n: i64) { _n = _n + 1; }\n");
+}
+
+/// The finding goes through the ordinary lint registry, so `--allow` and
+/// `// hew:allow(...)` reach it and `--deny` promotes it.
+#[test]
+fn the_lint_is_suppressible_and_deniable() {
+    const SOURCE: &str = "fn grow(var v: Vec<i64>) { v.push(9); }\n";
+    fn findings(level: LintLevel) -> Vec<TypeError> {
+        let parsed = hew_parser::parse(SOURCE);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let mut levels = LintLevels::from_defaults();
+        levels.set(LintId::VarParamMutationLost, level);
+        checker.set_lint_levels(levels);
+        let mut sources = LintSources::new();
+        sources.set_root(SOURCE.to_string());
+        checker.set_lint_sources(sources);
+        let output = checker.check_program(&parsed.program);
+        output
+            .errors
+            .into_iter()
+            .chain(output.warnings)
+            .filter(|d| d.kind == TypeErrorKind::Lint(LintId::VarParamMutationLost))
+            .collect()
+    }
+    assert!(
+        findings(LintLevel::Allow).is_empty(),
+        "`allow` must drop the finding"
+    );
+    let denied = findings(LintLevel::Deny);
+    assert_eq!(denied.len(), 1, "`deny` must keep the finding: {denied:?}");
+    assert_eq!(denied[0].severity, crate::error::Severity::Error);
+}
+
+/// An in-source directive drops it without a command-line flag.
+#[test]
+fn an_in_source_allow_directive_suppresses_the_lint() {
+    const SOURCE: &str = concat!(
+        "// hew:allow(var_param_mutation_lost)\n",
+        "fn grow(var v: Vec<i64>) { v.push(9); }\n",
+    );
+    let parsed = hew_parser::parse(SOURCE);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut sources = LintSources::new();
+    sources.set_root(SOURCE.to_string());
+    checker.set_lint_sources(sources);
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::VarParamMutationLost)),
+        "directive must suppress the finding: {:?}",
+        output.warnings
+    );
+}

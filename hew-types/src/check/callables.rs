@@ -263,7 +263,7 @@ impl Checker {
             .is_some_and(|clone| clone != crate::type_facts::CloneKind::None)
     }
 
-    fn parameter_clone_kind(&self, ty: &Ty) -> Option<crate::type_facts::CloneKind> {
+    pub(super) fn parameter_clone_kind(&self, ty: &Ty) -> Option<crate::type_facts::CloneKind> {
         let resolved =
             ResolvedTy::from_ty(&self.subst.resolve(ty).materialize_literal_defaults()).ok()?;
         let declarations = self.class_declarations();
@@ -375,6 +375,7 @@ impl Checker {
                         }
                     }
                     if let Some((root, _)) = place {
+                        self.env.discount_mutation_receiver_read(&root);
                         self.env.mark_written(&root);
                     }
                 } else {

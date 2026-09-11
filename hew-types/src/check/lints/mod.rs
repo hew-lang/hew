@@ -105,6 +105,10 @@ pub enum LintId {
     /// A comment contains an invisible/default-ignorable Unicode codepoint that
     /// can hide text or create visually indistinguishable source.
     InvisibleCodepointInComment,
+    /// A by-value `var` parameter is mutated and nothing reads the result: the
+    /// parameter is the callee's own copy, so the write reaches neither the
+    /// caller nor the rest of the body.
+    VarParamMutationLost,
 }
 
 impl LintId {
@@ -125,6 +129,7 @@ impl LintId {
         LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
+        LintId::VarParamMutationLost,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -147,6 +152,7 @@ impl LintId {
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
+            LintId::VarParamMutationLost => "var_param_mutation_lost",
         }
     }
 
@@ -174,7 +180,8 @@ impl LintId {
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
-            | LintId::InvisibleCodepointInComment => LintLevel::Warn,
+            | LintId::InvisibleCodepointInComment
+            | LintId::VarParamMutationLost => LintLevel::Warn,
             LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }

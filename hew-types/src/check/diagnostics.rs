@@ -597,6 +597,36 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
+                ScopeWarningKind::VarParamMutationLost => {
+                    // A parameter the callee cannot copy is not mutable
+                    // storage of its own: mutating it either writes through a
+                    // shared handle the caller still sees, or is already a
+                    // hard `E_OWN_MUTATE_BORROWED`. Only a parameter with an
+                    // independent entry copy can lose its mutation, and an
+                    // unresolved generic proves nothing either way.
+                    if self
+                        .parameter_clone_kind(&w.ty)
+                        .is_none_or(|clone| clone == crate::type_facts::CloneKind::None)
+                    {
+                        continue;
+                    }
+                    let module = self.current_module.clone();
+                    self.emit_main_pass_lint(
+                        LintId::VarParamMutationLost,
+                        &w.span,
+                        module.as_deref(),
+                        format!(
+                            "mutation of `var` parameter `{}` is lost: a `var` parameter is the \
+                             callee's own copy, so nothing outside this body can see the write",
+                            w.name
+                        ),
+                        format!(
+                            "return the updated value, or let the caller mutate its own binding; \
+                             `_{}` if the private copy is deliberate",
+                            w.name
+                        ),
+                    );
+                }
             }
         }
     }

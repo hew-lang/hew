@@ -153,12 +153,7 @@ pub(crate) fn plan(function: &SemFunction) -> Result<Plan, &'static str> {
                 if region.locals.contains(&place) {
                     return true;
                 }
-                match function
-                    .places
-                    .iter()
-                    .find(|p| p.id == place)
-                    .map(|p| &p.origin)
-                {
+                match crate::projection::declaration(&function.places, place).map(|p| &p.origin) {
                     Some(crate::PlaceOrigin::Aggregate {
                         base: crate::PlaceBase::Place(parent),
                         ..

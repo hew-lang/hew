@@ -104,6 +104,15 @@ impl PlacePlan {
     }
 }
 
+/// The declaration of one place.
+///
+/// A place's identity is not its position: a verifier negative removes or adds
+/// a declaration to build a malformed table, and those shapes must still reach
+/// their own diagnostics rather than an unknown-parent refusal.
+pub(crate) fn declaration(places: &[PlaceDecl], id: PlaceId) -> Option<&PlaceDecl> {
+    places.iter().find(|place| place.id == id)
+}
+
 /// Resolve the structural owner without inventing an SSA lifetime for a place.
 /// Type/descriptor admission remains in `place_plan`.
 pub(crate) fn place_path(
@@ -121,9 +130,7 @@ pub(crate) fn place_path(
                     if !seen.insert(id) {
                         return Err("aggregate place has a cyclic parent path".into());
                     }
-                    let place = places
-                        .iter()
-                        .find(|place| place.id == id)
+                    let place = declaration(places, id)
                         .ok_or_else(|| "aggregate place has an unknown parent".to_string())?;
                     match place.origin {
                         PlaceOrigin::Local => break OwnerRoot::Local(id),
@@ -208,10 +215,15 @@ pub fn place_plan(
     }
     let expanded = verify_partition_coverage(function, &plan, &values, shapes, facts)?;
     install_partitions(&mut plan, &expanded);
+    let targets = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect::<BTreeMap<_, _>>();
     for block in &function.blocks {
         let mut failure = None;
         block.terminator.visit_successors(|edge| {
-            let Some(target) = function.blocks.iter().find(|block| block.id == edge.target) else {
+            let Some(target) = targets.get(&edge.target) else {
                 return;
             };
             for (source, destination) in edge.args.iter().zip(&target.args) {
@@ -279,10 +291,7 @@ fn resolve_projection(
             ty
         }
         OwnerRoot::Local(id) => {
-            &function
-                .places
-                .iter()
-                .find(|place| place.id == id)
+            &declaration(&function.places, id)
                 .ok_or_else(|| "local root has no declaration".to_string())?
                 .ty
         }
@@ -404,7 +413,7 @@ pub(crate) fn verify_operation(
         }
         _ => return None,
     };
-    let place = function.places.iter().find(|place| place.id == id)?;
+    let place = declaration(&function.places, id)?;
     let (PlaceOrigin::Aggregate { .. } | PlaceOrigin::Local) = place.origin else {
         return None;
     };

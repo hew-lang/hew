@@ -5895,6 +5895,7 @@ fn verify_initialization(
             entry.slots[slot.id.0 as usize] = InitState::Initialized;
         }
     }
+    let borrows = &BorrowDependents::of(function);
     let mut incoming = BTreeMap::from([(function.entry, vec![entry])]);
     let mut pending = vec![function.entry];
     while let Some(block_id) = pending.pop() {
@@ -5913,11 +5914,16 @@ fn verify_initialization(
                         "physical trap-only cleanup lost its fault exit cause",
                     ));
                 }
-                apply_operation(module, function, operation, &mut state, block_id)?;
+                apply_operation(module, function, borrows, operation, &mut state, block_id)?;
             }
-            for (target, successor) in
-                terminator_successors(function, &block.terminator, state, block_id, &defer_plan)?
-            {
+            for (target, successor) in terminator_successors(
+                function,
+                borrows,
+                &block.terminator,
+                state,
+                block_id,
+                &defer_plan,
+            )? {
                 let alternatives = incoming.entry(target).or_default();
                 if alternatives
                     .iter()
@@ -5989,12 +5995,13 @@ fn initialized_slot(
 
 fn define(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     state: &mut FlowState,
     id: StorageId,
     block: BlockId,
     context: &str,
 ) -> Result<(), PhysicalError> {
-    require_no_live_borrows(function, state, id)?;
+    require_no_live_borrows(function, borrows, state, id)?;
     let own = storage(function, id)?.own;
     if let Some(entry) = function.place_storage.get(&id).filter(|entry| {
         entry.root != id
@@ -6041,8 +6048,66 @@ fn define(
     Ok(())
 }
 
+/// Storage that borrows, or projects from, each storage root.
+///
+/// `callable::depends_on` walks a slot upward to its root; this is the same
+/// relation read downward, so asking whether a live loan depends on one root
+/// visits that root's dependants instead of every slot in the function.
+pub(super) struct BorrowDependents {
+    children: BTreeMap<StorageId, Vec<StorageId>>,
+}
+
+impl BorrowDependents {
+    fn of(function: &PhysicalFunction) -> Self {
+        let mut children = BTreeMap::<StorageId, Vec<StorageId>>::new();
+        for slot in &function.storage {
+            let parent = if let Some(parent) = slot.borrow_parent {
+                Some(parent)
+            } else if let StorageOrigin::Capture { environment, .. } = slot.origin {
+                Some(environment)
+            } else {
+                function
+                    .place_storage
+                    .get(&slot.id)
+                    .map(|projection| projection.root)
+                    .filter(|root| *root != slot.id)
+            };
+            if let Some(parent) = parent {
+                children.entry(parent).or_default().push(slot.id);
+            }
+        }
+        Self { children }
+    }
+
+    /// Whether any loan that depends on `root` still holds a value.
+    fn any_live_loan(
+        &self,
+        function: &PhysicalFunction,
+        state: &FlowState,
+        root: StorageId,
+    ) -> bool {
+        let mut pending = vec![root];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            for &child in self.children.get(&id).into_iter().flatten() {
+                if function.storage[child.0 as usize].borrow_parent.is_some()
+                    && state.slots[child.0 as usize] != InitState::Uninitialized
+                {
+                    return true;
+                }
+                pending.push(child);
+            }
+        }
+        false
+    }
+}
+
 fn require_no_live_borrows(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     state: &FlowState,
     source: StorageId,
 ) -> Result<(), PhysicalError> {
@@ -6050,11 +6115,7 @@ fn require_no_live_borrows(
         .place_storage
         .get(&source)
         .map_or(source, |entry| entry.root);
-    if function.storage.iter().any(|slot| {
-        slot.borrow_parent
-            .is_some_and(|parent| callable::depends_on(function, parent, source))
-            && state.slots[slot.id.0 as usize] != InitState::Uninitialized
-    }) {
+    if borrows.any_live_loan(function, state, source) {
         return Err(PhysicalError::new(format!(
             "physical storage {} cannot end or change while a dependent loan is live",
             source.0
@@ -6065,12 +6126,13 @@ fn require_no_live_borrows(
 
 fn consume_if_owned(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     state: &mut FlowState,
     id: StorageId,
 ) -> Result<(), PhysicalError> {
     defer::require_unreserved(function, state, id)?;
     if let Some(entry) = function.place_storage.get(&id) {
-        require_no_live_borrows(function, state, id)?;
+        require_no_live_borrows(function, borrows, state, id)?;
         if entry.root == id {
             state.slots[id.0 as usize] = InitState::Uninitialized;
         }
@@ -6083,7 +6145,7 @@ fn consume_if_owned(
             StorageOrigin::Capture { .. } | StorageOrigin::ActorState { .. }
         )
     {
-        require_no_live_borrows(function, state, id)?;
+        require_no_live_borrows(function, borrows, state, id)?;
         *state
             .slots
             .get_mut(id.0 as usize)
@@ -6101,6 +6163,7 @@ fn consume_if_owned(
 fn apply_operation(
     module: &PhysicalModule,
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     operation: &PhysicalOp,
     state: &mut FlowState,
     block: BlockId,
@@ -6130,32 +6193,32 @@ fn apply_operation(
         PhysicalOp::GeneratorMake { callable, dest, .. }
         | PhysicalOp::TaskSpawn { callable, dest, .. } => {
             initialized(function, state, *callable, block, "task callable")?;
-            consume_if_owned(function, state, *callable)?;
-            define(function, state, *dest, block, "task handle")?;
+            consume_if_owned(function, borrows, state, *callable)?;
+            define(function, borrows, state, *dest, block, "task handle")?;
         }
         PhysicalOp::StreamPipe { stream, sink, .. } => {
-            define(function, state, *stream, block, "stream half")?;
-            define(function, state, *sink, block, "sink half")?;
+            define(function, borrows, state, *stream, block, "stream half")?;
+            define(function, borrows, state, *sink, block, "sink half")?;
         }
         PhysicalOp::FunctionMake { dest, .. } | PhysicalOp::Const { dest, .. } => {
-            define(function, state, *dest, block, "constant")?;
+            define(function, borrows, state, *dest, block, "constant")?;
         }
         PhysicalOp::StorageLive { storage: dest } => {
             partial::activate(function, state, *dest, block)?;
         }
         PhysicalOp::Unary { dest, source, .. } | PhysicalOp::Cast { dest, source, .. } => {
             initialized(function, state, *source, block, "operation")?;
-            define(function, state, *dest, block, "operation")?;
+            define(function, borrows, state, *dest, block, "operation")?;
         }
         PhysicalOp::TupleMake { dest, elements } => {
             for element in elements {
                 initialized(function, state, *element, block, "tuple construction")?;
             }
-            define(function, state, *dest, block, "tuple construction")?;
+            define(function, borrows, state, *dest, block, "tuple construction")?;
         }
         PhysicalOp::TupleGet { dest, tuple, .. } => {
             initialized(function, state, *tuple, block, "tuple projection")?;
-            define(function, state, *dest, block, "tuple projection")?;
+            define(function, borrows, state, *dest, block, "tuple projection")?;
         }
         PhysicalOp::AggregateMake { dest, fields, .. }
         | PhysicalOp::ArrayMake { dest, fields, .. }
@@ -6163,23 +6226,37 @@ fn apply_operation(
             for field in fields {
                 initialized(function, state, *field, block, "aggregate construction")?;
             }
-            define(function, state, *dest, block, "aggregate construction")?;
+            define(
+                function,
+                borrows,
+                state,
+                *dest,
+                block,
+                "aggregate construction",
+            )?;
             for field in fields {
-                consume_if_owned(function, state, *field)?;
+                consume_if_owned(function, borrows, state, *field)?;
             }
         }
         PhysicalOp::ArrayRepeat { dest, seed, .. } => {
             initialized(function, state, *seed, block, "array repeat seed")?;
-            define(function, state, *dest, block, "array repeat")?;
-            consume_if_owned(function, state, *seed)?;
+            define(function, borrows, state, *dest, block, "array repeat")?;
+            consume_if_owned(function, borrows, state, *seed)?;
         }
         PhysicalOp::VariantMake { dest, fields, .. } => {
             for field in fields {
                 initialized(function, state, *field, block, "variant construction")?;
             }
-            define(function, state, *dest, block, "variant construction")?;
+            define(
+                function,
+                borrows,
+                state,
+                *dest,
+                block,
+                "variant construction",
+            )?;
             for field in fields {
-                consume_if_owned(function, state, *field)?;
+                consume_if_owned(function, borrows, state, *field)?;
             }
         }
         PhysicalOp::AggregateProjectCopy {
@@ -6204,41 +6281,62 @@ fn apply_operation(
             ..
         } => {
             initialized(function, state, *aggregate, block, "aggregate projection")?;
-            define(function, state, *dest, block, "aggregate projection")?;
+            define(
+                function,
+                borrows,
+                state,
+                *dest,
+                block,
+                "aggregate projection",
+            )?;
         }
         PhysicalOp::VariantDestructure { source, fields, .. } => {
             initialized(function, state, *source, block, "variant destructure")?;
             for field in fields {
-                define(function, state, *field, block, "variant destructure")?;
+                define(
+                    function,
+                    borrows,
+                    state,
+                    *field,
+                    block,
+                    "variant destructure",
+                )?;
             }
-            consume_if_owned(function, state, *source)?;
+            consume_if_owned(function, borrows, state, *source)?;
         }
         PhysicalOp::AggregateDestructure {
             aggregate, fields, ..
         } => {
             initialized(function, state, *aggregate, block, "aggregate destructure")?;
             for field in fields {
-                define(function, state, *field, block, "aggregate destructure")?;
+                define(
+                    function,
+                    borrows,
+                    state,
+                    *field,
+                    block,
+                    "aggregate destructure",
+                )?;
             }
-            consume_if_owned(function, state, *aggregate)?;
+            consume_if_owned(function, borrows, state, *aggregate)?;
         }
         PhysicalOp::Binary { dest, lhs, rhs, .. } => {
             initialized(function, state, *lhs, block, "binary operation")?;
             initialized(function, state, *rhs, block, "binary operation")?;
-            define(function, state, *dest, block, "binary operation")?;
+            define(function, borrows, state, *dest, block, "binary operation")?;
         }
         PhysicalOp::Transfer { dest, source }
         | PhysicalOp::CallableCoerce { dest, source }
         | PhysicalOp::DynMake { dest, source, .. } => {
             initialized(function, state, *source, block, "transfer")?;
             if dest != source {
-                define(function, state, *dest, block, "transfer")?;
-                consume_if_owned(function, state, *source)?;
+                define(function, borrows, state, *dest, block, "transfer")?;
+                consume_if_owned(function, borrows, state, *source)?;
             }
         }
         PhysicalOp::Clone { dest, source, .. } | PhysicalOp::Borrow { dest, source } => {
             initialized(function, state, *source, block, "copy or borrow")?;
-            define(function, state, *dest, block, "copy or borrow")?;
+            define(function, borrows, state, *dest, block, "copy or borrow")?;
         }
         PhysicalOp::Destroy {
             source, cleanup, ..
@@ -6246,12 +6344,12 @@ fn apply_operation(
             defer::require_unreserved(function, state, *source)?;
             partial::require_root(function, state, *source, block, "destroy")?;
             partial::require_droppable(module, function, state, *source, cleanup.mode())?;
-            require_no_live_borrows(function, state, *source)?;
+            require_no_live_borrows(function, borrows, state, *source)?;
             invalidate_storage(function, state, *source);
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
-            require_no_live_borrows(function, state, *source)?;
+            require_no_live_borrows(function, borrows, state, *source)?;
             invalidate_storage(function, state, *source);
         }
         PhysicalOp::Assign { dest, source, .. } => {
@@ -6264,8 +6362,8 @@ fn apply_operation(
                 *dest,
                 hew_sir::CleanupMode::Ordinary,
             )?;
-            require_no_live_borrows(function, state, *dest)?;
-            consume_if_owned(function, state, *source)?;
+            require_no_live_borrows(function, borrows, state, *dest)?;
+            consume_if_owned(function, borrows, state, *source)?;
             partial::set_leaves(function, state, *dest, InitState::Initialized);
         }
         PhysicalOp::StorageDead {
@@ -6276,7 +6374,7 @@ fn apply_operation(
             defer::require_unreserved(function, state, *id)?;
             partial::require_root(function, state, *id, block, "end-lifetime")?;
             partial::require_droppable(module, function, state, *id, cleanup.mode())?;
-            require_no_live_borrows(function, state, *id)?;
+            require_no_live_borrows(function, borrows, state, *id)?;
             partial::set_leaves(function, state, *id, InitState::Uninitialized);
             if matches!(
                 storage(function, *id)?.origin,
@@ -6303,6 +6401,7 @@ fn invalidate_storage(function: &PhysicalFunction, state: &mut FlowState, id: St
 
 fn apply_edge(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     edge: &PhysicalEdge,
     mut state: FlowState,
     block: BlockId,
@@ -6310,12 +6409,12 @@ fn apply_edge(
     let before = state.slots.clone();
     for (source, _) in &edge.transfers {
         partial::require_root(function, &state, *source, block, "edge transfer")?;
-        require_no_live_borrows(function, &state, *source)?;
+        require_no_live_borrows(function, borrows, &state, *source)?;
     }
     // The predecessor is one simultaneous move: a destination may itself
     // supply another destination in a loop permutation.
     for (source, _) in &edge.transfers {
-        consume_if_owned(function, &mut state, *source)?;
+        consume_if_owned(function, borrows, &mut state, *source)?;
         // A loan rename moves the alias: the source name is gone in the
         // successor, so it must not stay live to the function exit.
         if storage(function, *source)?.own == OwnKind::Guaranteed
@@ -6328,7 +6427,14 @@ fn apply_edge(
         if source == destination && storage(function, *source)?.own == OwnKind::None {
             continue;
         }
-        define(function, &mut state, *destination, block, "edge transfer")?;
+        define(
+            function,
+            borrows,
+            &mut state,
+            *destination,
+            block,
+            "edge transfer",
+        )?;
     }
     for (source, destination) in &edge.leaf_transfers {
         state.slots[destination.0 as usize] = before[source.0 as usize];
@@ -6338,6 +6444,7 @@ fn apply_edge(
 
 fn call_successors(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     args: &[ArgumentTransfer],
     result: Option<StorageId>,
     normal: Option<&PhysicalEdge>,
@@ -6359,7 +6466,7 @@ fn call_successors(
             ArgumentTransfer::Move(source) => (*source, true),
         };
         if matches!(argument, ArgumentTransfer::BorrowMut(_)) {
-            require_no_live_borrows(function, &state, source)?;
+            require_no_live_borrows(function, borrows, &state, source)?;
         }
         initialized(function, &state, source, block, "call argument")?;
         if storage(function, source)?.own == OwnKind::Guaranteed
@@ -6373,16 +6480,23 @@ fn call_successors(
             ));
         }
         if moves {
-            consume_if_owned(function, &mut state, source)?;
+            consume_if_owned(function, borrows, &mut state, source)?;
         }
     }
     let mut normal_state = state.clone();
     if let Some(result) = result {
-        define(function, &mut normal_state, result, block, "call result")?;
+        define(
+            function,
+            borrows,
+            &mut normal_state,
+            result,
+            block,
+            "call result",
+        )?;
     }
     let mut successors = Vec::new();
     if let Some(normal) = normal {
-        successors.push(apply_edge(function, normal, normal_state, block)?);
+        successors.push(apply_edge(function, borrows, normal, normal_state, block)?);
     }
     if let Some(unwind) = unwind {
         let mut failure_state = state;
@@ -6391,7 +6505,7 @@ fn call_successors(
         }
         failure_state.fault = FaultState::Active;
         failure_state.exit = defer::TRAP;
-        successors.push(apply_edge(function, unwind, failure_state, block)?);
+        successors.push(apply_edge(function, borrows, unwind, failure_state, block)?);
     }
     Ok(successors)
 }
@@ -6402,6 +6516,7 @@ fn call_successors(
 )]
 fn terminator_successors(
     function: &PhysicalFunction,
+    borrows: &BorrowDependents,
     terminator: &PhysicalTerminator,
     mut state: FlowState,
     block: BlockId,
@@ -6414,7 +6529,7 @@ fn terminator_successors(
             | PhysicalTerminator::CleanupDispatch { .. }
             | PhysicalTerminator::CheckedRaiseFault { .. }
     ) {
-        return defer::successors(function, defer_plan, terminator, state, block);
+        return defer::successors(function, borrows, defer_plan, terminator, state, block);
     }
     if matches!(
         terminator,
@@ -6474,21 +6589,28 @@ fn terminator_successors(
                 };
                 initialized(function, &state, *source, block, "ask request")?;
                 if matches!(argument, ArgumentTransfer::Move(_)) {
-                    consume_if_owned(function, &mut state, *source)?;
+                    consume_if_owned(function, borrows, &mut state, *source)?;
                 }
             }
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new("ask cannot replace an active fault"));
             }
             let mut completed = state.clone();
-            define(function, &mut completed, *result, block, "ask result")?;
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            define(
+                function,
+                borrows,
+                &mut completed,
+                *result,
+                block,
+                "ask result",
+            )?;
+            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::TaskSelect {
@@ -6519,24 +6641,25 @@ fn terminator_successors(
             let mut completed = state.clone();
             define(
                 function,
+                borrows,
                 &mut completed,
                 *result,
                 block,
                 "selected source index",
             )?;
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::GeneratorYield { .. }
         | PhysicalTerminator::GeneratorNext { .. }
         | PhysicalTerminator::ValueClose { .. } => {
-            generators::successors(function, terminator, state, block)
+            generators::successors(function, borrows, terminator, state, block)
         }
         PhysicalTerminator::StreamNext {
             stream,
@@ -6558,14 +6681,21 @@ fn terminator_successors(
                 ));
             }
             let mut completed = state.clone();
-            define(function, &mut completed, *result, block, "received element")?;
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            define(
+                function,
+                borrows,
+                &mut completed,
+                *result,
+                block,
+                "received element",
+            )?;
+            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::ChannelRecv {
@@ -6588,14 +6718,21 @@ fn terminator_successors(
                 ));
             }
             let mut completed = state.clone();
-            define(function, &mut completed, *result, block, "received element")?;
-            let mut successors = vec![apply_edge(function, normal, completed, block)?];
+            define(
+                function,
+                borrows,
+                &mut completed,
+                *result,
+                block,
+                "received element",
+            )?;
+            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::ChannelSend {
@@ -6620,13 +6757,13 @@ fn terminator_successors(
                     "channel send cannot replace an active fault",
                 ));
             }
-            let mut successors = vec![apply_edge(function, normal, state.clone(), block)?];
+            let mut successors = vec![apply_edge(function, borrows, normal, state.clone(), block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::StreamSend {
@@ -6646,22 +6783,22 @@ fn terminator_successors(
             };
             initialized(function, &state, *sink, block, "sending sink")?;
             initialized(function, &state, *value, block, "sent element")?;
-            consume_if_owned(function, &mut state, *value)?;
+            consume_if_owned(function, borrows, &mut state, *value)?;
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new(
                     "stream send cannot replace an active fault",
                 ));
             }
             let mut successors = vec![
-                apply_edge(function, normal, state.clone(), block)?,
-                apply_edge(function, closed, state.clone(), block)?,
+                apply_edge(function, borrows, normal, state.clone(), block)?,
+                apply_edge(function, borrows, closed, state.clone(), block)?,
             ];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::TaskAwait {
@@ -6675,26 +6812,33 @@ fn terminator_successors(
                 return Err(PhysicalError::new("task await must consume its handle"));
             };
             initialized(function, &state, *task, block, "await task")?;
-            consume_if_owned(function, &mut state, *task)?;
+            consume_if_owned(function, borrows, &mut state, *task)?;
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new("await cannot replace an active fault"));
             }
             let mut completed = state.clone();
             if let Some(result) = result {
-                define(function, &mut completed, *result, block, "await result")?;
+                define(
+                    function,
+                    borrows,
+                    &mut completed,
+                    *result,
+                    block,
+                    "await result",
+                )?;
             }
             let mut successors = normal
                 .as_ref()
-                .map(|normal| apply_edge(function, normal, completed, block))
+                .map(|normal| apply_edge(function, borrows, normal, completed, block))
                 .transpose()?
                 .into_iter()
                 .collect::<Vec<_>>();
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::TaskScopeJoin {
@@ -6710,8 +6854,8 @@ fn terminator_successors(
                     ));
                 }
                 Ok(vec![
-                    apply_edge(function, normal, state.clone(), block)?,
-                    apply_edge(function, unwind, state, block)?,
+                    apply_edge(function, borrows, normal, state.clone(), block)?,
+                    apply_edge(function, borrows, unwind, state, block)?,
                 ])
             } else {
                 if state.fault != FaultState::None {
@@ -6719,10 +6863,13 @@ fn terminator_successors(
                         "normal drain cannot replace an active fault",
                     ));
                 }
-                let completed = apply_edge(function, normal, state.clone(), block)?;
+                let completed = apply_edge(function, borrows, normal, state.clone(), block)?;
                 state.fault = FaultState::Active;
                 state.exit = defer::TRAP | defer::CANCEL;
-                Ok(vec![completed, apply_edge(function, unwind, state, block)?])
+                Ok(vec![
+                    completed,
+                    apply_edge(function, borrows, unwind, state, block)?,
+                ])
             }
         }
         PhysicalTerminator::NativeIo {
@@ -6735,6 +6882,7 @@ fn terminator_successors(
         } => {
             let mut successors = call_successors(
                 function,
+                borrows,
                 args,
                 Some(*result),
                 Some(normal),
@@ -6744,6 +6892,7 @@ fn terminator_successors(
             )?;
             let (_, mut cancelled) = call_successors(
                 function,
+                borrows,
                 args,
                 Some(*result),
                 Some(normal),
@@ -6773,13 +6922,13 @@ fn terminator_successors(
             if state.fault != FaultState::None {
                 return Err(PhysicalError::new("sleep cannot overwrite an active fault"));
             }
-            let mut successors = vec![apply_edge(function, normal, state.clone(), block)?];
+            let mut successors = vec![apply_edge(function, borrows, normal, state.clone(), block)?];
             state.fault = FaultState::Active;
             let mut cancelled = state.clone();
             cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, cancel, cancelled, block)?);
+            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
             state.exit = defer::TRAP;
-            successors.push(apply_edge(function, unwind, state, block)?);
+            successors.push(apply_edge(function, borrows, unwind, state, block)?);
             Ok(successors)
         }
         PhysicalTerminator::EnterDefer { .. }
@@ -6802,10 +6951,17 @@ fn terminator_successors(
             let mut recovered = state.clone();
             recovered.fault = FaultState::None;
             recovered.exit = defer::ORDINARY;
-            define(function, &mut recovered, *result, block, "scope failure")?;
+            define(
+                function,
+                borrows,
+                &mut recovered,
+                *result,
+                block,
+                "scope failure",
+            )?;
             Ok(vec![
-                apply_edge(function, normal, recovered, block)?,
-                apply_edge(function, unwind, state, block)?,
+                apply_edge(function, borrows, normal, recovered, block)?,
+                apply_edge(function, borrows, unwind, state, block)?,
             ])
         }
         PhysicalTerminator::IndirectCall {
@@ -6829,6 +6985,7 @@ fn terminator_successors(
                 .collect::<Vec<_>>();
             call_successors(
                 function,
+                borrows,
                 &transfers,
                 *result,
                 normal.as_ref(),
@@ -6875,7 +7032,9 @@ fn terminator_successors(
             }
             Ok(vec![])
         }
-        PhysicalTerminator::Goto(edge) => Ok(vec![apply_edge(function, edge, state, block)?]),
+        PhysicalTerminator::Goto(edge) => {
+            Ok(vec![apply_edge(function, borrows, edge, state, block)?])
+        }
         PhysicalTerminator::Branch {
             condition,
             then_target,
@@ -6883,8 +7042,8 @@ fn terminator_successors(
         } => {
             initialized(function, &state, *condition, block, "branch")?;
             Ok(vec![
-                apply_edge(function, then_target, state.clone(), block)?,
-                apply_edge(function, else_target, state, block)?,
+                apply_edge(function, borrows, then_target, state.clone(), block)?,
+                apply_edge(function, borrows, else_target, state, block)?,
             ])
         }
         PhysicalTerminator::SwitchVariant {
@@ -6894,11 +7053,24 @@ fn terminator_successors(
             let mut successors = Vec::with_capacity(arms.len());
             for arm in arms {
                 let mut arm_state = state.clone();
-                consume_if_owned(function, &mut arm_state, *scrutinee)?;
+                consume_if_owned(function, borrows, &mut arm_state, *scrutinee)?;
                 for field in &arm.fields {
-                    define(function, &mut arm_state, *field, block, "variant payload")?;
+                    define(
+                        function,
+                        borrows,
+                        &mut arm_state,
+                        *field,
+                        block,
+                        "variant payload",
+                    )?;
                 }
-                successors.push(apply_edge(function, &arm.target, arm_state, block)?);
+                successors.push(apply_edge(
+                    function,
+                    borrows,
+                    &arm.target,
+                    arm_state,
+                    block,
+                )?);
             }
             Ok(successors)
         }
@@ -6916,16 +7088,17 @@ fn terminator_successors(
             let mut normal_state = state.clone();
             define(
                 function,
+                borrows,
                 &mut normal_state,
                 *result,
                 block,
                 "checked binary result",
             )?;
-            let mut successors = vec![apply_edge(function, normal, normal_state, block)?];
+            let mut successors = vec![apply_edge(function, borrows, normal, normal_state, block)?];
             for failure in failures {
                 let mut failed = state.clone();
                 failed.exit = defer::TRAP;
-                successors.push(apply_edge(function, &failure.edge, failed, block)?);
+                successors.push(apply_edge(function, borrows, &failure.edge, failed, block)?);
             }
             Ok(successors)
         }
@@ -6937,6 +7110,7 @@ fn terminator_successors(
             ..
         } => call_successors(
             function,
+            borrows,
             args,
             *result,
             normal.as_ref(),
@@ -6952,6 +7126,7 @@ fn terminator_successors(
             ..
         } => call_successors(
             function,
+            borrows,
             args,
             *result,
             Some(normal),
@@ -6967,6 +7142,7 @@ fn terminator_successors(
             ..
         } => call_successors(
             function,
+            borrows,
             std::slice::from_ref(input),
             Some(*result),
             Some(normal),
@@ -6982,6 +7158,7 @@ fn terminator_successors(
             ..
         } => call_successors(
             function,
+            borrows,
             args,
             Some(*result),
             Some(normal),
@@ -6994,7 +7171,16 @@ fn terminator_successors(
             result,
             normal,
             ..
-        } => call_successors(function, args, *result, Some(normal), None, state, block),
+        } => call_successors(
+            function,
+            borrows,
+            args,
+            *result,
+            Some(normal),
+            None,
+            state,
+            block,
+        ),
         PhysicalTerminator::RuntimeCall {
             action,
             args,
@@ -7033,13 +7219,14 @@ fn terminator_successors(
                     ));
                 }
                 if moves {
-                    consume_if_owned(function, &mut state, source)?;
+                    consume_if_owned(function, borrows, &mut state, source)?;
                 }
             }
             let mut normal_state = state.clone();
             if let Some(result) = result {
                 define(
                     function,
+                    borrows,
                     &mut normal_state,
                     *result,
                     block,
@@ -7053,7 +7240,7 @@ fn terminator_successors(
             });
             let mut successors = Vec::new();
             if returns {
-                successors.push(apply_edge(function, normal, normal_state, block)?);
+                successors.push(apply_edge(function, borrows, normal, normal_state, block)?);
             }
             if let Some(failure) = failure {
                 if let Some(preserved) = failure_inputs {
@@ -7070,7 +7257,7 @@ fn terminator_successors(
                 if let Some(result) = result {
                     state.slots[result.0 as usize] = InitState::Uninitialized;
                 }
-                successors.push(apply_edge(function, failure, state, block)?);
+                successors.push(apply_edge(function, borrows, failure, state, block)?);
             }
             Ok(successors)
         }
@@ -7086,7 +7273,7 @@ fn terminator_successors(
             initialized(function, &state, *source, block, "panic message")?;
             state.fault = FaultState::Active;
             state.exit = defer::TRAP;
-            Ok(vec![apply_edge(function, cleanup, state, block)?])
+            Ok(vec![apply_edge(function, borrows, cleanup, state, block)?])
         }
         PhysicalTerminator::Trap(_) => {
             if state.fault != FaultState::None {
@@ -11522,6 +11709,7 @@ mod tests {
         };
         let successors = terminator_successors(
             function,
+            &BorrowDependents::of(function),
             &block.terminator,
             state,
             block.id,
@@ -11637,6 +11825,7 @@ mod tests {
             state.slots[result.0 as usize] = InitState::Uninitialized;
             let successors = terminator_successors(
                 function,
+                &BorrowDependents::of(function),
                 &block.terminator,
                 state,
                 block.id,

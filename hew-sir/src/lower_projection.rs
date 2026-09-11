@@ -264,9 +264,14 @@ pub(super) fn complete_edge_partitions(
         });
     }
     let mut edges = BTreeSet::new();
+    let targets = function
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect::<std::collections::BTreeMap<_, _>>();
     for block in &function.blocks {
         block.terminator.visit_successors(|edge| {
-            if let Some(target) = function.blocks.iter().find(|block| block.id == edge.target) {
+            if let Some(target) = targets.get(&edge.target) {
                 for (source, destination) in edge.args.iter().zip(&target.args) {
                     if types
                         .get(&source.value)

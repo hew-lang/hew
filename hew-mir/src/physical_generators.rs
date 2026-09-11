@@ -206,6 +206,7 @@ pub(super) fn verify_suspend(
 
 pub(super) fn successors(
     function: &PhysicalFunction,
+    borrows: &super::BorrowDependents,
     terminator: &PhysicalTerminator,
     mut state: FlowState,
     block: BlockId,
@@ -239,17 +240,18 @@ pub(super) fn successors(
             } else {
                 initialized(function, &state, *generator, block, "generator close")?;
             }
-            require_no_live_borrows(function, &state, *generator)?;
+            require_no_live_borrows(function, borrows, &state, *generator)?;
             if state.fault != FaultState::Active {
                 state.fault = FaultState::MaybeActive;
             }
             state.exit |= defer::TRAP;
-            return Ok(vec![apply_edge(function, next, state, block)?]);
+            return Ok(vec![apply_edge(function, borrows, next, state, block)?]);
         }
         _ => unreachable!(),
     };
     let mut successors = call_successors(
         function,
+        borrows,
         &[input],
         result,
         Some(normal),
@@ -259,6 +261,7 @@ pub(super) fn successors(
     )?;
     let (_, mut cancelled) = call_successors(
         function,
+        borrows,
         &[input],
         result,
         Some(normal),

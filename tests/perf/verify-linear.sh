@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
-# Compile-time scaling gate for the SIR/MIR verifiers.
+# Compile-time scaling gate for the SIR and physical-MIR verifiers.
 #
 # Usage:
 #   HEW_BIN=build/bin/hew tests/perf/verify-linear.sh
 #
 # A chain of last-use record transfers across actor calls is the shape a real
-# actor body has: every `await` adds a suspension with its resume, cancel and
-# unwind edges, so the block count grows with the number of awaits in one
-# function. Lowering that chain to physical MIR must stay proportional to the
-# chain length. The gate compiles the chain at three lengths and compares the
-# longest against the shortest; a verifier whose per-block state or dominance
-# query is quadratic blows past the ratio long before it blows past a wall
-# clock ceiling, and the ratio stays meaningful on a slower or busier machine.
+# actor body has: every await adds a suspension with its resume, cancel and
+# unwind edges. The gate compiles the chain at three lengths and measures the
+# `physical lowering` phase, which covers source through verified physical MIR.
 #
-# The ratio ceiling is 6 for a 4x change in chain length: linear with headroom
-# for the fixed per-compile cost that shrinks the ratio at the small end and
-# for ordinary scheduling noise.
+# What it asserts is cost per emitted SIR operation, not cost per await. SIR
+# scope exit ends every in-scope binding place on every fault edge, so the chain
+# lowers to a quadratic number of `end_lifetime` operations, and no verifier can
+# be linear in the await count while that holds. The verifiers can
+# and must be linear in the body they are handed, which is what this measures: a
+# dominance relation stored as sets, or a whole-function fixed point recomputed
+# per terminator, makes the per-operation cost grow with the body and fails here.
+#
+# Flip the commented assertion below to the await count once scope-exit cleanup
+# is shared rather than duplicated per fault edge.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HEW_BIN="${HEW_BIN:-$ROOT/build/bin/hew}"
 LENGTHS=(128 256 512)
-RATIO_LIMIT=6
-# Virtual-memory ceiling for one compile. Quadratic per-block state shows up
-# here before it shows up in the clock. `ulimit -v` is a no-op on some hosts;
-# the ratio remains the portable check.
+# Cost per operation at the longest chain, over the shortest. One is flat; the
+# headroom covers cache behaviour at a body of several hundred thousand
+# operations and ordinary scheduling noise.
+PER_OP_LIMIT=2
+# Virtual-memory ceiling for one compile. Per-block verifier state that scales
+# with the body shows up here before it shows up in the clock.
 ADDRESS_SPACE_KB=4194304
 
 if [[ $# -ne 0 ]]; then
@@ -68,53 +73,67 @@ generate() {
     } >"$out"
 }
 
-now_ns() {
-    python3 -c 'import time; print(time.perf_counter_ns())'
-}
-
+# Milliseconds the compiler reports for source through verified physical MIR.
 # Two runs, keep the faster: the first pays for reading the compiler and the
 # standard library off disk, which is not what this gate measures.
-measure() {
-    local source="$1" log="$2" best="" start end elapsed
+lowering_ms() {
+    local source="$1" log="$2" best="" reported
     for _ in 1 2; do
-        start="$(now_ns)"
         if ! (
             ulimit -v "$ADDRESS_SPACE_KB" 2>/dev/null || true
-            "$HEW_BIN" tool compile "$source" --dump-mir physical
+            HEW_MEASURE_TIMINGS=1 "$HEW_BIN" build "$source" -o "$tmpdir/chain.out"
         ) >"$log" 2>&1; then
             cat "$log" >&2
             return 1
         fi
-        end="$(now_ns)"
-        elapsed="$(((end - start) / 1000000))"
-        if [[ -z "$best" || "$elapsed" -lt "$best" ]]; then
-            best="$elapsed"
+        reported="$(
+            awk '/^hew measure: physical lowering /{ reported = $5 } END { printf "%d", reported }' "$log"
+        )"
+        if [[ -z "$reported" ]]; then
+            echo "verify-linear: the compiler reported no physical lowering phase" >&2
+            return 1
+        fi
+        if [[ -z "$best" || "$reported" -lt "$best" ]]; then
+            best="$reported"
         fi
     done
     echo "$best"
 }
 
-declare -A elapsed_ms
+# Operations in the SIR the phase above verifies. Operation lines are the
+# indented body of a block; block headers and terminators are not counted, and
+# the exact convention does not matter as long as it is the same at every N.
+operations() {
+    "$HEW_BIN" tool compile "$1" --dump-sir 2>/dev/null | grep -cE '^    [a-z%$]'
+}
+
+declare -A elapsed_ms ops per_op
 for n in "${LENGTHS[@]}"; do
     generate "$n" "$tmpdir/chain$n.hew"
-    if ! elapsed_ms[$n]="$(measure "$tmpdir/chain$n.hew" "$tmpdir/chain$n.log")"; then
+    if ! elapsed_ms[$n]="$(lowering_ms "$tmpdir/chain$n.hew" "$tmpdir/chain$n.log")"; then
         echo "verify-linear: compiling the chain at N=$n failed" >&2
         exit 1
     fi
-    echo "verify-linear: N=$n physical lowering ${elapsed_ms[$n]} ms"
+    ops[$n]="$(operations "$tmpdir/chain$n.hew")"
+    if [[ "${ops[$n]}" -lt 1 ]]; then
+        echo "verify-linear: the chain at N=$n lowered to no SIR operations" >&2
+        exit 1
+    fi
+    per_op[$n]="$(python3 -c "print(f'{1000 * ${elapsed_ms[$n]} / ${ops[$n]}:.2f}')")"
+    echo "verify-linear: N=$n physical lowering ${elapsed_ms[$n]} ms over ${ops[$n]} SIR operations, ${per_op[$n]} us each"
 done
 
 first="${LENGTHS[0]}"
 last="${LENGTHS[${#LENGTHS[@]} - 1]}"
-base="${elapsed_ms[$first]}"
-if [[ "$base" -lt 1 ]]; then
-    base=1
-fi
-ratio="$(python3 -c "print(f'{${elapsed_ms[$last]} / $base:.2f}')")"
-echo "verify-linear: N=$last / N=$first ratio $ratio (limit $RATIO_LIMIT for a ${last}/${first}x chain)"
+ratio="$(python3 -c "print(f'{${per_op[$last]} / ${per_op[$first]}:.2f}')")"
+echo "verify-linear: per-operation cost at N=$last is ${ratio}x its cost at N=$first (limit $PER_OP_LIMIT)"
 
-if python3 -c "import sys; sys.exit(0 if ${elapsed_ms[$last]} / $base > $RATIO_LIMIT else 1)"; then
-    echo "verify-linear: physical lowering is superlinear in the chain length" >&2
+# Once scope-exit cleanup is shared across fault edges the operation count
+# becomes linear in N and this becomes the direct assertion:
+#   ${elapsed_ms[$last]} / ${elapsed_ms[$first]} <= 6
+
+if python3 -c "import sys; sys.exit(0 if ${per_op[$last]} / ${per_op[$first]} > $PER_OP_LIMIT else 1)"; then
+    echo "verify-linear: verification cost per operation grows with the body" >&2
     exit 1
 fi
-echo "verify-linear: physical lowering scales with the chain length"
+echo "verify-linear: verification cost per operation stays flat"

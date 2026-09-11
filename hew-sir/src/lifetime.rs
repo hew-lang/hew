@@ -376,6 +376,10 @@ struct Flow<'a> {
     linear_values: BTreeSet<ValueId>,
     cleanup_suffixes: BTreeMap<BlockId, usize>,
     places: Vec<(crate::PlaceId, OwnerRoot)>,
+    /// Positions in `places` grouped by owner, in `places` order. Scanning the
+    /// whole table for one owner costs the square of the place count on a body
+    /// with many bindings.
+    places_by_owner: BTreeMap<OwnerRoot, Vec<usize>>,
     /// Actor state seats that enter this body uninitialized (D447): dead at
     /// entry, live at every normal return and dead again at every unwind,
     /// because init releases what it initialized before the fault leaves.
@@ -593,11 +597,25 @@ impl<'a> Flow<'a> {
             linear_places,
             linear_values,
             cleanup_suffixes: cleanup_suffixes(function),
+            places_by_owner: places.iter().enumerate().fold(
+                BTreeMap::<OwnerRoot, Vec<usize>>::new(),
+                |mut grouped, (index, (_, owner))| {
+                    grouped.entry(*owner).or_default().push(index);
+                    grouped
+                },
+            ),
             places,
             deferred_places,
             place_indices,
             projections,
         }
+    }
+
+    /// Positions in `places` owned by `value`, in `places` order.
+    fn owned_places(&self, value: ValueId) -> &[usize] {
+        self.places_by_owner
+            .get(&OwnerRoot::Value(value))
+            .map_or(&[], Vec::as_slice)
     }
 
     fn access(
@@ -636,10 +654,8 @@ impl<'a> Flow<'a> {
             self.require_unreserved(block, PlaceBase::Value(value), state, emit);
             self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
             state.values[index] = DEAD;
-            for (index, (_, owner)) in self.places.iter().enumerate() {
-                if *owner == OwnerRoot::Value(value) {
-                    state.places[index] = DEAD;
-                }
+            for &index in self.owned_places(value) {
+                state.places[index] = DEAD;
             }
         }
     }
@@ -760,8 +776,8 @@ impl<'a> Flow<'a> {
             });
         }
         state.values[index] = LIVE;
-        for (index, (place, owner)) in self.places.iter().enumerate() {
-            if *owner == OwnerRoot::Value(value) && self.projections.projection(*place).is_some() {
+        for &index in self.owned_places(value) {
+            if self.projections.projection(self.places[index].0).is_some() {
                 state.places[index] = LIVE;
             }
         }
@@ -1388,9 +1404,11 @@ impl<'a> Flow<'a> {
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        if self.places.iter().enumerate().any(|(index, (_, owner))| {
-            *owner == OwnerRoot::Value(value) && state.places[index] != LIVE
-        }) {
+        if self
+            .owned_places(value)
+            .iter()
+            .any(|&index| state.places[index] != LIVE)
+        {
             emit(Violation {
                 place: None,
                 block,

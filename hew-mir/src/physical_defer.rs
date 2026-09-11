@@ -771,6 +771,7 @@ pub(super) fn require_unreserved(
 )]
 pub(super) fn successors(
     function: &PhysicalFunction,
+    borrows: &super::BorrowDependents,
     plan: &Plan,
     terminator: &PhysicalTerminator,
     mut state: FlowState,
@@ -806,7 +807,7 @@ pub(super) fn successors(
                 exit: state.exit,
             });
             state.fault = FaultState::None;
-            Ok(vec![apply_edge(function, body, state, block)?])
+            Ok(vec![apply_edge(function, borrows, body, state, block)?])
         }
         PhysicalTerminator::FinishDefer { defer, park, next } => {
             let active = state
@@ -847,7 +848,7 @@ pub(super) fn successors(
                     0
                 };
             state.defers.active.pop();
-            Ok(vec![apply_edge(function, next, state, block)?])
+            Ok(vec![apply_edge(function, borrows, next, state, block)?])
         }
         PhysicalTerminator::CleanupDispatch { normal, fault } => {
             let mut out = vec![];
@@ -855,12 +856,12 @@ pub(super) fn successors(
                 let mut success = state.clone();
                 success.fault = FaultState::None;
                 success.exit = success.defers.active.last().map_or(ORDINARY, |a| a.exit);
-                out.push(apply_edge(function, normal, success, block)?);
+                out.push(apply_edge(function, borrows, normal, success, block)?);
             }
             if state.fault != FaultState::None {
                 state.fault = FaultState::Active;
                 state.exit = TRAP;
-                out.push(apply_edge(function, fault, state, block)?);
+                out.push(apply_edge(function, borrows, fault, state, block)?);
             }
             Ok(out)
         }
@@ -872,7 +873,7 @@ pub(super) fn successors(
             }
             state.fault = FaultState::Active;
             state.exit = TRAP;
-            Ok(vec![apply_edge(function, cleanup, state, block)?])
+            Ok(vec![apply_edge(function, borrows, cleanup, state, block)?])
         }
         _ => unreachable!("caller selected a defer boundary"),
     }

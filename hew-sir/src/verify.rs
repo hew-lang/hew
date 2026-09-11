@@ -5472,7 +5472,7 @@ fn uses_in_op(function: &SemFunction, op: &crate::SemOp) -> Vec<(ValueId, bool)>
                     state: environment, ..
                 },
             ..
-        }) = function.places.iter().find(|place| place.id == id)
+        }) = crate::projection::declaration(&function.places, id)
         {
             uses.push((*environment, false));
         } else if let Ok((crate::OwnerRoot::Value(root), _)) =

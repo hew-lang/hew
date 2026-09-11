@@ -3953,6 +3953,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    /// A value is defined once, so the newest block that names it is the one
+    /// that defines it. Searching from the newest block keeps a lookup close to
+    /// the operation that just produced the value; searching forward costs the
+    /// square of the body size on a function with hundreds of bindings.
     fn value_own_kind(&self, value: ValueId) -> Option<OwnKind> {
         self.params
             .iter()
@@ -3961,6 +3965,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .or_else(|| {
                 self.blocks
                     .iter()
+                    .rev()
                     .flat_map(|block| block.args.iter())
                     .find(|arg| arg.value == value)
                     .map(|arg| arg.own)
@@ -3968,6 +3973,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .or_else(|| {
                 self.blocks
                     .iter()
+                    .rev()
                     .flat_map(|block| block.ops.iter())
                     .flat_map(|op| op.results.iter())
                     .find(|result| result.id == value)
@@ -3983,6 +3989,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .or_else(|| {
                 self.blocks
                     .iter()
+                    .rev()
                     .flat_map(|block| block.args.iter())
                     .find(|arg| arg.value == value)
                     .map(|arg| arg.ty.clone())
@@ -3990,13 +3997,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .or_else(|| {
                 self.blocks
                     .iter()
+                    .rev()
                     .flat_map(|block| block.ops.iter())
                     .flat_map(|op| op.results.iter())
                     .find(|result| result.id == value)
                     .map(|result| result.ty.clone())
             })
             .or_else(|| {
-                self.blocks.iter().find_map(|block| {
+                self.blocks.iter().rev().find_map(|block| {
                     let mut found = None;
                     block.terminator.as_ref()?.visit_results(|result| {
                         if result.id == value {

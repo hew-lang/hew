@@ -35,7 +35,7 @@ fn main() {
     var order: Vec<i32> = Vec.new();
     var stack: Vec<i32> = Vec.new();
     stack.push(0);
-    while stack.len() > 0 {
+    while !stack.is_empty() {
         let u: i64 = stack.pop() as i64;
         if visited[u] == 0 {
             visited.set(u, 1);

@@ -1,11 +1,14 @@
 // Cocktail Sort - bidirectional bubble sort
-fn swap(var v: Vec<i64>, i: i64, j: i64) {
+// A parameter is the callee's own copy, so the swapped vector travels back
+// through the return value.
+fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
     let tmp = v[i];
     v.set(i, v[j]);
     v.set(j, tmp);
+    v
 }
 
-fn cocktail_sort(v: Vec<i64>) {
+fn cocktail_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n >= 2 {
         var start = 0;
@@ -17,7 +20,7 @@ fn cocktail_sort(v: Vec<i64>) {
             var i = start;
             while i < end {
                 if v[i] > v[i + 1] {
-                    swap(v, i, i + 1);
+                    v = swap(v, i, i + 1);
                     swapped = 1;
                 }
                 i = i + 1;
@@ -30,7 +33,7 @@ fn cocktail_sort(v: Vec<i64>) {
                 while j > start {
                     if j > 0 {
                         if v[j - 1] > v[j] {
-                            swap(v, j - 1, j);
+                            v = swap(v, j - 1, j);
                             swapped = 1;
                         }
                     }
@@ -40,6 +43,7 @@ fn cocktail_sort(v: Vec<i64>) {
             }
         }
     }
+    v
 }
 
 fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -66,8 +70,8 @@ fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
     v
 }
 
-fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    cocktail_sort(input);
+fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
+    input = cocktail_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
         println(f"Test {name} ... PASS");

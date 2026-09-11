@@ -1,11 +1,14 @@
 // Heap Sort - build max-heap in-place, then extract elements
-fn swap(var v: Vec<i64>, i: i64, j: i64) {
+// A parameter is the callee's own copy, so every helper that mutates the
+// vector returns it and the caller reassigns.
+fn swap(var v: Vec<i64>, i: i64, j: i64) -> Vec<i64> {
     let tmp = v[i];
     v.set(i, v[j]);
     v.set(j, tmp);
+    v
 }
 
-fn sift_down(v: Vec<i64>, start: i64, end: i64) {
+fn sift_down(var v: Vec<i64>, start: i64, end: i64) -> Vec<i64> {
     var root = start;
     var done = 0;
     while done == 0 {
@@ -24,32 +27,34 @@ fn sift_down(v: Vec<i64>, start: i64, end: i64) {
                 }
             }
             if largest != root {
-                swap(v, root, largest);
+                v = swap(v, root, largest);
                 root = largest;
             } else {
                 done = 1;
             }
         }
     }
+    v
 }
 
-fn heap_sort(v: Vec<i64>) {
+fn heap_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n >= 2 {
         // Build max-heap
         var i = n / 2 - 1;
         while i >= 0 {
-            sift_down(v, i, n - 1);
+            v = sift_down(v, i, n - 1);
             i = i - 1;
         }
         // Extract elements
         var end = n - 1;
         while end > 0 {
-            swap(v, 0, end);
+            v = swap(v, 0, end);
             end = end - 1;
-            sift_down(v, 0, end);
+            v = sift_down(v, 0, end);
         }
     }
+    v
 }
 
 fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -76,8 +81,8 @@ fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
     v
 }
 
-fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    heap_sort(input);
+fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
+    input = heap_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
         println(f"Test {name} ... PASS");

@@ -3,7 +3,7 @@ fn is_rotation(s1: string, s2: string) -> bool {
     if s1.len() != s2.len() {
         return false;
     }
-    if s1.len() == 0 {
+    if s1.is_empty() {
         return true;
     }
     let doubled = s1 + s1;

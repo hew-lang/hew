@@ -1,5 +1,7 @@
 // Merge Sort - divide and conquer with auxiliary Vec
-fn merge_sort(var v: Vec<i64>) {
+// A parameter is the callee's own copy, so the sorted vector travels back
+// through the return value.
+fn merge_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n >= 2 {
         // Bottom-up merge sort
@@ -45,6 +47,7 @@ fn merge_sort(var v: Vec<i64>) {
             width = width * 2;
         }
     }
+    v
 }
 
 fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -71,8 +74,8 @@ fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
     v
 }
 
-fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    merge_sort(input);
+fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
+    input = merge_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
         println(f"Test {name} ... PASS");

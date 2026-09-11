@@ -6220,9 +6220,17 @@ impl Checker {
                         canonical_receiver: "Vec".to_string(),
                     },
                 );
-                // D432: an element with no clone is read as a loan of the slot
-                // the vector still owns, so `Some` carries the loan and the
-                // owning removal stays the way to move an element out.
+                // `get` copies the element out, so a concrete element with no
+                // copy operation refuses here exactly as it refuses at `v[i]`
+                // and at a range slice (#3395). An unbounded type parameter is
+                // not concrete: a generic body keeps the borrowed read every
+                // instantiation shares.
+                if !self.validate_vec_get_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
+                // D432: an abstract element is read as a loan of the slot the
+                // vector still owns, so `Some` carries the loan and the owning
+                // removal stays the way to move an element out.
                 let Some(mode) = self.vec_iteration_element_mode(&resolved_elem, span) else {
                     return Ty::Error;
                 };

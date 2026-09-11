@@ -1118,6 +1118,36 @@ impl Checker {
         false
     }
 
+    /// Checker boundary for `xs.get(i)` over `Vec<T>`.
+    ///
+    /// `get` reads a copy of the element out of the vector; the vector keeps
+    /// its own. A concrete element with no copy operation therefore has no
+    /// `get`, exactly as it has no `xs[i]` and no range slice: reading one out
+    /// would hand the caller a second owner of a single-owner value. An
+    /// unbounded type parameter is not concrete and keeps the borrowed read
+    /// every instantiation of a generic body shares (spec §3.8.1).
+    pub(super) fn validate_vec_get_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error) {
+            return false;
+        }
+        let Some(blocker) = self.element_clone_blocker(&resolved) else {
+            return true;
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "E_ELEMENT_NO_COPY: `Vec<{}>` cannot be read with `get`: `get` copies the \
+                 element out and leaves the vector's own in place, but {blocker} has no copy \
+                 operation; use an owning removal such as `pop()` or `remove(i)`, or consuming \
+                 iteration, to move the element out instead",
+                resolved.user_facing()
+            ),
+        );
+        false
+    }
+
     /// Checker boundary for a `HashMap` operation that copies its values out:
     /// `m[k]`, `values()`, `entries()`, `clone()`, `into_iter()` and the
     /// `for (k, v) in m` desugar. A value with no clone stays in the map; the

@@ -1,0 +1,25 @@
+[[case]]
+id = "vec-get-affine-element"
+intent = "Every non-consuming read of a `Vec` element goes through one admission decision: `get`, `[]` and a range slice all copy the element out, so an element with no copy operation - a single-consumer channel endpoint - refuses at all three rather than handing out a second owner."
+source = "cases/vec-get-affine-element.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 15
+column = 16
+message = "E_ELEMENT_NO_COPY: `Vec<Receiver<i64>>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 16
+column = 20
+message = "non-cloneable, single-consumer endpoint"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 17
+column = 19
+message = "E_ELEMENT_NO_COPY: `Vec<Receiver<i64>>` cannot be range-sliced"

@@ -2139,9 +2139,7 @@ impl<'a> InstanceService<'a> {
             ));
         }
         for (index, argument) in type_args.iter().enumerate() {
-            if *argument != ResolvedTy::Never
-                && !is_supported_call_value(self.module, &self.checked_facts, argument)
-            {
+            if !is_supported_instance_type_arg(self.module, &self.checked_facts, argument) {
                 return Err(format!(
                     "generic direct callee `{}` type argument {index} is `{}`; SIR generic instances require a concrete semantic value contract",
                     declaration.full_path(),
@@ -2150,7 +2148,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         for argument in &type_args {
-            if *argument != ResolvedTy::Never {
+            if !matches!(argument, ResolvedTy::Unit | ResolvedTy::Never) {
                 self.require_type_facts(argument)?;
             }
         }
@@ -2772,6 +2770,21 @@ fn is_supported_call_value(module: &HirModule, facts: &TypeFactService, ty: &Res
         || supervisor::declaration(module, ty).is_some()
         || is_concrete_aggregate_type(module, facts, ty)
         || is_concrete_variant_type(module, ty)
+}
+
+/// Whether a checker-resolved type argument can key a SIR generic instance.
+///
+/// A type argument is a type, not a value crossing a call boundary: a `gen fn`
+/// with no final return binds `Generator<Y, R>`'s `R` to `()`, and the
+/// diverging arm of an instance binds `Never`. Neither is a value SIR ever
+/// passes, so neither owes a call-value contract; every other argument must
+/// name one.
+fn is_supported_instance_type_arg(
+    module: &HirModule,
+    facts: &TypeFactService,
+    ty: &ResolvedTy,
+) -> bool {
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, facts, ty)
 }
 
 fn is_supported_call_return(module: &HirModule, facts: &TypeFactService, ty: &ResolvedTy) -> bool {

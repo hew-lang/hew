@@ -1896,7 +1896,7 @@ fn verify_generic_callable_instance(
         )));
     }
     for (index, argument) in key.type_args.iter().enumerate() {
-        if *argument != ResolvedTy::Never && !is_supported_call_value(module, argument) {
+        if !is_supported_instance_type_arg(module, argument) {
             diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                 callable: callable.id,
                 reason: format!(
@@ -2618,6 +2618,14 @@ fn is_initial_value_type(ty: &ResolvedTy) -> bool {
     is_initial_scalar(ty)
         || matches!(ty, ResolvedTy::Tuple(elements)
             if elements.iter().all(is_initial_value_type))
+}
+
+/// Whether a type argument keying a SIR generic instance names a concrete
+/// type. `()` (a `gen fn` with no final return) and `Never` (a diverging
+/// instance) are types SIR never passes as values, so they owe no call-value
+/// contract; every other argument does.
+fn is_supported_instance_type_arg(module: &SemModule, ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Unit | ResolvedTy::Never) || is_supported_call_value(module, ty)
 }
 
 fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {

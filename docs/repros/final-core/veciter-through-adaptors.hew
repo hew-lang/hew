@@ -1,0 +1,19 @@
+import std.iter;
+
+fn nums() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    for i in 1..6 { v.push(i); }
+    v
+}
+
+fn main() {
+    for x in iter.map(nums().into_iter(), |v: i64| v * 2) {
+        println(x);
+    }
+    for x in iter.filter(nums().into_iter(), |v: i64| v > 3) {
+        println(x);
+        break;
+    }
+    println(iter.sum(iter.take(nums().into_iter(), 3)));
+    println(iter.fold(nums().into_iter(), 0, |a: i64, x: i64| a + x));
+}

@@ -1,0 +1,52 @@
+// A `gen fn` value driven through the `std.iter` adapters, the shape an
+// ordinary program writes: the generator is the `Iterator` each adapter
+// stores, and the terminal drives its `next` through the where-clause bound.
+// Leaving a loop early closes the generator cooperatively — its `defer` runs
+// before the loop's continuation — and nothing it still held leaks.
+import std.iter;
+
+gen fn counter() -> i64 {
+    yield 1;
+    yield 2;
+    yield 3;
+    yield 4;
+}
+
+gen fn traced(label: string) -> string {
+    defer { println(f"closed {label}"); }
+    yield f"{label}-a";
+    yield f"{label}-b";
+    yield f"{label}-c";
+}
+
+fn main() {
+    // map + fold
+    println(iter.fold(iter.map(counter(), |x: i64| x * 2), 0, |acc: i64, x: i64| acc + x));
+
+    // filter + count
+    println(iter.count(iter.filter(counter(), |x: i64| x % 2 == 0)));
+
+    // take + sum
+    println(iter.sum(iter.take(counter(), 3)));
+
+    // collect through map
+    let doubled = iter.collect(iter.map(counter(), |x: i64| x * 10));
+    println(doubled.len());
+    println(doubled[3]);
+
+    // a plain `for` over an adapter chain
+    for value in iter.filter(counter(), |x: i64| x > 2) {
+        println(value);
+    }
+
+    // Early exit closes the generator the adapter owns, exactly once, and the
+    // yields it never reached never run.
+    for value in iter.map(traced("run"), |s: string| s.to_upper()) {
+        println(value);
+        break;
+    }
+    println("after-break");
+
+    // Exhausting the same shape closes it too.
+    println(iter.count(iter.map(traced("full"), |s: string| s.to_upper())));
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-through-adaptors"
+intent = "A `gen fn` value drives the `std.iter` adapters: map, filter, take, fold, sum, count and collect each select the generator's `Iterator.next` through their where-clause bound, a plain `for` walks an adapter chain, and leaving the loop early closes the generator cooperatively — its `defer` runs once, before the loop's continuation, and the yields it never reached never run."
+source = "cases/generator-through-adaptors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "20\n2\n6\n4\n40\n3\n4\nRUN-A\nclosed run\nafter-break\nclosed full\n3\n"
+exit = 0

@@ -20,13 +20,15 @@ replaced the legacy lowerer. Its rows describe `main`: 85 of the 106 select
 macOS alone, and 20 rows selected Linux for tests that recovered on the final
 path.
 
-The ledger now carries 269 rows: every remaining Linux failure in the triage
+The ledger now carries 262 rows: every remaining Linux failure in the triage
 half has one naming the issue that will remove it, and the 20 stale Linux
 selectors are gone. 15 of those 20 are outside the triage half and were dropped
 because the tests pass at this head. The mechanical half's 45 still-failing ids
 each gained a row too, naming the same defect groups or a new issue where none
-existed yet (#3396, #3397, #3398). `make test` is green on this head; `make
-test` and `make test-strict` differ only by this ledger.
+existed yet (#3396, #3397, #3398). Seven of the 26 "rewrite specified" #3394
+ids landed as Rewritten in the same pass, deleting their rows. `make test` is
+green on this head; `make test` and `make test-strict` differ only by this
+ledger.
 
 ## Dispositions
 

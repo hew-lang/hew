@@ -1,3 +1,13 @@
+# platform	outcome	suite	test	reason
+#
+# Ordinary CI may carry a narrowly identified compiler defect while its fix is
+# developed. PR gates report an entry that now passes; scheduled strict
+# accounting requires its removal. Changed outcomes, unlisted failures,
+# disappearance, signals, and setup errors remain blocking. Release gates do
+# not read this file. If a multi-platform entry recovers on only a subset,
+# replace its selector with the exact remaining failing platforms (or split it
+# into platform-specific rows); never delete the row wholesale until every
+# selected platform has recovered.
 linux	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
 linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 feat/generators-adaptors: lowers a direct call to std.pipeline.run

@@ -1227,18 +1227,16 @@ fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
          as an inline `{{ tag, payload }}` value misreads the pointer as a tag and frees \
          nothing:\n{thunk}"
     );
-    let recursive = thunk
+    let Some((_, rest)) = thunk
         .lines()
         .find_map(|line| line.split_once("call void @__hew_variant_drop_"))
-        .map(|(_, rest)| {
-            format!(
-                "__hew_variant_drop_{}",
-                rest.split('(').next().unwrap_or_default()
-            )
-        })
-        .unwrap_or_else(|| {
-            panic!("`@{symbol}` must destroy the reply node through a variant destroyer:\n{thunk}")
-        });
+    else {
+        panic!("`@{symbol}` must destroy the reply node through a variant destroyer:\n{thunk}")
+    };
+    let recursive = format!(
+        "__hew_variant_drop_{}",
+        rest.split('(').next().unwrap_or_default()
+    );
     let walk = llvm_fn_body(&ir, &recursive).unwrap_or_else(|| {
         panic!("`@{recursive}` is registered but not defined\n--- IR ---\n{ir}")
     });

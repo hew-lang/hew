@@ -91,7 +91,7 @@ impl ExecutionContextReader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ActorInitParamInfo {
     pub(super) name: String,
     pub(super) ty: Ty,

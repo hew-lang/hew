@@ -2971,7 +2971,63 @@ impl Checker {
             Item::TypeDecl(td) => self.reresolve_type_decl_members(td),
             Item::Record(rd) => self.reresolve_record_members(rd),
             Item::Machine(md) => self.reresolve_machine_members(md),
+            Item::Actor(ad) => self.reresolve_actor_members(ad),
             _ => {}
+        }
+    }
+
+    /// Re-resolve an actor's state fields and init parameters.
+    ///
+    /// An actor is the type of its handle (D489), and the handle carrier is
+    /// stamped by [`Self::canonicalize_actor_handles`] from the declarations
+    /// registered so far. `actor Alpha { let beta: Beta }` with `Beta`
+    /// declared below it, or in a module `collect_functions` registers later,
+    /// therefore froze `beta` as a bare nominal while `Beta`'s own back
+    /// reference carried the discriminator. Declaration order is not a
+    /// semantic fact, so this pass re-reads the same authority once every
+    /// actor, supervisor and module is registered.
+    fn reresolve_actor_members(&mut self, ad: &ActorDecl) {
+        let has_type_params = !ad.type_params.is_empty();
+        if has_type_params {
+            let bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds, HashMap::new()));
+        }
+        let mut hole_vars = Vec::new();
+        let mut fields: HashMap<String, Ty> = HashMap::new();
+        for field in &ad.fields {
+            let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
+            fields.insert(field.name.clone(), field_ty);
+        }
+        let init_params: Vec<ActorInitParamInfo> = ad.init.as_ref().map_or_else(Vec::new, |init| {
+            init.params
+                .iter()
+                .map(|p| ActorInitParamInfo {
+                    name: p.name.clone(),
+                    ty: self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars),
+                })
+                .collect()
+        });
+        if has_type_params {
+            self.current_type_param_bounds.pop();
+        }
+
+        let identity = self.authoritative_type_def_key(&ad.name);
+        let mut changed = false;
+        if let Some(stored) = self.type_defs.get_mut(&identity) {
+            if stored.kind == TypeDefKind::Actor && stored.fields != fields {
+                stored.fields = fields;
+                changed = true;
+            }
+        }
+        if let Some(stored) = self.actor_init_params.get_mut(&identity) {
+            if *stored != init_params {
+                *stored = init_params;
+                changed = true;
+            }
+        }
+        if changed {
+            self.handle_bearing_dirty = true;
         }
     }
 

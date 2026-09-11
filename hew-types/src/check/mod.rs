@@ -1821,6 +1821,12 @@ impl Checker {
         // derived marker/codec facts. It must run after `collect_functions` (so
         // alias maps exist) and before body checking + descriptor building (so
         // every member-derived consumer sees the corrected types).
+        //
+        // It closes declaration order for actor handles the same way (D489):
+        // an actor state field or init parameter naming an actor declared
+        // below it, or in a module registered by `collect_functions`, resolves
+        // here with the whole declaration table in view and receives the
+        // handle carrier its backward-referencing sibling already had.
         self.reresolve_member_types_after_imports(program);
         // `optional` is a wire-schema admission marker, not an implicit
         // default. Check it only after member re-resolution so aliases and

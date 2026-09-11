@@ -710,7 +710,7 @@ mod tests {
         )
     }
 
-    fn local_pid(name: &str) -> Ty {
+    fn actor_handle(name: &str) -> Ty {
         Ty::actor_handle(name, Vec::new())
     }
 
@@ -770,8 +770,8 @@ mod tests {
     fn no_cycles_linear() {
         // A -> B -> C (no cycle)
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
-            make_actor("B", HashMap::from([("c".to_string(), local_pid("C"))])),
+            make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
+            make_actor("B", HashMap::from([("c".to_string(), actor_handle("C"))])),
             make_actor("C", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
@@ -961,8 +961,8 @@ mod tests {
     fn simple_two_actor_cycle() {
         // A holds B's actor handle, B holds A's
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -978,7 +978,7 @@ mod tests {
         // A holds its own actor handle
         let type_defs: HashMap<String, TypeDef> = [make_actor(
             "A",
-            HashMap::from([("me".to_string(), local_pid("A"))]),
+            HashMap::from([("me".to_string(), actor_handle("A"))]),
         )]
         .into_iter()
         .collect();
@@ -1003,8 +1003,8 @@ mod tests {
                     },
                 )]),
             ),
-            make_struct("S", HashMap::from([("b".to_string(), local_pid("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_struct("S", HashMap::from([("b".to_string(), actor_handle("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1021,9 +1021,9 @@ mod tests {
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
-                HashMap::from([("b".to_string(), Ty::option(local_pid("B")))]),
+                HashMap::from([("b".to_string(), Ty::option(actor_handle("B")))]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1045,11 +1045,11 @@ mod tests {
                     Ty::Named {
                         builtin: None,
                         name: "Vec".to_string(),
-                        args: vec![local_pid("B")],
+                        args: vec![actor_handle("B")],
                     },
                 )]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1065,9 +1065,9 @@ mod tests {
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
-                HashMap::from([("bs".to_string(), Ty::Array(Box::new(local_pid("B")), 3))]),
+                HashMap::from([("bs".to_string(), Ty::Array(Box::new(actor_handle("B")), 3))]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1081,9 +1081,9 @@ mod tests {
     fn three_actor_cycle() {
         // A -> B -> C -> A
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
-            make_actor("B", HashMap::from([("c".to_string(), local_pid("C"))])),
-            make_actor("C", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
+            make_actor("B", HashMap::from([("c".to_string(), actor_handle("C"))])),
+            make_actor("C", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1099,9 +1099,9 @@ mod tests {
     fn mixed_cycle_and_no_cycle() {
         // A <-> B cycle, C -> D no cycle
         let type_defs: HashMap<String, TypeDef> = [
-            make_actor("A", HashMap::from([("b".to_string(), local_pid("B"))])),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
-            make_actor("C", HashMap::from([("d".to_string(), local_pid("D"))])),
+            make_actor("A", HashMap::from([("b".to_string(), actor_handle("B"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
+            make_actor("C", HashMap::from([("d".to_string(), actor_handle("D"))])),
             make_actor("D", HashMap::from([("x".to_string(), Ty::I32)])),
         ]
         .into_iter()
@@ -1149,7 +1149,7 @@ mod tests {
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), Ty::actor_handle("T", Vec::new()))]),
+                fields: HashMap::from([("target".to_string(), named_type("T"))]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1166,15 +1166,11 @@ mod tests {
                     Ty::Named {
                         builtin: None,
                         name: "Wrapper".to_string(),
-                        args: vec![Ty::Named {
-                            builtin: None,
-                            name: "B".to_string(),
-                            args: vec![],
-                        }],
+                        args: vec![actor_handle("B")],
                     },
                 )]),
             ),
-            make_actor("B", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("B", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();
@@ -1204,7 +1200,7 @@ mod tests {
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
                 bounds: HashMap::new(),
-                fields: HashMap::from([("target".to_string(), Ty::actor_handle("T", Vec::new()))]),
+                fields: HashMap::from([("target".to_string(), named_type("T"))]),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1222,26 +1218,18 @@ mod tests {
                         Ty::Named {
                             builtin: None,
                             name: "Wrapper".to_string(),
-                            args: vec![Ty::Named {
-                                builtin: None,
-                                name: "B".to_string(),
-                                args: vec![],
-                            }],
+                            args: vec![actor_handle("B")],
                         },
                         Ty::Named {
                             builtin: None,
                             name: "Wrapper".to_string(),
-                            args: vec![Ty::Named {
-                                builtin: None,
-                                name: "C".to_string(),
-                                args: vec![],
-                            }],
+                            args: vec![actor_handle("C")],
                         },
                     ]),
                 )]),
             ),
             make_actor("B", HashMap::new()),
-            make_actor("C", HashMap::from([("a".to_string(), local_pid("A"))])),
+            make_actor("C", HashMap::from([("a".to_string(), actor_handle("A"))])),
         ]
         .into_iter()
         .collect();

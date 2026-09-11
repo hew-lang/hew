@@ -212,7 +212,6 @@ macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_actor_record_pa
 macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_and_closure_env_clone_are_malloc_scribble_clean	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_closure_env_clone_has_zero_leaks	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
-linux	failure	hew-cli::generic_monomorphization_e2e	generic_record_with_inline_owned_enum_drops_on_all_exits	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_is_not_released_twice	#3105 releases imported machine records on every exit
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_release_slope_stays_flat	#3105 releases imported machine records on every exit
 linux	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_ask_reply_drop_routes_through_recursive_free	fix/collections-final-path wires hew_reply_channel_set_reply_drop_fn into the SuspendingAsk lowering

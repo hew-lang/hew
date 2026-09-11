@@ -210,20 +210,25 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
     // elab`/`raw` text dumps to prove the generic enum-record's owned drop
     // covers the overwrite, error, AND cancel exits, plus a `raw` dump line
     // proving the untouched record releases before its final return. Both
-    // dump stages are gone (`--dump-mir` now accepts only `physical`, whose
-    // `{:#?}` `Debug` dump of `PhysicalModule` carries no comparable
-    // block-by-block text form to pin against). The compiled-and-executed
-    // proof below is narrower: the LLVM clone/drop/overwrite-release
-    // helpers below must exist (bodied, not merely declared), and the
-    // poisoned-allocator run over 256 overwrite iterations plus the
-    // untouched path must exit clean, which an over-release (double-free)
-    // on either of THOSE two paths would not survive. Neither the helper
-    // check nor the run proves anything about the panic or cancel exits
-    // specifically — this fixture's `main` never triggers a panic or a
-    // cancellation, so those two exits are exercised by neither half; a
-    // missed release (leak) on any exit is likewise undetected by either
-    // half. Lost coverage: exactly-once release on the panic/cancel exits
-    // specifically, and leak detection generally.
+    // dump stages are gone (`--dump-mir` now accepts only `physical`), and
+    // the out-of-line recursive clone/drop/overwrite-release thunks this
+    // oracle used to pin by name are retired too: a `Choice<string>` fits
+    // inline (a pointer-sized payload plus a tag), so the physical path
+    // inlines its clone/drop directly into `aggregate.drop` blocks at each
+    // call site instead of emitting one shared helper function per
+    // instantiation — there is no longer a bodied symbol to assert against.
+    //
+    // The replacement proof runs on two tracks: the poisoned-allocator run
+    // below over 256 overwrite iterations plus the untouched path, which an
+    // over-release (double-free) on either path would not survive; and the
+    // `generic-enum-record-scope-drop` core-acceptance safety case (same
+    // fixture), which runs the identical program under generated-code and
+    // runtime ASan/LSan. Neither proves anything about the panic or cancel
+    // exits specifically — this fixture's `main` never triggers a panic or a
+    // cancellation, so those two exits are exercised by neither track; a
+    // missed release (leak) on any exit is likewise undetected by either.
+    // Lost coverage: exactly-once release on the panic/cancel exits
+    // specifically.
     let source = fixture_path("generic_enum_record_scope_drop.hew");
     let emit_dir = support::tempdir();
     let mut command = std::process::Command::new(hew_binary());
@@ -242,19 +247,6 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
         "generic enum-record LLVM should compile; stderr: {}",
         String::from_utf8_lossy(&compile.output.stderr)
     );
-    let llvm = std::fs::read_to_string(compile.ll_path).expect("read generic enum-record LLVM");
-    for helper in [
-        "define internal i32 @\"__hew_record_clone_inplace_EnumHolder$$string\"",
-        "define internal i32 @\"__hew_enum_clone_inplace_Choice$$string\"",
-        "define internal void @\"__hew_record_drop_inplace_EnumHolder$$string\"",
-        "define internal void @\"__hew_enum_drop_inplace_Choice$$string\"",
-        "define internal void @\"__hew_enum_overwrite_release_Choice$$string\"",
-    ] {
-        assert!(
-            llvm.contains(helper),
-            "expected a bodied recursive helper `{helper}`"
-        );
-    }
 
     let output = std::process::Command::new(hew_testutil::compiled_binary_path(
         emit_dir.path(),

@@ -370,7 +370,7 @@ fn scenario_delivers_socket_bytes_to_on_data() {
 /// Same delivery proof as `scenario_delivers_socket_bytes_to_on_data`, but
 /// driven through `hew_tcp_attach_local` — the entry point the Hew
 /// `conn.attach(handler)` surface lowers to. The compiler hands this function
-/// the bare `*mut HewActor` from a `LocalPid<Actor>` (no `HewActorRef`
+/// the bare `*mut HewActor` from an actor handle (no `HewActorRef`
 /// wrapper); the runtime constructs the local ref itself. Proving this path
 /// RUNS is the runtime-level equivalent of the Hew-source echo oracle, which
 /// cannot run end-to-end while the pre-existing D10 `fs.IoError` codegen gap
@@ -391,8 +391,8 @@ fn scenario_attach_local_delivers_socket_bytes_to_on_data() {
     let server_conn = hew_tcp_accept(listener);
     assert!(server_conn > 0, "accept should succeed");
 
-    // Spawn the capture actor and attach via the LocalPid entry point: pass the
-    // raw `*mut HewActor` (what a Hew `LocalPid<Actor>` lowers to), not a
+    // Spawn the capture actor and attach via the local-attach entry point: pass
+    // the raw `*mut HewActor` (what a Hew actor handle lowers to), not a
     // pre-built HewActorRef. The runtime constructs the local ref internally.
     let actor = spawn_capture_actor();
     assert!(!actor.is_null(), "spawn capture actor");

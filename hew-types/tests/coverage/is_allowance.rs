@@ -2,12 +2,12 @@
 //!
 //! Covers the checker rule (HEW-SPEC-2026 §3.4.3, §operator precedence entry
 //! 10): `is` is handle identity only. D340 ratified §3.4.3's category table;
-//! `is_identity_capable` currently implements its pid handle row (actors and
-//! `LocalPid<T>`) — the counted/opaque/resource handle rows (`Rc`, `Weak`,
+//! `is_identity_capable` currently implements its actor-handle row (actors
+//! and their handles) — the counted/opaque/resource handle rows (`Rc`, `Weak`,
 //! `#[opaque]`/`#[resource]` wrappers) are still refused pending the codegen
 //! support their identity words need, tracked outside this PR.
 //!
-//! * Allowed: actors/actor refs (`LocalPid<T>`).
+//! * Allowed: actors/actor refs (the actor's own type).
 //! * Rejected with `E_IS_VALUE_TYPE`: scalars (`i64`, `bool`, `char`, floats),
 //!   `string`, `bytes`, tuples, `Vec`/`HashMap`/`HashSet`, user
 //!   `type Foo { ... }` record declarations, `enum` declarations (`indirect`
@@ -159,7 +159,7 @@ fn bytes_is_bytes_rejected() {
 // types above must not disturb any other operand's existing answer.
 // ---------------------------------------------------------------------------
 
-/// `LocalPid` stays admitted — the case `actor_ref_is_actor_ref_accepted`
+/// An actor handle stays admitted — the case `actor_ref_is_actor_ref_accepted`
 /// above already pins; this negative control names it explicitly alongside
 /// its three siblings below so the four are read together.
 #[test]
@@ -649,9 +649,10 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 //
 // D340 narrows admission to actor handles, and `resolve_is_type_pattern`
 // always resolves a `TypeName` RHS to the bare `TypeDef` name with no
-// generic arguments — every admitted actor value is a `LocalPid<T>` handle,
-// so an LHS can never structurally equal that bare pattern
-// (`LocalPid<Worker>` vs. `Worker`). The static-tautology branch
+// generic arguments — every admitted actor value is an actor handle (its
+// `Named` carrier tags the `ActorHandle` builtin), so an LHS handle can
+// never structurally equal that bare, non-handle pattern (the `Worker`
+// handle vs. bare `Worker`). The static-tautology branch
 // (`HirLiteral::Bool(true)`, the `RedundantIs` warning, and the
 // "type patterns currently require an identifier operand" guard, which only
 // fires alongside the tautology) has no reachable positive control left; see
@@ -661,7 +662,7 @@ fn is_after_actor_send_reads_sender_snapshot_source() {
 
 #[test]
 fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
-    // `self is Worker` inside a `Worker` receive fn: `self: LocalPid<Worker>`
+    // `self is Worker` inside a `Worker` receive fn: `self: Worker`
     // never equals the bare `Worker` type pattern, so the checker reports the
     // Mismatch this test's name promises, not the static-tautology warning.
     let output = common::typecheck_isolated(
@@ -687,7 +688,7 @@ fn is_type_pattern_with_distinct_types_emits_no_redundant_is_warning() {
             .errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
-        "expected a Mismatch between `LocalPid<Worker>` and `Worker`, got: {:#?}",
+        "expected a Mismatch between the `Worker` handle and the bare `Worker` pattern, got: {:#?}",
         output.errors,
     );
 }

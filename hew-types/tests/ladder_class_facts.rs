@@ -206,12 +206,12 @@ fn an_rc_is_an_affine_resource_that_retains_and_does_not_send() {
     );
 }
 
-/// §1.1's marker correction: a pid never owns the actor, so `LocalPid` is
-/// `BitCopy` and its drop frees nothing.
+/// §1.1's marker correction: a handle never owns the actor, so an actor
+/// handle is `BitCopy` and its drop frees nothing.
 #[test]
 fn a_local_pid_is_bitcopy() {
     let output = facts_of("class_pid_bitcopy.hew");
-    let facts = row_matching(&output, "`LocalPid<Counter>`", |ty| {
+    let facts = row_matching(&output, "`Counter`", |ty| {
         matches!(
             ty,
             ResolvedTy::Named {

@@ -2,7 +2,7 @@ actor Client {
     receive fn deliver() {}
 }
 
-fn broadcast(clients: Vec<LocalPid<Client>>) {
+fn broadcast(clients: Vec<Client>) {
     for client in clients {
         let _ = client.deliver();
     }

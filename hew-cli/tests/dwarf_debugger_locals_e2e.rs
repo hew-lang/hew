@@ -87,7 +87,7 @@ actor Source {
 }
 
 actor Handler {
-    let source: LocalPid<Source>,
+    let source: Source,
 
     receive fn run() -> i64 {
         let before: i64 = 7;

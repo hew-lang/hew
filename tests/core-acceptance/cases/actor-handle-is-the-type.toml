@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handle-is-the-type"
+intent = "An actor is the type of its handle: `spawn A(...)` has type `A`, the annotation is optional, a parameter and a return hold the actor by that type, `self` is the actor's own handle, and the waiting send, the awaited fork, the one-shot fork and a unit-reply send all reach the handler."
+source = "cases/actor-handle-is-the-type.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "order tea\n1\norder milk\n2\ndone\nbye\n2\n"
+exit = 0

@@ -453,7 +453,7 @@ fn actor_request_carrier_source(frames: usize) -> String {
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag + sum(tree) }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>,\n\
+         \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
          \x20       match await scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
@@ -495,7 +495,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   receive fn score(tag: i64, value: i64) -> i64 {{ tag + value }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>,\n\
+         \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
          \x20       match await scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
@@ -668,7 +668,7 @@ actor SlowReplier {\n\
 \x20   receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }\n\
 }\n\
 actor Driver {\n\
-\x20   var slow: LocalPid<SlowReplier>,\n\
+\x20   var slow: SlowReplier,\n\
 \x20   receive fn run() -> i64 {\n\
 \x20       match slow.fetch() {\n\
 \x20           .Ok(t) => { val(t) }\n\

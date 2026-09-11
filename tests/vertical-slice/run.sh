@@ -1494,7 +1494,7 @@ diff -u "${ROOT}/tests/vertical-slice/accept/actor_field_method_dispatch.expecte
 # the diagnostic text, not a command substitution.
 
 # Reject: `ActorRef<T>` is not a known type. The canonical actor-reference
-# family is `LocalPid`/`RemotePid`/`LambdaPid`; an `ActorRef<T>` annotation
+# family is the actor's own type, `RemotePid` or `actor(M) -> R`; an `ActorRef<T>` annotation
 # resolves to an unknown type and fails closed rather than silently
 # typechecking (closes the FND-14 dropped-type-argument hole at its source).
 # shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
@@ -2145,16 +2145,17 @@ grep -q 'has no child named' "${reject_output}" ||
 grep -q 'w1' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
-# Reject: field access on a plain actor LocalPid, not a supervisor.
-# `w.child` on LocalPid<Worker> — the checker emits UndefinedField because
-# LocalPid has no user-visible fields and is not in the supervisor_children map.
+# Reject: field access on a plain actor handle, not a supervisor.
+# `w.child` on a `Worker` handle - the checker emits UndefinedField because an
+# actor handle has no user-visible fields and `Worker` is not in the
+# supervisor_children map.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/supervisor_child_on_plain_actor.hew" >"${reject_output}" 2>&1; then
     echo "expected supervisor-child-on-plain-actor fixture to fail" >&2
     record_failure "row ${LINENO}" "see stderr above"
 fi
 grep -q 'no field' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
-grep -q 'LocalPid' "${reject_output}" ||
+grep -q 'on type .Worker.' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
 run_accept_expect_stdout "prelude_error_display"
@@ -2579,7 +2580,7 @@ fi
 
 # Accept: actor receive-method dispatch through a struct-field receiver.
 # `actor B { let out: W; ... out.put(n) ... await out.get() }` — the field's
-# bare actor-name type holds an actor handle (canonicalised to LocalPid<W> in
+# bare actor-name type holds an actor handle (the actor's own type in
 # HIR), so both the fire (`put`) and ask (`get`) calls route through the actor
 # mailbox. Regression for `E_HIR: indirect call ... has no MIR dispatch path`,
 # which fired before the field receiver was recognised as an actor send/ask.
@@ -2628,11 +2629,11 @@ grep -q '__hew_cbor_serialize_Receiver' \
     record_failure "actor_channel_shadow_sender_codec" "missing __hew_cbor_serialize_Receiver"
 
 # Accept + run: a single-argument actor receive handler whose ONLY parameter is
-# a process-local pid payload (`LocalPid<T>`). `echo.hear(this)` passes the
+# a process-local actor handle payload. `echo.hear(this)` passes the
 # pinger's own pid as the sole message arg; the handler routes an `ack` back
 # through it. Before the fix this single-arg form was incorrectly fail-closed at
 # codegen — the cross-node codec seeder eagerly tried to build a wire serializer
-# for the non-serializable `LocalPid` payload and failed the WHOLE compile —
+# for the non-serializable actor-handle payload and failed the WHOLE compile -
 # even though the identical multi-arg form already worked and a same-node send
 # never serializes. Pins the broadened codec-seeder skip (actor-pid/handle
 # family), the sibling of the channel-handle skip. The companion reject fixture
@@ -2730,7 +2731,7 @@ grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}" ||
 
 # Accept + run: `.send()` on a lambda-actor handle delivers the message.
 # Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` on a
-# `LambdaPid` handle type routes to the lambda-actor ABI
+# `actor(M) -> R` handle type routes to the lambda-actor ABI
 # (`hew_lambda_actor_send`), not the raw-duplex `hew_duplex_send` (which would
 # type-pun the handle and silently drop the message). Statement-context send is
 # fire-and-forget: the actor receives 42 and prints it.
@@ -2744,28 +2745,28 @@ grep -qF 'E_STREAM_ADAPTER_UNSUPPORTED' "${reject_output}" ||
 # fixture above this covers both send contexts.
 run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 
-# Accept + run: explicit `.close()` on a LambdaPid handle — statement context.
+# Accept + run: explicit `.close()` on an anonymous actor's handle, statement context.
 # Sends a message then explicitly releases the handle via `hew_lambda_actor_release`
-# (routed from the LambdaPid handle type in lower_duplex_close). Stdout "42" proves
+# (routed from the anonymous actor handle type in lower_duplex_close). Stdout "42" proves
 # the message was delivered before the release.
 
-# Reject: LambdaPid.send accepts exactly one message argument. MIR lowers only
+# Reject: an anonymous actor's send accepts exactly one message argument. MIR lowers only
 # the receiver plus the first message arg, so surplus args must not be silently
 # accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_method_send_extra_arg.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-method-send-extra-arg fixture to fail" >&2
     record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'LambdaPid.send expects one argument' "${reject_output}" ||
+grep -q 'send. on an actor handle expects one argument' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
-# Reject: LambdaPid.close accepts no arguments. MIR lowers only the receiver,
+# Reject: an anonymous actor's close accepts no arguments. MIR lowers only the receiver,
 # so surplus args must not be silently accepted and dropped.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_close_extra_arg.hew" >"${reject_output}" 2>&1; then
     echo "expected lambda-close-extra-arg fixture to fail" >&2
     record_failure "row ${LINENO}" "see stderr above"
 fi
-grep -q 'LambdaPid.close expects no arguments' "${reject_output}" ||
+grep -q 'close. on an actor handle expects no arguments' "${reject_output}" ||
     record_failure "row ${LINENO}" "assertion failed"
 
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
@@ -2893,8 +2894,8 @@ expect_check_fail_contains \
     "E_REMOTE_PAYLOAD_UNSUPPORTED" \
     "actor_multi_arg_remote_send_unsupported"
 
-# Reject: a process-local `LocalPid` payload must never cross a RemotePid
-# (cross-node) boundary. `LocalPid<T>` is process-local — a bare `*mut HewActor`
+# Reject: a process-local actor handle payload must never cross a RemotePid
+# (cross-node) boundary. An actor handle is process-local, a bare `*mut HewActor`
 # pointer with no on-wire representation — and carries neither Encode nor
 # Decode, so it is NOT Serializable. Sending it through `RemotePid.send` must
 # fail closed at the checker's Serializable boundary, never ship a local pointer
@@ -3488,8 +3489,8 @@ if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/sink_i64_typed.hew" >"$
     record_failure "row ${LINENO}" "see stderr above"
 fi
 
-# Reject: Sink<LocalPid<Foo>> payload does not implement Encode + Decode.
-# LocalPid derives Send + Sync + Copy + Clone but is not Wire-serialisable.
+# Reject: a `Sink` of an actor handle payload does not implement Encode + Decode.
+# An actor handle derives Send + Sync + Copy + Clone but is not Wire-serialisable.
 # The Wire-capability admissibility gate must emit SinkPayloadNotWire.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/sink_non_wire_payload.hew" >"${reject_output}" 2>&1; then
     echo "expected sink_non_wire_payload fixture to fail" >&2

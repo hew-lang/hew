@@ -1,0 +1,23 @@
+// The spellings an actor's own type replaces are refused where they are
+// written, each naming the type to write instead.
+actor Greeter {
+    receive fn greet() -> i64 { 1 }
+}
+
+fn by_local_pid(g: LocalPid<Greeter>) -> i64 {
+    match g.greet() { .Ok(v) => v, .Err(_) => 0 }
+}
+
+fn by_pid(g: Pid<Greeter>) -> i64 {
+    match g.greet() { .Ok(v) => v, .Err(_) => 0 }
+}
+
+fn by_lambda_pid(step: LambdaPid<i64, i64>) -> i64 {
+    match step(1) { .Ok(v) => v, .Err(_) => 0 }
+}
+
+fn main() {
+    let g = spawn Greeter();
+    println(by_local_pid(g) + by_pid(g) + by_lambda_pid(actor |n: i64| -> i64 { n }));
+    close(g);
+}

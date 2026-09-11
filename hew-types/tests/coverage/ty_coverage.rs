@@ -361,9 +361,11 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 
 #[test]
 fn actor_handle_accessor() {
-    // LocalPid<T> is the local actor handle.
-    let ty = Ty::local_pid(Ty::I32);
-    assert_eq!(ty.as_actor_handle(), Some(&Ty::I32));
+    // An actor handle carries the actor's own name and type args directly
+    // (D489: an actor is the type of its handle).
+    let ty = Ty::actor_handle("Counter", vec![]);
+    assert_eq!(ty.as_actor_handle(), Some(&ty));
+    assert_eq!(ty.actor_handle_identity(), Some(("Counter", &[][..])));
 
     // RemotePid<T> is a distinct remote handle — NOT a local actor handle.
     assert_eq!(Ty::remote_pid(Ty::Bool).as_actor_handle(), None);
@@ -403,15 +405,11 @@ fn accessor_wrong_arity_returns_none() {
     };
     assert_eq!(bad_gen.as_generator(), None);
 
-    // LocalPid with wrong arity — the accessor's arity guard rejects it even
-    // when the builtin discriminator is stamped.
-    let bad_pid = Ty::Named {
-        builtin: Some(hew_types::BuiltinType::ActorHandle),
-        name: "LocalPid".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
-    assert_eq!(bad_pid.as_local_pid(), None);
-    assert_eq!(bad_pid.as_actor_handle(), None);
+    // An actor handle has no fixed arity to guard: its args are the actor's
+    // own type parameters, whatever arity the actor declares, so
+    // `as_actor_handle` accepts any arg count once the builtin discriminator
+    // is stamped. The wrong-arity coverage above and below stays meaningful
+    // only for the builtins with a fixed arg count.
 
     // Stream/Sink with wrong arity
     let bad_stream = Ty::Named {

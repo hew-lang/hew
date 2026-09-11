@@ -3,10 +3,10 @@
 actor__across_suspend	PASS
 actor__actor_send	PASS
 actor__construct	PASS
-actor__format	NYI-CLEAN	tests/core-matrix/cells/actor__format.hew:12:18: error: type `LocalPid<Echo>` does not implement `Display` (f-string interpolation requires `impl Display for LocalPid<Echo>`)
+actor__format	NYI-CLEAN	tests/core-matrix/cells/actor__format.hew:12:18: error: type `Echo` does not implement `Display` (f-string interpolation requires `impl Display for Echo`)
 actor__index	PASS
 actor__iterate	PASS
-actor__map_key	NYI-CLEAN	tests/core-matrix/cells/actor__map_key.hew:13:5: error: `LocalPid<Echo>` does not satisfy the required bounds for `Map.insert` (K: Hash)
+actor__map_key	NYI-CLEAN	tests/core-matrix/cells/actor__map_key.hew:13:5: error: `Echo` does not satisfy the required bounds for `Map.insert` (K: Hash)
 actor__move	PASS
 actor__mutate	PASS
 actor__pass_fn	PASS

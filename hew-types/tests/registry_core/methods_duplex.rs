@@ -590,9 +590,9 @@ fn duplex_recv_half_twice_fires_use_after_move() {
 // ---------------------------------------------------------------------------
 
 /// Call-syntax `worker(msg)` and method-syntax `worker.send(msg)` both typecheck
-/// on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`). Both enter the
+/// on a lambda-actor handle (typed `actor(Msg) -> Reply`). Both enter the
 /// `hew_duplex_send` rewrite path; MIR selects the real delivery from the
-/// handle's `LambdaPid` type.
+/// handle's `ActorFn` builtin discriminator.
 ///
 /// Call-syntax remains canonical; `.send()` is an allowed-secondary surface.
 #[test]
@@ -613,9 +613,9 @@ fn lambda_actor_call_syntax_typechecks() {
     );
 }
 
-/// `.send()` on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`) typechecks
+/// `.send()` on a lambda-actor handle (typed `actor(Msg) -> Reply`) typechecks
 /// and records `hew_duplex_send` in the rewrite table — the shared send-entry
-/// hint MIR resolves from the handle's `LambdaPid` type.
+/// hint MIR resolves from the handle's `ActorFn` builtin discriminator.
 #[test]
 fn lambda_actor_dot_send_dispatches_as_an_actor_call() {
     let source = r"
@@ -629,7 +629,7 @@ fn lambda_actor_dot_send_dispatches_as_an_actor_call() {
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "`.send()` on lambda-actor handle should typecheck via LambdaPid::send; got: {:#?}",
+        "`.send()` on lambda-actor handle should typecheck via the actor-fn handle's send; got: {:#?}",
         output.errors
     );
     assert!(

@@ -11,11 +11,7 @@ const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
 const NAMED_WORKER_MODULE: &str = "services.workers";
 
 fn child_handle(name: &str) -> hew_types::ResolvedTy {
-    hew_types::ResolvedTy::named_builtin(
-        "LocalPid",
-        hew_types::BuiltinType::ActorHandle,
-        vec![hew_types::ResolvedTy::named_user(name, Vec::new())],
-    )
+    hew_types::ResolvedTy::named_builtin(name, hew_types::BuiltinType::ActorHandle, Vec::new())
 }
 
 fn file_import_program(
@@ -267,7 +263,7 @@ fn file_imported_actor_cycle_capability_uses_full_checker_identity() {
     let expected = format!("{WORKER_MODULE}.CyclicImported");
     let (output, checked) = lower_file_import_with(
         "pub actor CyclicImported {\n\
-         \x20   let peer: LocalPid<CyclicImported>,\n\
+         \x20   let peer: CyclicImported,\n\
          }\n\
          pub actor AcyclicImported {\n\
          \x20   let value: i64,\n\

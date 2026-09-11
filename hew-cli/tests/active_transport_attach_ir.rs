@@ -37,17 +37,17 @@ actor WebSocketProbe {
 
 fn _observe_borrowed_bytes(data: bytes) {}
 
-fn attach_tcp(listener: net.Listener, handler: LocalPid<TcpProbe>) {
+fn attach_tcp(listener: net.Listener, handler: TcpProbe) {
     let conn = listener.accept();
     conn.attach(handler);
 }
 
-fn attach_tls(handler: LocalPid<TlsProbe>) {
+fn attach_tls(handler: TlsProbe) {
     let stream = tls.connect("127.0.0.1", 443);
     stream.attach(handler);
 }
 
-fn attach_websocket(server: websocket.Server, handler: LocalPid<WebSocketProbe>) {
+fn attach_websocket(server: websocket.Server, handler: WebSocketProbe) {
     let conn = server.accept();
     conn.attach(handler);
 }
@@ -67,7 +67,7 @@ actor TcpProbe {
     receive fn on_close() {}
 }
 
-fn attach_then_close(listener: net.Listener, handler: LocalPid<TcpProbe>) {
+fn attach_then_close(listener: net.Listener, handler: TcpProbe) {
     let conn = listener.accept();
     conn.attach(handler);
     conn.close();

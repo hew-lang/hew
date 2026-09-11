@@ -92,7 +92,7 @@ actor Helper {
 }
 
 actor Crasher {
-    let helper: LocalPid<Helper>,
+    let helper: Helper,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await helper.ping() {
@@ -136,7 +136,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {
@@ -183,7 +183,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run(trigger: i64) -> i64 {
         let seed = match await gate.tick() {

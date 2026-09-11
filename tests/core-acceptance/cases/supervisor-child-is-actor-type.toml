@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-child-is-actor-type"
+intent = "A supervisor child accessor yields the child's actor type: the pool member and the static role reach the child's own receive handlers and return the child's own reply types, a supervisor is addressed by its own name, and an ordinary spawned actor of the same declaration travels through a function by that type."
+source = "cases/supervisor-child-is-actor-type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "12\n0\n42\n1\n22\n"
+exit = 0

@@ -52,7 +52,7 @@ fn fuzz_channel_surfaces(
     stream: Stream<i64>,
     sink: Sink<i64>,
     duplex: Duplex<i64, string>,
-    local: LocalPid<FuzzWorker>,
+    local: FuzzWorker,
     remote: RemotePid<FuzzWorker>,
 ) {{
     sink.send(1);

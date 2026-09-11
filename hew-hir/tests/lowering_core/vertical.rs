@@ -977,7 +977,7 @@ fn a_lambda_actor_declares_its_body_as_one_handler() {
 fn a_typed_actor_let_resolves_its_own_name_then_refuses_the_capture() {
     let source = r"
 fn make() {
-    let fib: LambdaPid<i64, i64> = actor |n: i64| -> i64 {
+    let fib: actor(i64) -> i64 = actor |n: i64| -> i64 {
         fib;
         n + 1
     };

@@ -2,9 +2,9 @@ use crate::common;
 
 use hew_types::error::TypeErrorKind;
 
-// ── Deliverable 1: Node::register tightens 2nd arg to LocalPid<T> ────────────
+// ── Deliverable 1: Node::register tightens 2nd arg to T ────────────
 
-/// Passing a freshly-spawned local pid must typecheck without error.
+/// Passing a freshly-spawned actor handle must typecheck without error.
 #[test]
 fn node_register_accepts_local_pid() {
     let output = common::typecheck(
@@ -21,7 +21,7 @@ fn node_register_accepts_local_pid() {
     );
     assert!(
         output.errors.is_empty(),
-        "Node::register with a LocalPid should typecheck cleanly; got: {:#?}",
+        "Node::register with an actor handle should typecheck cleanly; got: {:#?}",
         output.errors
     );
 }
@@ -41,9 +41,9 @@ fn node_register_rejects_integer_literal() {
         output.errors.iter().any(|e| matches!(
             &e.kind,
             TypeErrorKind::Mismatch { expected, .. }
-                if expected.contains("LocalPid")
+                if expected.contains("Worker")
         )),
-        "Node::register with an integer should produce a LocalPid mismatch; got: {:#?}",
+        "Node::register with an integer should produce a Worker-handle mismatch; got: {:#?}",
         output.errors
     );
 }

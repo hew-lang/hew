@@ -1493,7 +1493,7 @@ fn gen_stream_return_carry_source() -> String {
      \x20       yield \"rest\";\n\
      \x20   }\n\
      }\n\
-     fn first(m: LocalPid<Maker>) -> string {\n\
+     fn first(m: Maker) -> string {\n\
      \x20   for v in m.items() {\n\
      \x20       return v;\n\
      \x20   }\n\
@@ -1608,7 +1608,7 @@ fn gen_stream_return_forwarded_via_call_source() -> String {
      fn wrap(v: string) -> string {\n\
      \x20   return v;\n\
      }\n\
-     fn first(m: LocalPid<Maker>) -> string {\n\
+     fn first(m: Maker) -> string {\n\
      \x20   for v in m.items() {\n\
      \x20       return wrap(v);\n\
      \x20   }\n\

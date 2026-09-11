@@ -1,0 +1,73 @@
+// An actor is the type of its handle: `spawn Orders(...)` has type `Orders`,
+// the annotation is optional, `self` inside a body is `Self` which is the
+// actor, and a parameter, return or field that holds an actor is written with
+// the actor's own name. Every call form is exercised here: the waiting send,
+// the forked send awaited later, the forked send left to join at scope exit,
+// and the waiting send whose reply is unit.
+actor Orders {
+    var placed: i64,
+    let log: Auditor,
+    receive fn order(item: string) -> i64 {
+        placed = placed + 1;
+        let _ = log.record(f"order {item}");
+        placed
+    }
+    receive fn log_line(line: string) { println(line) }
+    receive fn count() -> i64 { placed }
+    receive fn who() -> Orders { self }
+}
+
+actor Auditor {
+    var seen: i64,
+    receive fn record(entry: string) -> i64 {
+        seen = seen + 1;
+        println(entry);
+        seen
+    }
+}
+
+// An unawaited fork is the one-shot send: its task joins where the fork's
+// enclosing scope ends, so this function's return is that join point.
+fn one_shot(orders: Orders, line: string) {
+    fork orders.log_line(line);
+}
+
+// An actor travels through an ordinary function by its own type.
+fn place(orders: Orders, item: string) -> i64 {
+    match orders.order(item) {
+        .Ok(n) => n,
+        .Err(_) => panic("order failed"),
+    }
+}
+
+fn main() {
+    let auditor: Auditor = spawn Auditor(seen: 0);
+    let orders: Orders = spawn Orders(placed: 0, log: auditor);
+
+    println(place(orders, "tea"));
+
+    // A forked send is awaited later.
+    let pending = fork orders.order("milk");
+    match await pending {
+        .Ok(n) => println(n),
+        .Err(_) => panic("forked order failed"),
+    }
+
+    // An unawaited fork is the one-shot send.
+    one_shot(orders, "done");
+
+    // A waiting send with a unit reply still waits.
+    let _ = orders.log_line("bye");
+
+    // `self` is the actor, so a handler may hand its own handle back.
+    match orders.who() {
+        .Ok(same) => match same.count() {
+            .Ok(n) => println(n),
+            .Err(_) => panic("count through the returned handle failed"),
+        },
+        .Err(_) => panic("who failed"),
+    }
+
+    close(orders);
+    close(auditor);
+}

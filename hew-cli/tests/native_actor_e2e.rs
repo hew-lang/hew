@@ -124,7 +124,7 @@ fn actor_handles_copy_through_records_and_vectors() {
     }
 }
 type Directory {
-    ledgers: Vec<LocalPid<Ledger>>,
+    ledgers: Vec<Ledger>,
 }
 fn deliver(directory: Directory) {
     for ledger in directory.ledgers {
@@ -277,7 +277,7 @@ fn native_ask_preserves_strict_turn_while_another_actor_replies() {
 }
 actor Relay {
     var phase: string,
-    receive fn run(echo: LocalPid<Echo>, message: string) {
+    receive fn run(echo: Echo, message: string) {
         phase = "waiting";
         match echo.echo(message) {
             .Ok(value) => { phase = value; }
@@ -471,7 +471,7 @@ actor Worker {
     receive fn process(parcel: Parcel) {
         if parcel.label == "RETRY" { println(parcel.label + ":" + parcel.notes[0]); }
     }
-    receive fn exercise(me: LocalPid<Worker>, backup: LocalPid<Worker>) {
+    receive fn exercise(me: Worker, backup: Worker) {
         let _ = mailbox(me, on_full: .Reject).process(payload("filler"));
         let newest = mailbox(me, on_full: .DropNewest);
         match newest.process(payload("discard")) {
@@ -507,7 +507,7 @@ fn a_handler_can_submit_an_owned_message_to_its_own_actor() {
     run_actor(
         r"actor Gate {
     receive fn observe() { println(42); }
-    receive fn relay(me: LocalPid<Gate>) {
+    receive fn relay(me: Gate) {
         let _ = mailbox(me, on_full: .Reject).observe();
     }
 }
@@ -528,14 +528,14 @@ fn waiting_submission_releases_worker_and_transfers_owned_message_on_capacity() 
         r#"actor Probe { receive fn run() { println("other-actor"); } }
 actor Sink {
     mailbox 1,
-    receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
+    receive fn hold(me: Sink, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
         sleep(20ms);
     }
     receive fn process(value: string) { println(value); }
 }
 actor Driver {
-    receive fn run(sink: LocalPid<Sink>, probe: LocalPid<Probe>) {
+    receive fn run(sink: Sink, probe: Probe) {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
         let _ = mailbox(probe, on_full: .Reject).run();
         let waiting = mailbox(sink, on_full: .Wait);
@@ -564,14 +564,14 @@ fn waiting_submission_deadline_cleans_sender_without_delivering_pending_message(
         r#"actor Probe { receive fn run() { println("other-actor"); } }
 actor Sink {
     mailbox 1,
-    receive fn hold(me: LocalPid<Sink>, driver: LocalPid<Driver>, probe: LocalPid<Probe>) {
+    receive fn hold(me: Sink, driver: Driver, probe: Probe) {
         let _ = mailbox(driver, on_full: .Reject).run(me, probe);
         sleep(30ms);
     }
     receive fn process(value: string) { println(value); }
 }
 actor Driver {
-    receive fn run(sink: LocalPid<Sink>, probe: LocalPid<Probe>) {
+    receive fn run(sink: Sink, probe: Probe) {
         let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
         let _ = mailbox(probe, on_full: .Reject).run();
         let waiting = mailbox(sink, on_full: .Wait);
@@ -604,7 +604,7 @@ fn actor_close_waits_for_handler_cleanup() {
     run_actor(
         r#"actor Holder {
     label: string,
-    receive fn slow(me: LocalPid<Holder>, closer: LocalPid<Closer>) {
+    receive fn slow(me: Holder, closer: Closer) {
         defer println(label);
         let _ = mailbox(closer, on_full: .Reject).started(me);
         sleep(1s);
@@ -612,7 +612,7 @@ fn actor_close_waits_for_handler_cleanup() {
     }
 }
 actor Closer {
-    receive fn started(holder: LocalPid<Holder>) {
+    receive fn started(holder: Holder) {
         let result = scope within 1ms {
             closed(holder);
             "unexpected clean wait"
@@ -658,10 +658,10 @@ fn main() {
 #[test]
 fn local_actor_ask_cycle_runs_cleanup_and_can_be_recovered() {
     run_actor(r#"actor Peer {
-    receive fn run(other: LocalPid<Peer>, me: LocalPid<Peer>) -> string {
+    receive fn run(other: Peer, me: Peer) -> string {
         match other.reply(me) { .Ok(value) => value, .Err(_) => "unexpected ask failure", }
     }
-    receive fn reply(other: LocalPid<Peer>) -> string {
+    receive fn reply(other: Peer) -> string {
         let answer = scope {
             defer println("cycle-cleanup");
             let result = other.leaf();

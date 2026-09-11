@@ -7,8 +7,10 @@ use hew_types::Ty;
 
 // ── checker_generic_actor_spawn_substitutes_type_args ────────────────────────
 
-/// Spawning a generic actor with explicit type args produces a PID whose inner
-/// `Named.args` vector carries the resolved type argument.
+/// Spawning a generic actor with explicit type args produces a handle whose
+/// own `Named.args` vector carries the resolved type argument (D489: an actor
+/// is the type of its handle, so the actor's identity and type args ride the
+/// handle's `Named` carrier directly).
 #[test]
 fn checker_generic_actor_spawn_substitutes_type_args() {
     let source = r"
@@ -27,44 +29,22 @@ fn main() {
         output.errors
     );
 
-    // The expr_types map should contain a LocalPid<Buffer<i64>> entry.
-    let pid_ty = output
+    // The expr_types map should contain a Buffer<i64> actor-handle entry.
+    let handle_ty = output
         .expr_types
         .values()
-        .find(|t| matches!(t, Ty::Named { name, .. } if name == "LocalPid"))
+        .find(|t| t.actor_handle_identity().is_some())
         .cloned()
         .unwrap_or_else(|| {
             panic!(
-                "no LocalPid entry found in expr_types; keys: {:#?}",
+                "no actor-handle entry found in expr_types; keys: {:#?}",
                 output.expr_types
             )
         });
 
-    // Destructure LocalPid<Buffer<i64>>
-    let Ty::Named {
-        name: pid_name,
-        args: pid_args,
-        ..
-    } = &pid_ty
-    else {
-        panic!("expected Named LocalPid, got {pid_ty:?}");
-    };
-    assert_eq!(pid_name, "LocalPid");
-    assert_eq!(
-        pid_args.len(),
-        1,
-        "LocalPid should have 1 arg (the actor type)"
-    );
-
-    let inner = &pid_args[0];
-    let Ty::Named {
-        name: actor_name,
-        args: actor_args,
-        ..
-    } = inner
-    else {
-        panic!("expected Named inner type in LocalPid, got {inner:?}");
-    };
+    let (actor_name, actor_args) = handle_ty
+        .actor_handle_identity()
+        .unwrap_or_else(|| panic!("expected an actor handle, got {handle_ty:?}"));
     assert_eq!(actor_name, "Buffer");
     assert_eq!(actor_args.len(), 1, "Buffer<i64> should have 1 type arg");
     assert!(

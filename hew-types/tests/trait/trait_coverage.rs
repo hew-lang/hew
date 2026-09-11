@@ -174,9 +174,9 @@ fn string_is_not_frozen() {
 }
 
 #[test]
-fn local_pid_is_frozen() {
+fn actor_handle_is_frozen() {
     let reg = TraitRegistry::new();
-    let pid = Ty::local_pid(named("MyActor"));
+    let pid = Ty::actor_handle("MyActor", vec![]);
     assert!(reg.is_frozen(&pid));
 }
 
@@ -760,9 +760,9 @@ fn method_sig_mutable_self() {
 // ===========================================================================
 
 #[test]
-fn local_pid_is_copy_clone_debug() {
+fn actor_handle_is_copy_clone_debug() {
     let reg = TraitRegistry::new();
-    let pid = Ty::local_pid(named("Logger"));
+    let pid = Ty::actor_handle("Logger", vec![]);
     assert!(reg.implements_marker(&pid, MarkerTrait::Copy));
     assert!(reg.implements_marker(&pid, MarkerTrait::Clone));
     assert!(reg.implements_marker(&pid, MarkerTrait::Debug));

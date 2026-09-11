@@ -59,7 +59,7 @@ actor Gate {
     receive fn open() { opened = true; }
 }
 actor Waiter {
-    receive fn wait(gate: LocalPid<Gate>) -> string {
+    receive fn wait(gate: Gate) -> string {
         loop {
             match gate.ready() {
                 .Ok(opened) => { if opened { return "first".to_upper(); } },
@@ -69,7 +69,7 @@ actor Waiter {
     }
 }
 actor Opener {
-    receive fn open(gate: LocalPid<Gate>) -> string {
+    receive fn open(gate: Gate) -> string {
         let _ = gate.open();
         "second".to_upper()
     }
@@ -103,8 +103,8 @@ actor Maker {
         Parcel { label: first + ":" + second, notes: ["owned".to_upper()] }
     }
 }
-type ReceiverInput { maker: LocalPid<Maker>, label: string }
-fn receiver(consume input: ReceiverInput) -> LocalPid<Maker> {
+type ReceiverInput { maker: Maker, label: string }
+fn receiver(consume input: ReceiverInput) -> Maker {
     println(input.label);
     input.maker
 }

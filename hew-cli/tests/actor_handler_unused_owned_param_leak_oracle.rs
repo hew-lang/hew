@@ -408,7 +408,7 @@ actor Consumer {\n\
 \x20   receive fn total() -> i64 { if last.contains(\"FORWARD\") { seen } else { -1 } }\n\
 }\n\
 actor Relay {\n\
-\x20   let consumer: LocalPid<Consumer>,\n\
+\x20   let consumer: Consumer,\n\
 \x20   var seen: i64,\n\
 \x20   receive fn forward(value: string) -> i64 {\n\
 \x20       let delivered = match await consumer.take(value) { .Ok(n) => n, Err(_) => -1 };\n\

@@ -1283,6 +1283,11 @@ mod ast_surface {
             TypeExpr::Array { .. } => Some("array literal + index + len"),
             TypeExpr::Slice(_) => Some("array literal + index + len"),
             TypeExpr::Function { .. } => Some("closure / lambda value"),
+            // An anonymous actor's handle type, `actor(M) -> R`. The value
+            // construct that produces one (`actor |...| {...}`) is rejected
+            // by the same sandbox profile gate as every other structured-
+            // concurrency construct, so the annotation is covered there too.
+            TypeExpr::ActorFn { .. } => Some("scope / structured-concurrency block"),
             // Raw pointer types are part of the native-FFI surface; the profile
             // rejects them via the same `Unsupported::NATIVE_ONLY` family as an
             // `extern` block. Hew has no address-of operator, so a pointer-typed
@@ -1419,6 +1424,10 @@ fn every_classified_owner_names_a_construct() {
             TypeExpr::Slice(boxed(named())),
             TypeExpr::Function {
                 capabilities: hew_parser::ast::CallableCapabilities::default(),
+                params: vec![(named(), 0..0)],
+                return_type: boxed(named()),
+            },
+            TypeExpr::ActorFn {
                 params: vec![(named(), 0..0)],
                 return_type: boxed(named()),
             },
@@ -1778,6 +1787,10 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
             params,
             return_type,
             ..
+        }
+        | TypeExpr::ActorFn {
+            params,
+            return_type,
         } => {
             for (ty, _) in params {
                 walk_type_expr(ty, owners);

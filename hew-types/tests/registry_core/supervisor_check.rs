@@ -13,7 +13,7 @@ fn multi_child_with_wired_to_accepted() {
         actor Broadcaster {}
         actor WorkerPool {}
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>, broadcaster: LocalPid<Broadcaster>) {}
+            init(workers: WorkerPool, broadcaster: Broadcaster) {}
         }
         actor MessageCache {}
 
@@ -206,7 +206,7 @@ fn wired_to_unknown_sibling_rejected() {
     let output = typecheck(
         r"
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>) {}
+            init(workers: WorkerPool) {}
         }
         actor WorkerPool {}
 
@@ -239,7 +239,7 @@ fn wired_to_type_mismatch_rejected() {
         actor DbPool {}
         actor WorkerPool {}
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>) {}
+            init(workers: WorkerPool) {}
         }
 
         supervisor App {
@@ -270,10 +270,10 @@ fn wired_to_cycle_rejected() {
     let output = typecheck(
         r"
         actor ActorA {
-            init(dep: LocalPid<ActorB>) {}
+            init(dep: ActorB) {}
         }
         actor ActorB {
-            init(dep: LocalPid<ActorA>) {}
+            init(dep: ActorA) {}
         }
 
         supervisor CycleApp {
@@ -391,7 +391,7 @@ fn wired_to_self_reference_rejected() {
     let output = typecheck(
         r"
         actor LoopActor {
-            init(dep: LocalPid<LoopActor>) {}
+            init(dep: LoopActor) {}
         }
 
         supervisor SelfLoop {
@@ -416,7 +416,7 @@ fn wired_to_self_reference_rejected() {
 // ── Accept: wired_to sibling that has no init block ───────────────────────────
 
 /// Wiring to a sibling with no `init` block is valid when the dependent actor's
-/// init param type matches `LocalPid<SiblingType>`. The sibling having no `init`
+/// init param type matches `SiblingType`. The sibling having no `init`
 /// is irrelevant — only the dependent's `init` params are checked.
 #[test]
 fn wired_to_no_init_sibling_accepted() {
@@ -424,7 +424,7 @@ fn wired_to_no_init_sibling_accepted() {
         r"
         actor NoInit {}
         actor Consumer {
-            init(dep: LocalPid<NoInit>) {}
+            init(dep: NoInit) {}
         }
 
         supervisor App {
@@ -444,7 +444,7 @@ fn wired_to_no_init_sibling_accepted() {
         .collect();
     assert!(
         supervisor_errors.is_empty(),
-        "wired_to a no-init sibling with a matching LocalPid param should be valid: {supervisor_errors:#?}"
+        "wired_to a no-init sibling with a matching actor-handle param should be valid: {supervisor_errors:#?}"
     );
 }
 

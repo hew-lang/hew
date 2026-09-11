@@ -49,49 +49,13 @@ fn user_pid_trait_does_not_inherit_builtin_serializable_policy() {
     );
 }
 
+// D489 retired the erased `Pid` trait as user-nameable surface: an actor is
+// the type of its handle, so generic dispatch over "any actor handle" has no
+// bound left to spell. `<P: Pid>` must fail closed as an unknown trait rather
+// than silently reviving the old erasure path or the Serializable fail-closed
+// diagnostic the bound used to route through.
 #[test]
-fn pid_trait_generic_send_fails_closed_without_serializable_projection_bound() {
-    let output = typecheck(
-        r"
-        type Work {
-            id: i32,
-        }
-
-        actor Worker {
-            let id: i32,
-            init() {}
-            receive fn handle(msg: Work) {}
-        }
-
-        impl ActorMsg for Worker {
-            type Msg = Work;
-            type Reply = ();
-        }
-
-        fn ping<P: Pid>(p: P, m: P.Msg) -> Result<(), SendError> {
-            p.send(m)
-        }
-
-        fn main() {
-            let worker = spawn Worker(id: 0);
-            let msg = Work { id: 1 };
-            let result: Result<(), SendError> = ping(worker, msg);
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P.Msg: Serializable")),
-        "generic Pid.send must fail closed without a P.Msg Serializable proof: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
+fn generic_pid_trait_bound_is_no_longer_nameable() {
     let output = typecheck(
         r"
         type Job {
@@ -123,9 +87,8 @@ fn local_pid_generic_pid_send_still_fails_closed_without_projection_bound() {
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("fail-closed")
-                && error.message.contains("P.Msg: Serializable")),
-        "generic Pid.send must fail closed even when a call site later supplies LocalPid: {:#?}",
+            .any(|error| error.message.contains("unknown trait `Pid`")),
+        "a `Pid` bound on a type parameter must fail closed as an unknown trait: {:#?}",
         output.errors
     );
 }
@@ -166,9 +129,9 @@ fn local_pid_send_without_handler_rejected_even_with_actor_msg_envelope() {
             error.kind == hew_types::error::TypeErrorKind::UndefinedMethod
                 && error.message.contains("no `send` handler on `Worker`")
         }),
-        "LocalPid.send with an ActorMsg envelope but no send handler must \
-         be rejected at type-check with the same actionable diagnostic as \
-         the no-envelope case: {:#?}",
+        "an actor handle's send with an ActorMsg envelope but no send handler \
+         must be rejected at type-check with the same actionable diagnostic \
+         as the no-envelope case: {:#?}",
         output.errors
     );
 }

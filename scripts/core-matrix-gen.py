@@ -509,7 +509,7 @@ ACTOR = """actor Echo {
 ROWS.append(
     Row(
         "actor",
-        "LocalPid<Echo>",
+        "Echo",
         decls=ACTOR,
         mk=lambda n, i: f"let {n} = spawn Echo(seen: {i});",
         show=lambda n: (

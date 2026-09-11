@@ -2,8 +2,8 @@
 //!
 //! Two modules each exporting `pub actor Account` must produce DISTINCT
 //! checker identities: `spawn bank.Account()` types to
-//! `LocalPid<hew.bank.Account>`, `spawn store.Account()` to
-//! `LocalPid<hew.store.Account>`, and the two `deposit` signatures are
+//! `hew.bank.Account`, `spawn store.Account()` to
+//! `hew.store.Account`, and the two `deposit` signatures are
 //! independently resolvable in `fn_sigs` under their dotted keys. A bare
 //! reference resolves local-first; a bare name exported by two modules with
 //! no local actor is a typed `AmbiguousActorReference` error naming the
@@ -68,21 +68,13 @@ pub actor Account {
 }
 ";
 
-/// Collect the inner actor-type names of every `LocalPid<T>` entry in
-/// `expr_types`, sorted and deduplicated.
-fn local_pid_inner_names(output: &TypeCheckOutput) -> Vec<String> {
+/// Collect the actor names of every actor-handle entry in `expr_types`,
+/// sorted and deduplicated.
+fn actor_handle_names(output: &TypeCheckOutput) -> Vec<String> {
     let mut names: Vec<String> = output
         .expr_types
         .values()
-        .filter_map(|t| match t {
-            Ty::Named { name, args, .. } if name == "LocalPid" && args.len() == 1 => {
-                match &args[0] {
-                    Ty::Named { name: inner, .. } => Some(inner.clone()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
+        .filter_map(|t| t.actor_handle_identity().map(|(name, _)| name.to_string()))
         .collect();
     names.sort();
     names.dedup();
@@ -107,7 +99,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec![
@@ -176,7 +168,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec!["Account".to_string()],
@@ -238,7 +230,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec!["hew.bank.Account".to_string()],

@@ -255,6 +255,7 @@ fn _variant_coverage_guard_type_expr(ty: &TypeExpr) {
         TypeExpr::Array { .. } => {}
         TypeExpr::Slice(_) => {}
         TypeExpr::Function { .. } => {}
+        TypeExpr::ActorFn { .. } => {}
         TypeExpr::Pointer { .. } => {}
         TypeExpr::Borrow(_) => {}
         TypeExpr::TraitObject(_) => {}

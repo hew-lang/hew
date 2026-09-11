@@ -75,7 +75,7 @@ fn borrow_len(value: string) -> i64 {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn go(frames: i64) -> i64 {
         let gate_pid = gate;
@@ -332,7 +332,7 @@ actor Gate {{
 }}
 
 actor Crasher {{ 
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn go(trigger: i64) -> i64 {{
         let gate_pid = gate;
@@ -381,7 +381,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn go(trigger: i64) -> i64 {
         let gate_pid = gate;
@@ -458,10 +458,10 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             let child_string = "pre-await-string-owner".to_upper();
             let child_bytes = "pre-await-bytes-owner".to_bytes();
             let child_record = ChildBundle {
@@ -517,10 +517,10 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             var child_string = "pre-overwrite-owner".to_upper();
             child_string = "post-overwrite-owner".to_upper();
             if child_string.len() >= 0 {
@@ -573,10 +573,10 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             let child_string = "child-string-owner".to_upper();
             let child_bytes = "child-bytes-owner".to_bytes();
             let child_record = ChildBundle {
@@ -635,13 +635,13 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run() -> i64 {
         let gate_pid = gate;
-        let outer = |outer_gate: LocalPid<Gate>, outer_value: string| {
-            let middle = |middle_gate: LocalPid<Gate>, middle_value: string| {
-                let inner = |inner_gate: LocalPid<Gate>, inner_value: string| {
+        let outer = |outer_gate: Gate, outer_value: string| {
+            let middle = |middle_gate: Gate, middle_value: string| {
+                let inner = |inner_gate: Gate, inner_value: string| {
                     panic("nested synchronous ramp crash");
                     let _ = match inner_gate.tick() {
                         .Ok(n) => n,
@@ -692,17 +692,17 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
 
     receive fn run() -> i64 {
         let outer_owner = "outer-crash-owner".to_upper();
-        let outer = |outer_gate: LocalPid<Gate>| {
+        let outer = |outer_gate: Gate| {
             if outer_owner == "unreachable" { panic("outer capture guard"); }
             let middle_owner = "middle-crash-owner".to_upper();
-            let middle = |middle_gate: LocalPid<Gate>| {
+            let middle = |middle_gate: Gate| {
                 if middle_owner == "unreachable" { panic("middle capture guard"); }
                 let inner_owner = "inner-crash-owner".to_upper();
-                let inner = |inner_gate: LocalPid<Gate>| {
+                let inner = |inner_gate: Gate| {
                     if inner_owner == "unreachable" { panic("inner capture guard"); }
                     panic("nested synchronous ramp crash");
                     let _ = match inner_gate.tick() {
@@ -804,7 +804,7 @@ fn helper_normal() -> i64 {
 }
 actor Gate { receive fn tick() -> i64 { 1 } }
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
     receive fn go(frames: i64) -> i64 {
         let _ = gate.tick();
         for _ in 0..frames {
@@ -844,7 +844,7 @@ fn helper_trap() -> i64 {
 }
 actor Gate { receive fn tick() -> i64 { 1 } }
 actor Runner {
-    let gate: LocalPid<Gate>,
+    let gate: Gate,
     receive fn go() -> i64 {
         let _ = gate.tick();
         helper_trap()

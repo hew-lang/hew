@@ -1,4 +1,4 @@
-//! Tests verifying that `LocalPid<T>` / `RemotePid<T>` discriminators
+//! Tests verifying that the actor-handle / `RemotePid<T>` discriminators
 //! propagate through HIR lowering.
 //!
 //! These tests exercise the full type-checker → HIR lowering path so that
@@ -105,13 +105,14 @@ fn lower_with_types(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::Lower
     (tc_output, lower_out)
 }
 
-// ── spawn produces LocalPid in expr_types ─────────────────────────────────────
+// ── spawn produces the actor's own handle type in expr_types ─────────────────
 
 #[test]
-fn spawn_expr_type_is_local_pid() {
-    // After type-checking, the `spawn` expression must be recorded as
-    // `LocalPid<Counter>`. This ensures that the checker's discriminator
-    // survives into the type-check output that HIR lowering consumes.
+fn spawn_expr_type_is_the_actor_handle() {
+    // After type-checking, the `spawn` expression must be recorded as the
+    // `Counter` actor handle (D489: an actor is the type of its handle).
+    // This ensures that the checker's discriminator survives into the
+    // type-check output that HIR lowering consumes.
     let source = r"
         actor Counter {
             let n: i32,
@@ -122,23 +123,25 @@ fn spawn_expr_type_is_local_pid() {
         }
     ";
     let (tc, _lower) = lower_with_types(source);
-    let has_local_pid = tc
+    let has_counter_handle = tc
         .expr_types
         .values()
-        .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "LocalPid"));
+        .any(|ty| ty.actor_handle_identity() == Some(("Counter", &[][..])));
     assert!(
-        has_local_pid,
-        "expr_types should contain at least one LocalPid<Counter> entry"
+        has_counter_handle,
+        "expr_types should contain at least one Counter actor-handle entry"
     );
-    // `LocalPid` is the spawn-return type; no stray `ActorRef`-named handle
-    // exists anywhere in the type table (the family is LocalPid/RemotePid).
+    // The spawn-return type is the actor's own name with the `ActorHandle`
+    // builtin discriminator; no stray `ActorRef`-named handle exists anywhere
+    // in the type table (the family is the actor handle / `RemotePid`).
     let has_stray_actor_ref = tc
         .expr_types
         .values()
         .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"));
     assert!(
         !has_stray_actor_ref,
-        "spawn must produce LocalPid; no `ActorRef`-named handle should appear: {:#?}",
+        "spawn must produce the actor's own handle type; no `ActorRef`-named \
+         handle should appear: {:#?}",
         tc.expr_types
             .values()
             .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"))
@@ -151,8 +154,8 @@ fn spawn_expr_type_is_local_pid() {
 #[test]
 fn hir_lower_actor_no_diagnostics() {
     // A simple actor declaration (no spawn expression in main) should lower
-    // without diagnostics. This verifies that the LocalPid changes in the
-    // checker don't break actor declaration lowering.
+    // without diagnostics. This verifies that the actor-handle rename (D489)
+    // in the checker doesn't break actor declaration lowering.
     let source = r"
         actor Bot {
             let x: i32,

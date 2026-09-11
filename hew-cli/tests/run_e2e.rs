@@ -812,7 +812,7 @@ fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
 
 /// #1929 Stage 1: the pointer-ABI element. A `Vec<T>` `push`/`get` under a type
 /// parameter instantiated with the Copy pointer-identity handle
-/// `LocalPid<Counter>` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
+/// `Counter` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
 /// and the retrieved handle drives the SAME actor (bump then report → "1").
 #[test]
 fn run_generic_vec_element_methods_roundtrip_ptr_abi() {
@@ -5251,12 +5251,12 @@ fn run_package_module_actor_spawns_and_calls() {
 
 /// Regression for named-import actor identity in actor-state annotations: inside
 /// an imported actor body, `let inner: Inner;` is an actor reference and must
-/// lower to `LocalPid<conn.Inner>`, just like the local-module shorthand. Before
+/// lower to `conn.Inner`, just like the local-module shorthand. Before
 /// the fix, HIR left it as bare `Inner`, so MIR's state-clone classifier tried
 /// to resolve it as a nested user record and failed with
 /// `ActorStateCloneClassificationFailed` before codegen.
 #[test]
-fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
+fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -5297,7 +5297,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
     let output = run_bounded_hew_run(&main, dir.path());
     assert!(
         output.status.success(),
-        "named-import actor field should canonicalize to a LocalPid; stdout: {}\nstderr: {}",
+        "named-import actor field should canonicalize to the actor's own handle type; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -5309,9 +5309,9 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
 /// must keep its local identity. `canonicalize_actor_ref_field_ty` used to
 /// canonicalize any bare field name that uniquely matched an actor's short
 /// name ANYWHERE in the program (a global sweep over `actor_type_names`),
-/// which silently hijacked this local record field into `LocalPid<m.Inner>`
+/// which silently hijacked this local record field into `m.Inner`
 /// and rejected the program with `E_NOT_YET_IMPLEMENTED: field access on
-/// unregistered record type LocalPid$$Inner`. The fix scopes bare-name
+/// unregistered record type ActorHandle$$Inner`. The fix scopes bare-name
 /// resolution to `{decl_module}.{name}` (the actor decl's own module), so a
 /// root-declared `Holder` referencing a root-declared `type Inner` never
 /// consults `m`'s actor at all — local definitions win, per LESSONS
@@ -5422,7 +5422,7 @@ fn run_non_pub_imported_actor_fails_closed() {
 /// Qualified actor identity (a): two imported packages each exporting a
 /// `pub actor` with the same bare name (`Account`) coexist in one program.
 /// Identity is the qualified (module, name) pair end-to-end — the checker
-/// types `spawn bank.Account()` as `LocalPid<bank.Account>`, MIR layouts key
+/// types `spawn bank.Account()` as `bank.Account`, MIR layouts key
 /// on the dotted name, and native symbols mangle through `bank$Account` — so
 /// each spawn binds its own handlers/state/drop glue and the asks route to
 /// the right actor.

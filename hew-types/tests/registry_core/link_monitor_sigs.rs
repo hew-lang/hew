@@ -128,7 +128,7 @@ fn monitor_result_not_assignable_to_int() {
 
 #[test]
 fn link_non_actor_produces_mismatch() {
-    // `link` requires `LocalPid<_>`; passing a plain `i64` must be rejected.
+    // `link` requires an actor handle; passing a plain `i64` must be rejected.
     let src = r"
 fn exercise() {
     let x: i64 = 42;
@@ -150,7 +150,7 @@ fn exercise() {
 
 #[test]
 fn monitor_non_actor_produces_mismatch() {
-    // `monitor` requires `LocalPid<_>`; passing a `string` must be rejected.
+    // `monitor` requires an actor handle; passing a `string` must be rejected.
     let src = r#"
 fn exercise() {
     let s: string = "hello";

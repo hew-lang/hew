@@ -192,7 +192,7 @@ actor Consumer {{
 }}
 
 actor Relay {{ 
-    var consumer: LocalPid<Consumer>,
+    var consumer: Consumer,
     var last: string,
 
     receive fn forward(value: string) {{

@@ -1751,7 +1751,7 @@ fn generic_machine_instantiated_with_a_handle_is_refused_at_the_use_site() {
             default { state }
         }
         fn main() {
-            var slot: Slot<LocalPid<Worker>> = .Empty;
+            var slot: Slot<Worker> = .Empty;
         }
         ",
     );
@@ -1761,7 +1761,7 @@ fn generic_machine_instantiated_with_a_handle_is_refused_at_the_use_site() {
         .find(|error| error.message.contains("cannot be instantiated"))
         .unwrap_or_else(|| panic!("expected an instantiation refusal: {:#?}", output.errors));
     assert!(
-        refusal.message.contains("Slot") && refusal.message.contains("LocalPid<Worker>"),
+        refusal.message.contains("Slot") && refusal.message.contains("Worker"),
         "the refusal must name the machine and the argument: {}",
         refusal.message
     );
@@ -1810,7 +1810,7 @@ fn generic_machine_no_argument_could_purify_is_refused_at_the_declaration() {
         }
         type Pair<T> {
             left: T,
-            right: LocalPid<Worker>,
+            right: Worker,
         }
         machine Holder<T> {
             events { Put { value: T }, Clear }

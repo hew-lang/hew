@@ -366,6 +366,74 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 })
     }
 
+    /// Name every actor type and handler for the profiler before the root
+    /// runs: `hew_actor_register_type` keys the dispatch function to the
+    /// actor's name and `hew_register_handler_name` keys each message id to
+    /// `Actor.handler`, so the dashboard, pprof export and observe scrape
+    /// report source names instead of addresses.
+    pub(super) fn emit_actor_observe_registration(
+        &self,
+        builder: &Builder<'ctx>,
+    ) -> CodegenResult<()> {
+        if self.module.actors.is_empty() {
+            return Ok(());
+        }
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let i32_ty = self.ctx.i32_type();
+        let register_type = get_or_declare_external(
+            &self.llvm,
+            "hew_actor_register_type",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        let register_handler = get_or_declare_external(
+            &self.llvm,
+            "hew_register_handler_name",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), i32_ty.into(), ptr.into()], false),
+        )?;
+        for actor in &self.module.actors {
+            let ResolvedTy::Named { name, .. } = &actor.handle_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "actor {} has a handle type without a name: {}",
+                    actor.id.0, actor.handle_ty
+                )));
+            };
+            let dispatch = self
+                .llvm
+                .get_function(&symbol(actor.id, "dispatch"))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!("actor `{name}` lacks its dispatch function"))
+                })?
+                .as_global_value()
+                .as_pointer_value();
+            let type_name =
+                c_string_literal(self.ctx, &self.llvm, name, &symbol(actor.id, "type_name"));
+            builder
+                .build_call(register_type, &[dispatch.into(), type_name.into()], "")
+                .llvm_ctx("register the actor type name")?;
+            for handler in &actor.handlers {
+                let handler_name = c_string_literal(
+                    self.ctx,
+                    &self.llvm,
+                    &format!("{name}.{}", handler.name),
+                    &symbol(actor.id, &format!("message_{}_name", handler.message_id)),
+                );
+                let message_id = i32_ty.const_int(u64::from(handler.message_id), false);
+                builder
+                    .build_call(
+                        register_handler,
+                        &[dispatch.into(), message_id.into(), handler_name.into()],
+                        "",
+                    )
+                    .llvm_ctx("register the actor handler name")?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn emit_process_runtime_start(
         &self,
         builder: &Builder<'ctx>,

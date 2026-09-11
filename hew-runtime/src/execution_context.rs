@@ -340,6 +340,20 @@ pub(crate) fn current_context_can_unwind() -> bool {
     unsafe { ((*ctx).flags & HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED) != 0 }
 }
 
+/// Whether this stack is inside an actor dispatch. A process root task that has
+/// suspended runs under a task context whose actor slot is null; that is not a
+/// dispatch.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub(crate) fn current_context_is_actor_dispatch() -> bool {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: a non-null current context is live until its matching restore.
+    unsafe { !(*ctx).actor.is_null() }
+}
+
 #[must_use]
 pub(crate) fn require_current_context() -> *mut HewExecutionContext {
     let ctx = current_context();

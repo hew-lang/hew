@@ -11588,6 +11588,9 @@ pub struct HewNativeChildSpec {
     pub role_kind: c_int,
     /// The adapter that produces one incarnation from the config.
     pub spawn: HewNativeChildSpawnFn,
+    /// The declared child name as a NUL-terminated string, or null. It labels
+    /// the child in the profiler's restart series and tree dump.
+    pub name: *const c_char,
 }
 
 fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -> Option<usize> {
@@ -11616,6 +11619,10 @@ fn register_native_child(s: &mut SupervisorRoster, child: &HewNativeChildSpec) -
         spec.restart_policy = child.restart_policy;
         spec.native_spawn = Some(child.spawn);
         spec.config = s.config_buf;
+        if !child.name.is_null() {
+            // SAFETY: the generated table stores each name as a C string literal.
+            spec.name = unsafe { crate::cabi::cstr_strdup(child.name) };
+        }
         s.child_specs.push(spec);
         s.children.push(ptr::null_mut());
         s.child_count += 1;

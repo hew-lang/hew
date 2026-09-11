@@ -107,7 +107,6 @@ macos	failure	hew-cli::enum_callee_consume_drop_leak_oracle	move_out_via_let_sha
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	projected_resource_close_then_crash_releases_source_snapshot_once	#3070 closes composite resource fields exactly once
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3070 closes composite resource fields exactly once
 macos	failure	hew-cli::escaped_sibling_field_drop_leak_oracle	escaped_field_not_dropped_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
-linux	failure	hew-cli::eval_e2e	eval_std_observe_scrape_and_series_include_actor_attribution	#3382 emits the target-walked constructor section
 linux	failure	hew-cli::eval_e2e	eval_unsupervised_actor_crash_reports_dotted_handler_label	#3396 links the actor-name registry into every Hew binary regardless of the profiler feature
 linux	failure	hew-cli::eval_e2e	eval_wasm_file_runtime_failure_preserves_pre_failure_stdout	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::eval_e2e	eval_wasm_file_succeeds	#3368 implements sandbox emission on the physical path

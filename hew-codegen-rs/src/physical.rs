@@ -2379,6 +2379,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let builder = self.ctx.create_builder();
         builder.position_at_end(entry);
         self.emit_process_runtime_start(&builder, wrapper)?;
+        self.emit_actor_observe_registration(&builder)?;
         self.emit_regex_compilation(&builder)?;
         let result = if let Some(layout) = &callable.return_layout {
             Some(
@@ -8684,6 +8685,21 @@ fn external_fault_report<'ctx>(
         "hew_fault_report",
         ctx.i32_type().fn_type(&[ptr.into()], false),
     )
+}
+
+/// A private NUL-terminated string constant, as the pointer the runtime reads.
+fn c_string_literal<'ctx>(
+    ctx: &'ctx Context,
+    module: &Module<'ctx>,
+    text: &str,
+    name: &str,
+) -> PointerValue<'ctx> {
+    let data = ctx.const_string(text.as_bytes(), true);
+    let global = module.add_global(data.get_type(), None, name);
+    global.set_linkage(Linkage::Private);
+    global.set_constant(true);
+    global.set_initializer(&data);
+    global.as_pointer_value()
 }
 
 fn get_or_declare_external<'ctx>(

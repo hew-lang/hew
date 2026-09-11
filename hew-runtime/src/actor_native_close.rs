@@ -411,6 +411,7 @@ mod tests {
                 restart_policy: 0,
                 role_kind: 1,
                 spawn: adopt_child,
+                name: std::ptr::null(),
             }];
             let parent = hew_supervisor_native_spawn(
                 0,

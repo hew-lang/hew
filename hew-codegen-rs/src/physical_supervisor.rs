@@ -78,14 +78,15 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// The declared children in construction order: restart policy and the
-    /// adapter that produces each incarnation.
+    /// The declared children in construction order: restart policy, the
+    /// adapter that produces each incarnation and the declared name.
     fn emit_supervisor_children(&self, supervisor: &SemSupervisor) -> CodegenResult<()> {
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let entry_ty = self.ctx.struct_type(
             &[
                 self.ctx.i32_type().into(),
                 self.ctx.i32_type().into(),
+                ptr.into(),
                 ptr.into(),
             ],
             false,
@@ -98,23 +99,38 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .ok_or_else(|| {
                     CodegenError::FailClosed("declared child lacks its spawn adapter".into())
                 })?;
-            let entry = entry_ty.const_named_struct(&[
-                self.ctx
-                    .i32_type()
-                    .const_int(restart_code(child.restart), false)
-                    .into(),
-                self.ctx
-                    .i32_type()
-                    .const_int(
-                        u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
-                        false,
-                    )
-                    .into(),
-                spawn.as_global_value().as_pointer_value().into(),
-            ]);
             // A pool's members are fungible: one adapter fills every slot, and
             // each slot is registered separately so it restarts on its own.
-            entries.extend(std::iter::repeat_n(entry, child.slots() as usize));
+            for slot in 0..child.slots() {
+                let name = if child.pool_count.is_some() {
+                    format!("{}[{slot}]", child.name)
+                } else {
+                    child.name.clone()
+                };
+                let name = c_string_literal(
+                    self.ctx,
+                    &self.llvm,
+                    &name,
+                    &symbol(supervisor, &format!("child_{index}_{slot}_name")),
+                );
+                entries.push(
+                    entry_ty.const_named_struct(&[
+                        self.ctx
+                            .i32_type()
+                            .const_int(restart_code(child.restart), false)
+                            .into(),
+                        self.ctx
+                            .i32_type()
+                            .const_int(
+                                u64::from(matches!(child.role, SemSupervisedRole::Supervisor(_))),
+                                false,
+                            )
+                            .into(),
+                        spawn.as_global_value().as_pointer_value().into(),
+                        name.into(),
+                    ]),
+                );
+            }
         }
         let table = self.llvm.add_global(
             entry_ty.array_type(u32::try_from(entries.len()).map_err(|_| {

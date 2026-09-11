@@ -466,11 +466,12 @@ pub extern "C" fn hew_observe_hot_tier_enabled() -> i32 {
 ///
 /// Returns 0 on success, -1 when called from inside an actor dispatch (which
 /// would deadlock with `HEW_WORKERS=1`), and -2 after the bounded 30-second
-/// internal timeout.
+/// internal timeout. A process root task that has suspended runs under a task
+/// context with no actor; it is not a dispatch and may wait here.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_observe_barrier() -> i64 {
-    if !crate::execution_context::current_context().is_null() {
+    if crate::execution_context::current_context_is_actor_dispatch() {
         crate::set_last_error("observe.barrier: cannot wait from inside an actor dispatch");
         return OBSERVE_BARRIER_ERR_WORKER_CONTEXT;
     }
@@ -1558,14 +1559,31 @@ mod tests {
     fn observe_barrier_fails_fast_from_worker_context() {
         let _guard = crate::runtime_test_guard();
         reset_all();
-        let mut ctx =
-            std::mem::MaybeUninit::<crate::execution_context::HewExecutionContext>::uninit();
-        let prev = crate::execution_context::set_current_context(ctx.as_mut_ptr());
+        let mut actor = std::mem::MaybeUninit::<crate::actor::HewActor>::uninit();
+        let mut ctx = crate::execution_context::HewExecutionContext {
+            actor: actor.as_mut_ptr(),
+            ..crate::execution_context::HewExecutionContext::default()
+        };
+        let prev = crate::execution_context::set_current_context(&raw mut ctx);
 
         assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_ERR_WORKER_CONTEXT);
 
         let restored = crate::execution_context::set_current_context(prev);
-        assert_eq!(restored, ctx.as_mut_ptr());
+        assert_eq!(restored, &raw mut ctx);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_waits_from_a_root_task_context() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        let mut ctx = crate::execution_context::HewExecutionContext::default();
+        let prev = crate::execution_context::set_current_context(&raw mut ctx);
+
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+
+        let restored = crate::execution_context::set_current_context(prev);
+        assert_eq!(restored, &raw mut ctx);
     }
 
     #[test]

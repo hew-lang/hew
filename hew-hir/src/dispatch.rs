@@ -213,6 +213,11 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
             // from the closed builtin discriminator, never from the source
             // leaf: a user `type HashMapIter` carries `builtin: None` and stays
             // on the ordinary user-nominal arm below.
+            // An actor is the type of its handle, so its nominal identity is
+            // the actor declaration's own, read off the handle.
+            if let Some(instance) = ty.actor_handle_instance() {
+                return Some(instance);
+            }
             let nominal = match builtin {
                 hew_types::BuiltinType::VecIter => "std.builtins.VecIter",
                 hew_types::BuiltinType::HashMapIter => "std.builtins.HashMapIter",
@@ -220,7 +225,6 @@ pub fn receiver_self_type_for_impl_lookup_instance(ty: &ResolvedTy) -> Option<No
                 hew_types::BuiltinType::Vec => "Vec",
                 hew_types::BuiltinType::HashMap => "HashMap",
                 hew_types::BuiltinType::ChildRef => "ChildRef",
-                hew_types::BuiltinType::ActorHandle => "LocalPid",
                 hew_types::BuiltinType::RemotePid => "RemotePid",
                 hew_types::BuiltinType::NodeId => "NodeId",
                 hew_types::BuiltinType::Location => "Location",

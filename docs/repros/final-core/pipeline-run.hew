@@ -1,4 +1,5 @@
-// Repro: `std.pipeline.run` returns `LocalPid<SourceI64>`.
+// Repro: `std.pipeline.run` returns `SourceI64`, an actor handle whose
+// declaration lives in the imported module and is not pub.
 import std.pipeline;
 
 fn main() {

@@ -10643,12 +10643,10 @@ impl LowerCtx {
         // stdlib catalog IDs and the source-item sequence) — nothing
         // resolves through it anymore.
         //
-        // `supervisor_stop(sup: S) -> ()`, where `S` is an actor type whose
-        // own type is the handle. The param's resolved form carries the
-        // internal name "LocalPid" (`BuiltinType::ActorHandle`'s
-        // `canonical_name()`), which is what the checker registers. The
-        // exact inner type does not matter here because MIR passes the sup
-        // place opaquely.
+        // `supervisor_stop(sup: S) -> ()`, where `S` is the supervisor's own
+        // type. This seed carries arity only: MIR passes the sup place
+        // opaquely, so the entry names the handle discriminator and nothing
+        // resolves the supervisor from it.
         self.fn_registry.insert(
             "supervisor_stop".to_string(),
             FnEntry {
@@ -35501,7 +35499,7 @@ impl Widget {
             // ChildRef, the actor handle, and the raw runtime word free nothing.
             for (name, kind) in [
                 ("ChildRef", BuiltinType::ChildRef),
-                ("LocalPid", BuiltinType::ActorHandle),
+                ("Worker", BuiltinType::ActorHandle),
             ] {
                 assert!(!transfers(&builtin_handle(name, kind)));
             }

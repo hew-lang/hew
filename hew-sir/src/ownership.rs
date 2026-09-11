@@ -198,6 +198,27 @@ pub enum OwnKind {
 }
 
 impl OwnKind {
+    /// The kind of a runtime operation's loan result.
+    ///
+    /// A loan of a value the receiver still owns is `Guaranteed`: it carries
+    /// no obligation of its own and must not outlive the receiver's loan. A
+    /// concrete result type that carries no obligation at all was bit-copied
+    /// out of the slot, so it ties to nothing and is an ordinary independent
+    /// value. A generic template pins a borrowed read before its element types
+    /// are known, so the exact instance is where this is decided.
+    ///
+    /// # Errors
+    /// Returns the reason the result type has no ownership kind.
+    pub fn of_loan_result(
+        ty: &ResolvedTy,
+        facts: &crate::ownership::TypeFactTable,
+    ) -> Result<Self, String> {
+        Ok(match Self::of_ty(ty, facts)? {
+            Self::None => Self::None,
+            _ => Self::Guaranteed,
+        })
+    }
+
     /// The §1.2 table, as a total function of the class.
     #[must_use]
     pub const fn of_class(class: ValueClass) -> Self {

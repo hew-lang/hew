@@ -2331,13 +2331,20 @@ fn lower_function(
             .ok_or_else(|| PhysicalError::new("borrowed runtime read has no receiver"))?;
         let source = lowerer.value(owner.operand.value)?;
         let dest = lowerer.value(value.id)?;
-        lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
+        // SIR decided whether this borrowed read is an actual loan: a result
+        // with no ownership obligation was bit-copied out of the slot and
+        // depends on no owner.
+        if lowerer.storage[dest.0 as usize].own == OwnKind::Guaranteed {
+            lowerer.storage[dest.0 as usize].borrow_parent = Some(source);
+        }
         for parameter in blocks_by_id(function, normal.target)
             .map(|target| target.args.iter().map(|arg| arg.value).collect::<Vec<_>>())
             .unwrap_or_default()
         {
             let parameter = lowerer.value(parameter)?;
-            lowerer.storage[parameter.0 as usize].borrow_parent = Some(source);
+            if lowerer.storage[parameter.0 as usize].own == OwnKind::Guaranteed {
+                lowerer.storage[parameter.0 as usize].borrow_parent = Some(source);
+            }
         }
     }
 
@@ -8243,7 +8250,15 @@ fn verify_terminator(
                 ) => {
                     let expected_own = match contract.result {
                         RuntimeResultEffect::BitCopy(_) => OwnKind::None,
-                        RuntimeResultEffect::Borrowed(_) => OwnKind::Guaranteed,
+                        // A loan of a result that carries no obligation is the
+                        // value itself; SIR's loan rule decided which it is.
+                        RuntimeResultEffect::Borrowed(_) => {
+                            match OwnKind::of_class(semantic_type_facts(module, result_type)?.class)
+                            {
+                                OwnKind::None => OwnKind::None,
+                                _ => OwnKind::Guaranteed,
+                            }
+                        }
                         RuntimeResultEffect::FreshOwned(_)
                         | RuntimeResultEffect::UpdatedReceiver(_)
                         | RuntimeResultEffect::UpdatedReceiverAndValue(_) => OwnKind::Owned,

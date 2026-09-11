@@ -1185,7 +1185,7 @@ fn check_function_with_context(
                 &arg.ty,
                 arg.own,
                 if borrowed_argument {
-                    Ok(crate::OwnKind::Guaranteed)
+                    crate::OwnKind::of_loan_result(&arg.ty, facts)
                 } else {
                     crate::OwnKind::of_ty(&arg.ty, facts)
                 },
@@ -1255,7 +1255,7 @@ fn check_function_with_context(
                 &result.ty,
                 result.own,
                 if borrowed_result {
-                    Ok(crate::OwnKind::Guaranteed)
+                    crate::OwnKind::of_loan_result(&result.ty, facts)
                 } else {
                     crate::OwnKind::of_ty(&result.ty, facts)
                 },
@@ -3985,7 +3985,15 @@ fn verify_runtime_call_terminator(
         RuntimeResultEffect::BitCopy(_) => Some(crate::OwnKind::None),
         // A loan of a value argument zero still owns: no obligation of its own,
         // and no clone recipe required.
-        RuntimeResultEffect::Borrowed(_) => Some(crate::OwnKind::Guaranteed),
+        RuntimeResultEffect::Borrowed(_) => {
+            match crate::OwnKind::of_loan_result(&instantiated.result_ty, shapes.facts) {
+                Ok(own) => Some(own),
+                Err(reason) => {
+                    invalid_operation(function, id, reason, diagnostics);
+                    return;
+                }
+            }
+        }
         RuntimeResultEffect::FreshOwned(_)
         | RuntimeResultEffect::UpdatedReceiver(_)
         | RuntimeResultEffect::FreshOwnedVariant(_)

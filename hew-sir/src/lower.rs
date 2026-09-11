@@ -8415,13 +8415,17 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             return Ok(None);
         }
         let borrowed_result = matches!(contract.result, RuntimeResultEffect::Borrowed(_));
+        // A borrowed contract result is only an actual loan when its concrete
+        // type carries an ownership obligation; see `OwnKind::of_loan_result`.
+        let mut result_is_loan = false;
         let (result, normal, continuation) = if let Some(result_ty) = semantic_result_ty {
             self.service.require_type_facts(&result_ty)?;
             let own = if borrowed_result {
-                OwnKind::Guaranteed
+                OwnKind::of_loan_result(&result_ty, self.service.checked_facts.rows())?
             } else {
                 OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?
             };
+            result_is_loan = own == OwnKind::Guaranteed;
             if matches!(contract.result, RuntimeResultEffect::FreshOwnedVariant(_))
                 && own != OwnKind::Owned
             {
@@ -8500,7 +8504,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         self.current = normal_target;
         self.owned_live = live_at_call;
-        if borrowed_result {
+        if result_is_loan {
             // The result is a loan of argument zero: its owner must stay
             // borrowed for as long as the result is readable, and the loan the
             // result itself names ends with the scope that reads it. The

@@ -458,11 +458,16 @@ impl<'a> Flow<'a> {
             let Some(owner) = args.first().map(|arg| PlaceBase::Value(arg.operand.value)) else {
                 continue;
             };
+            // Only a result that is actually a loan defines a region here. A
+            // borrowed read of an obligation-free element is an ordinary
+            // independent value and outlives the receiver freely.
             for parameter in function
                 .blocks
                 .iter()
                 .filter(|target| target.id == normal.target)
-                .flat_map(|target| target.args.iter().map(|arg| arg.value))
+                .flat_map(|target| target.args.iter())
+                .filter(|arg| arg.own == OwnKind::Guaranteed)
+                .map(|arg| arg.value)
             {
                 parents.insert(parameter, owner);
                 local_borrows.insert(parameter);

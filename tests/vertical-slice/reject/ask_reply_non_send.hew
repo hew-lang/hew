@@ -21,7 +21,7 @@ actor Producer {
 }
 
 actor Consumer {
-    let p: LocalPid<Producer>,
+    let p: Producer,
     receive fn run(unused: i64) {
         match p.make() {
             .Ok(x) => {},

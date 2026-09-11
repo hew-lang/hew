@@ -12,7 +12,7 @@ actor Worker {
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>,
+    let worker: Worker,
     let bias: i64,
     receive fn run(n: i64) -> i64 {
         let r = worker.compute(n);

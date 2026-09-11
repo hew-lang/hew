@@ -727,8 +727,8 @@ actor MonitorProbe {
 }
 
 actor SetupRaceStopper {
-    let monitor_target: LocalPid<KeyValue>,
-    let link_target: LocalPid<KeyValue>,
+    let monitor_target: KeyValue,
+    let link_target: KeyValue,
     receive fn run() {
         var monitor_stopped = false;
         var link_stopped = false;

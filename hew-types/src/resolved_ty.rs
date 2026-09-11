@@ -310,13 +310,6 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
-    /// Return the canonical nominal instance carried by a source record type.
-    ///
-    /// The checker canonicalises imported names before its output boundary, so
-    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
-    /// semantic nominal identity. Source-defined builtin records retain their
-    /// closed discriminator while selecting their canonical declaration.
-    #[must_use]
     /// The actor declaration an actor-handle type names, with the actor's own
     /// type arguments.
     ///
@@ -340,6 +333,20 @@ impl ResolvedTy {
         }
     }
 
+    /// The handle type of an actor named by a bare nominal carrier.
+    #[must_use]
+    pub fn actor_handle_from_nominal(nominal: &ResolvedTy) -> Option<ResolvedTy> {
+        let ResolvedTy::Named { name, args, .. } = nominal else {
+            return None;
+        };
+        Some(ResolvedTy::Named {
+            name: name.clone(),
+            args: args.clone(),
+            builtin: Some(crate::BuiltinType::ActorHandle),
+            is_opaque: false,
+        })
+    }
+
     /// The bare nominal carrier of an actor-handle type: the same name and
     /// arguments with no handle discriminator.
     #[must_use]
@@ -360,6 +367,13 @@ impl ResolvedTy {
         }
     }
 
+    /// Return the canonical nominal instance carried by a source record type.
+    ///
+    /// The checker canonicalises imported names before its output boundary, so
+    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
+    /// semantic nominal identity. Source-defined builtin records retain their
+    /// closed discriminator while selecting their canonical declaration.
+    #[must_use]
     pub fn nominal_instance(&self) -> Option<NominalInstance> {
         match self {
             // The two compiler-owned cursor records. Both are declared in

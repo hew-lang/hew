@@ -1,5 +1,5 @@
 // Accept fixture: send-shaped lambda actor with call-syntax dispatch.
-// `actor |s: string| { ... }` produces `LambdaPid<string, ()>`.
+// `actor |s: string| { ... }` produces `actor(string)`.
 // Call `log("x")` returns `Result<(), SendError>` at the type level.
 // WASM-PASS: type-check level only for slice 2; runtime landing is slice 4.
 fn main() {

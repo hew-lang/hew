@@ -2956,10 +2956,15 @@ impl Checker {
     /// Whether a written nominal names an actor handle: a declared actor, or a
     /// handler-style trait an actor satisfies structurally.
     fn name_is_actor_handle_nominal(&self, name: &str) -> bool {
-        if self
-            .lookup_type_def(name)
-            .is_some_and(|definition| definition.kind == super::types::TypeDefKind::Actor)
-        {
+        if self.lookup_type_def(name).is_some_and(|definition| {
+            matches!(
+                definition.kind,
+                super::types::TypeDefKind::Actor | super::types::TypeDefKind::Supervisor
+            )
+        }) {
+            return true;
+        }
+        if self.supervisor_children.contains_key(name) {
             return true;
         }
         self.trait_is_handler_style(name)

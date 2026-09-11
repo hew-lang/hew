@@ -14,7 +14,7 @@ actor Namer {
     }
 }
 
-fn find_len(n: LocalPid<Namer>, want: i64) -> i64 {
+fn find_len(n: Namer, want: i64) -> i64 {
     var seen: i64 = 0;
     for v in n.names() {
         seen = seen + 1;

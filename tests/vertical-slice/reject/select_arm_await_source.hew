@@ -12,7 +12,7 @@ actor Worker {
 }
 
 actor Driver {
-    let worker: LocalPid<Worker>,
+    let worker: Worker,
 
     #[on(start)]
     fn start() {

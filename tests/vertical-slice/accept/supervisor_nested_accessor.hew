@@ -6,7 +6,7 @@
 //      `Inner` supervisor by calling InnerSupervisor's own bootstrap, then
 //      registers it via hew_supervisor_add_child_supervisor_with_init.
 //   2. `root.sub` lowers through hew_supervisor_nested_get, returning the
-//      child supervisor pointer as a LocalPid<Inner>.
+//      child supervisor pointer as a Inner.
 //   3. `inner.leaf` creates a stable ChildRef<Worker> owned by that nested
 //      supervisor.
 //   4. `leaf.echo(42)` asks the leaf actor, which replies with its argument.

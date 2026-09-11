@@ -167,9 +167,6 @@ impl SemSupervisor {
         {
             return Err("a pool view names no pool declaration".into());
         }
-        let ResolvedTy::Named { args, .. } = &self.handle_ty else {
-            unreachable!("supervisor handle is validated as LocalPid<S>");
-        };
         let ResolvedTy::Named {
             args: member_args, ..
         } = self.child_handle_ty(child, actors, supervisors)?
@@ -179,8 +176,7 @@ impl SemSupervisor {
         let [member] = member_args.as_slice() else {
             return Err("pool member role requires one member type".into());
         };
-        let mut view = args.clone();
-        view.push(member.clone());
+        let view = vec![self.handle_ty.clone(), member.clone()];
         Ok(ResolvedTy::named_builtin(
             hew_types::BuiltinType::SupervisorPool.canonical_name(),
             hew_types::BuiltinType::SupervisorPool,
@@ -190,13 +186,10 @@ impl SemSupervisor {
 
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
-        let ResolvedTy::Named { args, .. } = &self.handle_ty else {
-            unreachable!("supervisor handle is validated as LocalPid<S>");
-        };
         ResolvedTy::named_builtin(
             hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
-            args.clone(),
+            vec![self.handle_ty.clone()],
         )
     }
 
@@ -272,17 +265,6 @@ impl SemSupervisor {
 
 /// The declaration a direct handle or stable supervisor role names.
 pub(crate) fn declared_handle(ty: &ResolvedTy) -> Option<DefId> {
-    let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::ActorHandle | hew_types::BuiltinType::ChildRef),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [inner] = args.as_slice() else {
-        return None;
-    };
-    let instance = inner.nominal_instance()?;
+    let instance = crate::actor::local_actor_instance(ty)?;
     Some(instance.nominal.declaration().clone())
 }

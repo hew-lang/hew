@@ -63,7 +63,7 @@ actor Leaf {
 }
 
 actor Peer {
-    let leaf: LocalPid<Leaf>,
+    let leaf: Leaf,
     receive fn relay(n: i64) -> i64 {
         match leaf.value(n) {
             .Ok(v) => {
@@ -81,8 +81,8 @@ type Holder {
 }
 
 actor Racer {
-    let left: LocalPid<TestSink>,
-    let right: LocalPid<TestSink>,
+    let left: TestSink,
+    let right: TestSink,
 
     // Two DISTINCT resources, one per arm: each arm's source is issued before
     // dispatch, so each socket is transferred exactly once. The winner's exact

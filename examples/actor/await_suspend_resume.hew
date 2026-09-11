@@ -7,7 +7,7 @@ actor Worker {
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>,
+    let worker: Worker,
     receive fn run(n: i64) -> i64 {
         let r = worker.compute(n);
         match r {

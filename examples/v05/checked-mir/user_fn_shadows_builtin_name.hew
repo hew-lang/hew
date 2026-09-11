@@ -10,9 +10,9 @@ actor Probe {
     receive fn ping() {}
 }
 
-fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+fn link(_a: Probe, _b: Probe) {}
 
-fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+fn monitor(_a: Probe, _b: Probe) {}
 
 fn main() -> i64 {
     let p = spawn Probe;

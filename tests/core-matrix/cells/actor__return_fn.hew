@@ -7,7 +7,7 @@ actor Echo {
     }
 }
 
-fn make() -> LocalPid<Echo> {
+fn make() -> Echo {
     let m = spawn Echo(seen: 0);
     m
 }

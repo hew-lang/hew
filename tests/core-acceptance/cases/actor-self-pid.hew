@@ -6,7 +6,7 @@
 actor Worker {
     var name: string,
 
-    receive fn register(reg: LocalPid<Registry>) {
+    receive fn register(reg: Registry) {
         let _ = reg.take(self);
     }
 
@@ -16,9 +16,9 @@ actor Worker {
 }
 
 actor Registry {
-    var target: LocalPid<Worker>,
+    var target: Worker,
 
-    receive fn take(w: LocalPid<Worker>) {
+    receive fn take(w: Worker) {
         target = w;
     }
 

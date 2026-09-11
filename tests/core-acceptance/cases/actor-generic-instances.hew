@@ -20,7 +20,7 @@ actor Latest<T> {
     receive fn put(next: T) { remember(next); }
     receive fn get() -> Option<T> { value }
     receive fn count() -> i64 { changes }
-    receive fn identity() -> LocalPid<Latest<T>> { self }
+    receive fn identity() -> Latest<T> { self }
     receive gen fn repeat(count: i64) -> T {
         let snapshot = value;
         let item = snapshot.expect("set before repeat");

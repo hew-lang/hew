@@ -17,7 +17,7 @@ actor Scorer {
 }
 
 actor Coordinator {
-    let scorer: LocalPid<Scorer>,
+    let scorer: Scorer,
 
     receive fn ask_score(tag: i64, tree: Tree) -> i64 {
         match scorer.score(tag, tree) {

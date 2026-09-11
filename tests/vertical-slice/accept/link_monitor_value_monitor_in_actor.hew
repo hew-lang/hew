@@ -17,7 +17,7 @@ actor Target {
 
 actor Watcher {
     var active_monitor: Result<MonitorRef, MonitorError> = Err(MonitorError.InvalidTarget),
-    receive fn watch(t: LocalPid<Target>) {
+    receive fn watch(t: Target) {
         active_monitor = monitor(t);
         // Borrow the active MonitorRef through the Result payload. The actor
         // state remains the sole close authority; this binder must not acquire

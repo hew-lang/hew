@@ -1,6 +1,6 @@
 //! e2e coverage for `self` as a value inside an actor `receive fn`.
 //!
-//! `self` evaluates to the actor's own `LocalPid<Self>` handle. A self-send
+//! `self` evaluates to the actor's own `Self` handle. A self-send
 //! (`self.go()`) re-enqueues work to the actor's own mailbox — the substrate
 //! every timer/retry/pump-loop actor composes on. This proves the self-send
 //! actually delivers through the mailbox (each delivery mutates state and

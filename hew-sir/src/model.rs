@@ -979,15 +979,19 @@ pub fn collection_value_dependencies(
             // An opaque owner's exact release recipe replaces structural fields.
             continue;
         }
-        if matches!(&ty, ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::ActorHandle), args, ..
-        } if args.len() == 1)
-            || matches!(&ty, ResolvedTy::Named {
-                builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
-            } if args.len() == 2)
+        if matches!(
+            &ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                ..
+            }
+        ) || matches!(&ty, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
+        } if args.len() == 2)
         {
-            // The protocol parameters describe an actor, not an embedded value.
-            // The handle's checked copy recipe is complete on its own.
+            // An actor handle's type arguments are the actor declaration's own,
+            // and an anonymous actor's are its protocol: neither is an embedded
+            // value. The handle's checked copy recipe is complete on its own.
             continue;
         }
         if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }

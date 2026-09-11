@@ -8560,10 +8560,18 @@ impl LowerCtx {
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
             lambda_actor_declarations: tc_output.lambda_actor_declarations.clone(),
             pending_lambda_actors: Vec::new(),
+            // A supervisor is addressed by its own type exactly as an actor is,
+            // so both declaration kinds name an actor handle.
             actor_type_names: tc_output
                 .type_defs
                 .iter()
-                .filter(|(_, td)| td.kind == hew_types::check::TypeDefKind::Actor)
+                .filter(|(_, td)| {
+                    matches!(
+                        td.kind,
+                        hew_types::check::TypeDefKind::Actor
+                            | hew_types::check::TypeDefKind::Supervisor
+                    )
+                })
                 .map(|(name, _)| name.clone())
                 .collect(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
@@ -19668,7 +19676,7 @@ impl LowerCtx {
             .as_ref()
             .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
         ResolvedTy::Named {
-            name: "LambdaPid".to_string(),
+            name: BuiltinType::ActorFn.canonical_name().to_string(),
             args: vec![msg_ty, reply_ty],
             builtin: Some(hew_types::BuiltinType::ActorFn),
             is_opaque: false,
@@ -35503,7 +35511,7 @@ impl Widget {
                 ("Stream", BuiltinType::Stream),
                 ("Sink", BuiltinType::Sink),
                 ("Duplex", BuiltinType::Duplex),
-                ("LambdaPid", BuiltinType::ActorFn),
+                ("ActorFn", BuiltinType::ActorFn),
                 ("BoxedActor", BuiltinType::BoxedActor),
                 ("MonitorRef", BuiltinType::MonitorRef),
             ] {

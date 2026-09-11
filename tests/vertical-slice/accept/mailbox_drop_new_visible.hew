@@ -16,7 +16,7 @@ actor LossyWorker {
 }
 
 actor Driver {
-    receive fn run(worker: LocalPid<LossyWorker>) {
+    receive fn run(worker: LossyWorker) {
         let inbox = mailbox(worker, on_full: .DropNewest);
         match inbox.work(1) {
             .Ok(_) => {},

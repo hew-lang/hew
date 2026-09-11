@@ -8,7 +8,7 @@ actor Worker {
 }
 
 actor Hub {
-    let worker: LocalPid<Worker>,
+    let worker: Worker,
     receive fn relay(n: i64) -> i64 {
         let r = worker.work(n);
         match r {

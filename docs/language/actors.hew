@@ -41,4 +41,4 @@
 //! `close(actor)` requests stop and waits for cleanup; `closed(actor)` observes
 //! termination. `fork close(actor)` performs the close concurrently. Inside an
 //! actor, `self` is its handle and `self.field` accesses state. Local handles are
-//! currently spelled `LocalPid<T>`; unified `Pid<T>` remains planned work.
+//! currently spelled `T`; unified `T` remains planned work.

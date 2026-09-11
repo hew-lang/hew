@@ -2,7 +2,7 @@
 import std.link_monitor;
 actor Peer { receive fn ping() {} }
 actor Watcher {
-    let peer: LocalPid<Peer>,
+    let peer: Peer,
     #[on(down)] fn notified(note: link_monitor.DownNotification) {
         peer.ping().expect("peer");
         

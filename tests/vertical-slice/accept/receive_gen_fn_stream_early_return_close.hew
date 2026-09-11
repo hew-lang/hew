@@ -23,7 +23,7 @@ actor Ticker {
     }
 }
 
-fn first(t: LocalPid<Ticker>) -> i64 {
+fn first(t: Ticker) -> i64 {
     for v in t.stream() {
         return v;
     }

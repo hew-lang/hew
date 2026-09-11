@@ -10,7 +10,7 @@ actor Echo {
 actor Sink {
     var hits: i64,
 
-    receive fn take(v: LocalPid<Echo>) -> i64 {
+    receive fn take(v: Echo) -> i64 {
         match v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Result.Err(_) => println("err"), }
         hits = hits + 1;
         hits

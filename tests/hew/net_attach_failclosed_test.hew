@@ -37,7 +37,7 @@ fn test_websocket_typed_attach_dispatches_protocol_ids() {
             let peer = spawn WebSocketPeer(url: f"ws://127.0.0.1:{server.port()}/");
             let _ = peer.connect_and_hold();
             let conn = server.accept();
-            let handler: LocalPid<WebSocketHandlerProbe> = spawn WebSocketHandlerProbe;
+            let handler: WebSocketHandlerProbe = spawn WebSocketHandlerProbe;
             conn.attach(handler);
             sleep(750ms);
             conn.close();

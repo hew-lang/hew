@@ -28,7 +28,7 @@ pub(super) fn declaration<'a>(
             _ => None,
         });
     }
-    let instance = actor_instance(ty)?;
+    let instance = crate::actor::local_actor_instance(ty)?;
     module.items.iter().find_map(|item| match item {
         HirItem::Actor(actor)
             if &actor.declaration == instance.nominal.declaration()
@@ -40,28 +40,6 @@ pub(super) fn declaration<'a>(
     })
 }
 
-/// The actor declaration and type arguments a local reference names.
-///
-/// An actor is the type of its handle, so a handle carries its own identity; a
-/// `ChildRef<A>` names the same actor through its role parameter.
-pub(super) fn actor_instance(ty: &ResolvedTy) -> Option<hew_types::resolved_ty::NominalInstance> {
-    if let Some(instance) = ty.actor_handle_instance() {
-        return Some(instance);
-    }
-    let ResolvedTy::Named {
-        builtin: Some(hew_types::BuiltinType::ChildRef),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [actor_ty] = args.as_slice() else {
-        return None;
-    };
-    actor_ty.nominal_instance()
-}
-
 fn actor_substitution(
     source: &hew_hir::HirActorDecl,
     ty: &ResolvedTy,
@@ -69,7 +47,7 @@ fn actor_substitution(
     let args = if source.lambda_handle_ty.is_some() {
         Vec::new()
     } else {
-        actor_instance(ty)
+        crate::actor::local_actor_instance(ty)
             .ok_or("actor instance lacks its nominal identity")?
             .args
     };
@@ -138,8 +116,8 @@ impl InstanceService<'_> {
         let ty = &match lambda_handle {
             Some(handle) => handle,
             None => {
-                let instance =
-                    actor_instance(ty).ok_or("declaration() matched a local actor reference")?;
+                let instance = crate::actor::local_actor_instance(ty)
+                    .ok_or("declaration() matched a local actor reference")?;
                 ResolvedTy::named_builtin(
                     instance.nominal.full_path(),
                     hew_types::BuiltinType::ActorHandle,

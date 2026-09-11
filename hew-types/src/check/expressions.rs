@@ -7507,7 +7507,7 @@ impl Checker {
                     name: sup_name,
                     args: sup_args,
                     ..
-                }) = resolved.as_actor_handle()
+                }) = resolved.as_local_actor_ref()
                 {
                     if let Some(children) = self.supervisor_children.get(sup_name).cloned() {
                         let selected = children
@@ -7545,11 +7545,7 @@ impl Checker {
                             );
                             if kind == super::types::ChildKind::Pool {
                                 return Ty::supervisor_pool(
-                                    Ty::Named {
-                                        builtin: None,
-                                        name: sup_name.clone(),
-                                        args: sup_args.clone(),
-                                    },
+                                    Ty::actor_handle(sup_name.clone(), sup_args.clone()),
                                     child_ty,
                                 );
                             }

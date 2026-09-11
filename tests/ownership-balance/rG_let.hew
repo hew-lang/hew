@@ -14,7 +14,7 @@ fn empty_snap() -> Snap {
     Snap { label: "", n: -1, terminal: false }
 }
 
-fn poll(svc: LocalPid<Svc>) -> Snap {
+fn poll(svc: Svc) -> Snap {
     var i = 0;
     while i < 3 {
         let result = svc.snapshot();

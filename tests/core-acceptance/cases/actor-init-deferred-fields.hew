@@ -22,7 +22,7 @@ actor Worker {
     receive fn attempts() -> i64 { attempts }
 }
 
-fn show(worker: LocalPid<Worker>) {
+fn show(worker: Worker) {
     println(worker.label().expect("label"));
     println(worker.count().expect("count"));
     println(worker.mode().expect("mode"));

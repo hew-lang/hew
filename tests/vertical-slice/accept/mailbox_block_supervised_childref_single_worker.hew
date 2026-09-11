@@ -1,5 +1,5 @@
 // A cooperative bounded send through ChildRef must resolve and pin the stable
-// supervisor role. Treating the two-word ChildRef descriptor as LocalPid, or
+// supervisor role. Treating the two-word ChildRef descriptor as an actor handle, or
 // blocking the only scheduler worker, prevents the second delivery.
 actor BlockedChild {
     mailbox 1,

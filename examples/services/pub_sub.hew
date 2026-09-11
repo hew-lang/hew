@@ -35,11 +35,11 @@ actor Subscriber {
 // A subscriber can register for multiple topics (one entry per topic).
 actor Broker {
     var sub_topics: Vec<string>,
-    var sub_actors: Vec<LocalPid<Subscriber>>,
+    var sub_actors: Vec<Subscriber>,
     var published: i64,
 
     // Register a subscriber for a topic.
-    receive fn subscribe(topic: string, subscriber: LocalPid<Subscriber>) {
+    receive fn subscribe(topic: string, subscriber: Subscriber) {
         sub_topics.push(topic);
         sub_actors.push(subscriber);
         println(f"[broker] subscription added: topic={topic}");
@@ -70,7 +70,7 @@ fn main() {
 
     // Create broker
     let empty_topics: Vec<string> = Vec.new();
-    let empty_actors: Vec<LocalPid<Subscriber>> = Vec.new();
+    let empty_actors: Vec<Subscriber> = Vec.new();
     let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers
     let alice = spawn Subscriber(name: "alice", received: 0);

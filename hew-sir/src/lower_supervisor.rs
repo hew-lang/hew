@@ -82,11 +82,10 @@ impl InstanceService<'_> {
             ..
         } = ty
         {
-            return self.require_supervisor(&ResolvedTy::named_builtin(
-                hew_types::BuiltinType::ActorHandle.canonical_name(),
-                hew_types::BuiltinType::ActorHandle,
-                args.clone(),
-            ));
+            let [handle] = args.as_slice() else {
+                return Err("a supervised role names one supervisor type".into());
+            };
+            return self.require_supervisor(&handle.clone());
         }
         if let Some(supervisor) = self
             .supervisors
@@ -98,14 +97,7 @@ impl InstanceService<'_> {
         let source = declaration(self.module, ty)
             .ok_or("supervisor handle lacks its exact declaration")?
             .clone();
-        let ResolvedTy::Named { args, .. } = ty else {
-            return Err("supervisor instance requires its checked handle type".into());
-        };
-        let [inner] = args.as_slice() else {
-            return Err("supervisor handle requires one concrete supervisor type".into());
-        };
-        let instance = inner
-            .nominal_instance()
+        let instance = crate::actor::local_actor_instance(ty)
             .ok_or("supervisor instance lacks its nominal identity")?;
         if instance.args.len() != source.type_params.len() {
             return Err("supervisor instance type arguments differ from its declaration".into());
@@ -513,11 +505,7 @@ impl Builder<'_, '_> {
         let [supervisor_ty, _] = args.as_slice() else {
             return Err("supervisor pool requires its supervisor and member types".into());
         };
-        let supervisor = self.service.require_supervisor(&ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ActorHandle.canonical_name(),
-            hew_types::BuiltinType::ActorHandle,
-            vec![supervisor_ty.clone()],
-        ))?;
+        let supervisor = self.service.require_supervisor(supervisor_ty)?;
         let mut pools = self.service.supervisors[supervisor.0 as usize]
             .children
             .iter()

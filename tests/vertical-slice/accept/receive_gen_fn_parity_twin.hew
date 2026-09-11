@@ -26,7 +26,7 @@ gen fn stream_twin(base: i64, n: i64) -> i64 {
     }
 }
 
-fn render_actor_seq(t: LocalPid<Ticker>, n: i64) -> string {
+fn render_actor_seq(t: Ticker, n: i64) -> string {
     var out: string = "";
     var first = true;
     for v in t.stream(n) {

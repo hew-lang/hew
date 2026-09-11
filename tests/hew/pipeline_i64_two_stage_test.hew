@@ -27,8 +27,8 @@ actor PushProbe {
 }
 
 actor PushRunner {
-    let source: LocalPid<pipeline.SourceI64>,
-    let probe: LocalPid<PushProbe>,
+    let source: pipeline.SourceI64,
+    let probe: PushProbe,
 
     mailbox 1,
 
@@ -45,7 +45,7 @@ actor PushRunner {
 }
 
 actor CrashStage {
-    let next: LocalPid<pipeline.SinkI64>,
+    let next: pipeline.SinkI64,
     var crashed: bool,
 
     receive fn push(item: pipeline.PipelineItemI64) -> bool {
@@ -62,8 +62,8 @@ actor CrashStage {
 }
 
 actor CrashSource {
-    let next: LocalPid<CrashStage>,
-    let sink: LocalPid<pipeline.SinkI64>,
+    let next: CrashStage,
+    let sink: pipeline.SinkI64,
 
     receive fn push(item: pipeline.PipelineItemI64) -> bool {
         match next.push(item) {
@@ -80,7 +80,7 @@ actor CrashSource {
     }
 }
 
-fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
+fn wait_for_count(source: pipeline.SourceI64, expected: i64) {
     var count = -1;
     var polls = 0;
     while count != expected && polls < 5000 {
@@ -102,7 +102,7 @@ fn wait_for_count(source: LocalPid<pipeline.SourceI64>, expected: i64) {
     }
 }
 
-fn wait_for_attempts(control: LocalPid<pipeline.AdmissionControlI64>, expected: i64) {
+fn wait_for_attempts(control: pipeline.AdmissionControlI64, expected: i64) {
     var attempts = -1;
     var polls = 0;
     while attempts != expected && polls < 5000 {
@@ -124,7 +124,7 @@ fn wait_for_attempts(control: LocalPid<pipeline.AdmissionControlI64>, expected: 
     }
 }
 
-fn wait_for_probe(probe: LocalPid<PushProbe>) {
+fn wait_for_probe(probe: PushProbe) {
     var completed = false;
     var polls = 0;
     while !completed && polls < 5000 {

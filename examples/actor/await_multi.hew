@@ -8,7 +8,7 @@ actor Worker {
 }
 
 actor Coordinator {
-    let worker: LocalPid<Worker>,
+    let worker: Worker,
     let rounds: i64,
 
     // Two sequential calls: 7*6 + 7*6 = 84.

@@ -11,7 +11,7 @@ actor Worker {
     receive fn total() -> i64 { seen }
 }
 
-fn drive(w: LocalPid<Worker>) -> Result<(), SendError> {
+fn drive(w: Worker) -> Result<(), SendError> {
     let inbox = mailbox(w, on_full: .Reject);
     match inbox.process("a") {
         .Ok(Delivery.Accepted) => println("accepted"),

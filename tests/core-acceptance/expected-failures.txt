@@ -20,4 +20,3 @@ spec-3559603183  # IMPL-GAP: `.try_to_i32()`/`.try_to_f32()` etc. type-check but
 spec-3936244856  # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> ...` type-checks (discarding the completion result correctly raises `E_SEND_RESULT_DROPPED`) but SIR lowering of the ask/completion for such a handler is not implemented (`E_SIR_UNSUPPORTED: ... ask must return its complete checked Result`)
 std-arena-3714386937  # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
 std-net-http-http-223475752  # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
-std-net-net-1174313785  # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `TcpAttachLocal` has no owne…

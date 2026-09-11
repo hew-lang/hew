@@ -24,7 +24,7 @@ actor Sink {
 
     receive fn tail_len() -> i64 { last.len() }
 
-    receive fn fill(me: LocalPid<Sink>, backup: LocalPid<Sink>) -> i64 {
+    receive fn fill(me: Sink, backup: Sink) -> i64 {
         let inbox = mailbox(me, on_full: .Reject);
         let _ = inbox.take(tagged("one"));
         let _ = inbox.take(tagged("two"));
@@ -46,7 +46,7 @@ fn tagged(name: string) -> string {
     name + "\u{0}tail"
 }
 
-fn count_of(label: string, sink: LocalPid<Sink>) {
+fn count_of(label: string, sink: Sink) {
     match sink.total() {
         .Ok(n) => println(f"{label} {n}"),
         .Err(_) => panic("count ask failed"),

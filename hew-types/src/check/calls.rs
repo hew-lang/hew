@@ -2064,19 +2064,6 @@ impl Checker {
                 // A local actor handle — fall through to the generic `fn_sigs`
                 // path, which applies the local typed-result builtin signature.
             }
-            "Node::register" if args.len() == 2 && !self.declares_function(&func_name) => {
-                // Codegen extracts the runtime pid from a local actor handle, so
-                // a remote handle or a bare integer is refused here.
-                let (name_expr, name_sp) = args[0].expr();
-                self.check_against(name_expr, name_sp, &Ty::String);
-                let (actor_expr, actor_sp) = args[1].expr();
-                let actor_ty = self.synthesize(actor_expr, actor_sp);
-                let resolved = self.subst.resolve(&actor_ty);
-                if !self.require_actor_handle_argument(&resolved, "Node.register", actor_sp) {
-                    return Ty::Error;
-                }
-                return Ty::I32;
-            }
             "supervisor_child" if args.len() == 2 => {
                 // supervisor_child(sup, index) → the child's actor type
                 let (sup_expr, sup_sp) = args[0].expr();

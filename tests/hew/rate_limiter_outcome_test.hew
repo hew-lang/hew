@@ -22,7 +22,7 @@ supervisor ProbeTree {
 }
 
 actor ProbeWorker {
-    let tree: LocalPid<ProbeTree>,
+    let tree: ProbeTree,
     var rejected: i64,
     var unavailable: i64,
     receive fn handle_request() -> i64 {

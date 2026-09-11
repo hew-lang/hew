@@ -12,7 +12,7 @@ actor Crasher {
 }
 
 actor Watcher {
-    receive fn link_to(peer: LocalPid<Crasher>) -> i64 {
+    receive fn link_to(peer: Crasher) -> i64 {
         link(peer);
         1
     }

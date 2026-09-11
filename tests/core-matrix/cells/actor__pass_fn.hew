@@ -7,7 +7,7 @@ actor Echo {
     }
 }
 
-fn use_it(v: LocalPid<Echo>) {
+fn use_it(v: Echo) {
     match v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Result.Err(_) => println("err"), }
 }
 

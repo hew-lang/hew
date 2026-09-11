@@ -113,19 +113,39 @@ impl SemModule {
     }
 }
 
+/// The actor declaration and type arguments a local reference names.
+///
+/// An actor is the type of its handle, so a handle carries its own identity; a
+/// `ChildRef<A>` names the same actor through its role parameter.
+pub(crate) fn local_actor_instance(
+    ty: &ResolvedTy,
+) -> Option<hew_types::resolved_ty::NominalInstance> {
+    if let Some(instance) = ty.actor_handle_instance() {
+        return Some(instance);
+    }
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::ChildRef),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let [actor_ty] = args.as_slice() else {
+        return None;
+    };
+    actor_ty.actor_handle_instance()
+}
+
 impl SemActor {
     /// The stable supervised role for this actor: re-resolved through its
     /// supervisor on every use, never a cached address.
     #[must_use]
     pub fn child_ref_ty(&self) -> ResolvedTy {
-        let actor_ty = self
-            .handle_ty
-            .actor_handle_nominal()
-            .expect("actor handle is validated as the actor's own type");
         ResolvedTy::named_builtin(
             hew_types::BuiltinType::ChildRef.canonical_name(),
             hew_types::BuiltinType::ChildRef,
-            vec![actor_ty],
+            vec![self.handle_ty.clone()],
         )
     }
 

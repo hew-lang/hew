@@ -14,7 +14,7 @@ actor RejectingWorker {
 }
 
 actor Driver {
-    receive fn run(worker: LocalPid<RejectingWorker>) {
+    receive fn run(worker: RejectingWorker) {
         let inbox = mailbox(worker, on_full: .Reject);
         match inbox.work(1) {
             .Ok(_) => {},

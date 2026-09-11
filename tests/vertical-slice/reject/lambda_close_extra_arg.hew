@@ -1,4 +1,4 @@
-// Reject: LambdaPid::close takes no arguments. Extra arguments were previously
+// Reject: an anonymous actor's `close` takes no arguments. Extra arguments were previously
 // type-checked for recovery and then silently dropped by MIR lowering, so this
 // must fail at check time instead.
 fn main() {

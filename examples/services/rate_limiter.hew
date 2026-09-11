@@ -44,7 +44,7 @@ actor RateLimiter {
 // Simulated API worker that checks the limiter before processing.
 actor ApiWorker {
     let id: i64,
-    let limiter: LocalPid<RateLimiter>,
+    let limiter: RateLimiter,
     var accepted: i64,
     var rejected: i64,
     receive fn handle_request(request_id: i64) {
@@ -76,7 +76,7 @@ actor ApiWorker {
 
 // Periodic refill timer that adds tokens at a fixed interval.
 actor RefillTimer {
-    let limiter: LocalPid<RateLimiter>,
+    let limiter: RateLimiter,
     let interval: duration,
     let cycles: i64,
     receive fn start() {

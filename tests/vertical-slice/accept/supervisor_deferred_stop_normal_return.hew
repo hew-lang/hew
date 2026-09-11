@@ -17,7 +17,7 @@ actor Busy {
 }
 
 actor Stopper {
-    receive fn stop_tree(sup: LocalPid<App>, ready: channel.Sender<i64>) {
+    receive fn stop_tree(sup: App, ready: channel.Sender<i64>) {
         let _ = sup.busy.work(1);
         supervisor_stop(sup);
         ready.send(42);

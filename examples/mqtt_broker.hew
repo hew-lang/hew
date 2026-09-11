@@ -13,7 +13,7 @@
 //   ClientHandler — owns one connection, handles inbound and outbound messages
 //   Router        — tracks clients and subscriptions, fans out publishes
 //
-// Router state uses only clonable types (strings, i32, LocalPid handles) so the
+// Router state uses only clonable types (strings, i32, actor handles) so the
 // actor is supervisor-restartable. Runtime stream/sink halves have one owner
 // each and close automatically with their actors.
 import std.encoding.utf8;
@@ -206,10 +206,10 @@ actor ClientHandler {
     let sink: Sink<bytes>,
     let session_id: string,
     var client_id: string,
-    let router: LocalPid<Router>,
+    let router: Router,
     var buf: bytes,
     var registered: bool,
-    receive fn register(reader: LocalPid<ClientReader>) {
+    receive fn register(reader: ClientReader) {
         let accepted = match router.register_client(session_id.clone(), self) {
             .Ok(value) => value,
             .Err(_) => false,
@@ -493,7 +493,7 @@ actor ClientHandler {
 // continue. Dropping this actor closes the stream half exactly once.
 actor ClientReader {
     let input: Stream<bytes>,
-    let client: LocalPid<ClientHandler>,
+    let client: ClientHandler,
     receive fn start() {
         var reading = true;
         while reading {
@@ -523,7 +523,7 @@ actor ClientReader {
 
 // Router — tracks clients and subscriptions; fans out publishes directly.
 //
-// State uses only clonable types: strings, i32, and LocalPid actor handles.
+// State uses only clonable types: strings, i32, and actor handles.
 // A generated session ID is the immutable registry and delivery authority;
 // the peer-selected ClientId is metadata claimed atomically during CONNECT.
 // Parallel arrays: session_ids[i] <-> client_ids[i] <-> clients[i]
@@ -531,11 +531,11 @@ actor ClientReader {
 actor Router {
     var session_ids: Vec<string>,
     var client_ids: Vec<string>,
-    var clients: Vec<LocalPid<ClientHandler>>,
+    var clients: Vec<ClientHandler>,
     var sub_topics: Vec<string>,
     var sub_session_ids: Vec<string>,
     var sub_qos: Vec<i32>,
-    receive fn register_client(session_id: string, client: LocalPid<ClientHandler>) -> bool {
+    receive fn register_client(session_id: string, client: ClientHandler) -> bool {
         for existing_session in session_ids {
             if existing_session == session_id {
                 println(f"[router] duplicate session_id={session_id} rejected");
@@ -618,7 +618,7 @@ actor Router {
         let subscriptions_before = sub_topics.len();
         var new_sessions: Vec<string> = Vec.new();
         var new_client_ids: Vec<string> = Vec.new();
-        var new_clients: Vec<LocalPid<ClientHandler>> = Vec.new();
+        var new_clients: Vec<ClientHandler> = Vec.new();
         for i in 0 .. session_ids.len() {
             if session_ids[i] != session_id {
                 new_sessions.push(session_ids[i]);
@@ -654,7 +654,7 @@ actor Router {
 // struct name codegen assigns the stdlib `net.Listener` opaque handle
 // type (see https://github.com/hew-lang/hew/issues/2509).
 actor Acceptor {
-    let router: LocalPid<Router>,
+    let router: Router,
     let addr: string,
     receive fn start() {
         let lst = match net.listen(addr) {
@@ -685,7 +685,7 @@ fn main() {
     let addr = f"127.0.0.1:{port}";
     let empty_sessions: Vec<string> = Vec.new();
     let empty_ids: Vec<string> = Vec.new();
-    let empty_clients: Vec<LocalPid<ClientHandler>> = Vec.new();
+    let empty_clients: Vec<ClientHandler> = Vec.new();
     let empty_sub_topics: Vec<string> = Vec.new();
     let empty_sub_sessions: Vec<string> = Vec.new();
     let empty_sub_qos: Vec<i32> = Vec.new();

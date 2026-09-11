@@ -1293,6 +1293,19 @@ impl Ty {
         }
     }
 
+    /// The bare nominal carrier of an actor handle: the same name and type
+    /// arguments with no handle discriminator. A `ChildRef<A>` and a supervisor
+    /// child template name their actor this way.
+    #[must_use]
+    pub fn actor_handle_nominal(&self) -> Option<Ty> {
+        let (name, args) = self.actor_handle_identity()?;
+        Some(Ty::Named {
+            name: name.to_string(),
+            args: args.to_vec(),
+            builtin: None,
+        })
+    }
+
     /// The declaration name and type arguments of an actor handle.
     #[must_use]
     pub fn actor_handle_identity(&self) -> Option<(&str, &[Ty])> {

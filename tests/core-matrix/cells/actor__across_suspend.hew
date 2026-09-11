@@ -10,7 +10,7 @@ actor Echo {
 actor Holder {
     var ready: bool,
 
-    receive fn hold(v: LocalPid<Echo>) -> i64 {
+    receive fn hold(v: Echo) -> i64 {
         sleep(2ms);
         match v.take(1) { Result.Ok(v_v) => println(f"echo {v_v}"), Result.Err(_) => println("err"), }
         ready = true;

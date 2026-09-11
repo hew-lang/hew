@@ -34,7 +34,7 @@ supervisor Pool {
 }
 
 actor Dispatcher {
-    var sup: LocalPid<Pool>,
+    var sup: Pool,
 
     // Crash w1, then ask w2 and w3 by name. Encodes the outcome positionally:
     // crashed * 100 + w2_id * 10 + w3_id = 123 when each sibling is reached.

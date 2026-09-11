@@ -1,7 +1,7 @@
 actor Worker {
     receive fn value() -> i64 { 7 }
 
-    receive fn choose(target: LocalPid<Worker>, timed: bool) -> i64 {
+    receive fn choose(target: Worker, timed: bool) -> i64 {
         if timed {
             select {
                 value from target.value() => value.expect("actor value"),

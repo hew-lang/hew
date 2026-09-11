@@ -12,7 +12,7 @@ actor Sink {
 }
 
 actor Driver {
-    receive fn run(sink: LocalPid<Sink>) -> i64 {
+    receive fn run(sink: Sink) -> i64 {
         let reliable = mailbox(sink, on_full: .Wait);
         for i in 0..5 {
             match reliable.take(i) {

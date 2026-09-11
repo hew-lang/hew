@@ -1,4 +1,4 @@
-// A lambda actor's `LambdaPid<M, R>` handle takes the same two delivery views
+// A lambda actor's `actor(M) -> R` handle takes the same two delivery views
 // a named actor's pid takes. `mailbox(handle, ..)` submits one way and yields
 // the delivery envelope; `policy(handle, ..)` completes like the bare handle
 // and chooses only how a full mailbox is answered. The handle is an ordinary
@@ -6,7 +6,7 @@
 // both, and is released exactly once.
 type Job {
     name: string,
-    run: LambdaPid<i64, i64>,
+    run: actor(i64) -> i64,
 }
 
 fn main() {

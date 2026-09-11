@@ -615,13 +615,17 @@ fn runtime_receiver_builtin(ty: &ResolvedTy) -> Option<BuiltinType> {
     if supervisor_pool_member_type(ty).is_some() {
         return Some(BuiltinType::SupervisorPool);
     }
+    // An actor is the type of its handle, so the handle's arguments are the
+    // actor declaration's own and may be empty.
+    if ty.actor_handle_instance().is_some() {
+        return Some(BuiltinType::ActorHandle);
+    }
     match ty {
         ResolvedTy::Named {
             builtin:
                 Some(
                     kind @ (BuiltinType::Stream
                     | BuiltinType::Sink
-                    | BuiltinType::ActorHandle
                     | BuiltinType::Rc
                     | BuiltinType::Weak),
                 ),

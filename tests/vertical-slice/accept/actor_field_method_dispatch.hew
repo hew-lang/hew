@@ -3,7 +3,7 @@
 // `actor B` holds `let out: W;` — a field whose annotated type is a bare
 // actor name. A value of that type is an actor *handle*, not the actor's
 // state by value, so HIR lowering canonicalises the field type to the same
-// `LocalPid<W>` representation `spawn W` produces. Calling a receive method
+// `W` representation `spawn W` produces. Calling a receive method
 // on that field (`out.put(n)` fire, `await out.get()` ask) must route through
 // the actor mailbox exactly like a local `spawn W` binding does — never as a
 // synchronous `W::method(self, ...)` struct call.

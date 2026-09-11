@@ -1,5 +1,5 @@
 // #1929 Stage 1: the pointer-ABI element of an element-typed Vec method under
-// a type parameter. `LocalPid<Counter>` is a Copy pointer-identity handle, so a
+// a type parameter. `Counter` is a Copy pointer-identity handle, so a
 // `Vec<T>` `push`/`get` under the type parameter `T` re-resolves to
 // `hew_vec_push_ptr` / `hew_vec_get_ptr`. The handle's actor identity must
 // survive the round-trip: the retrieved pid bumps and reports the same actor.
@@ -16,8 +16,8 @@ fn store_and_read<T>(var v: Vec<T>, x: T) -> T {
 }
 
 fn main() {
-    let c: LocalPid<Counter> = spawn Counter;
-    let v: Vec<LocalPid<Counter>> = Vec.new();
+    let c: Counter = spawn Counter;
+    let v: Vec<Counter> = Vec.new();
     let same = store_and_read(v, c);
     let _ = same.bump();
     let _ = same.report();

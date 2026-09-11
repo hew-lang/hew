@@ -9,7 +9,7 @@ actor Bottom {
 actor Mid {
 
     // leaf(5) = 15; step doubles -> 30; run adds 1 -> 31.
-    let bottom: LocalPid<Bottom>,
+    let bottom: Bottom,
     receive fn step(n: i64) -> i64 {
         let r = bottom.leaf(n);
         match r {
@@ -20,7 +20,7 @@ actor Mid {
 }
 
 actor Top {
-    let mid: LocalPid<Mid>,
+    let mid: Mid,
     receive fn run(n: i64) -> i64 {
         let r = mid.step(n);
         match r {

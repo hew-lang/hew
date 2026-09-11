@@ -23,7 +23,7 @@ actor Counter {
 }
 
 actor Classifier {
-    let counter: LocalPid<Counter>,
+    let counter: Counter,
 
     // Three distinct `return` paths reached through one `await`: the early
     // `return 100` when the stepped value exceeds 3, the `return v`
@@ -79,7 +79,7 @@ fn multi_return_value_handler_deposits_each_path() {
     expect_classify(c, 100);
 }
 
-fn expect_classify(c: LocalPid<Classifier>, want: i64) {
+fn expect_classify(c: Classifier, want: i64) {
     match c.classify() {
         .Ok(got) => testing.assert_eq(got, want),
         .Err(e) => testing.assert_true(false),

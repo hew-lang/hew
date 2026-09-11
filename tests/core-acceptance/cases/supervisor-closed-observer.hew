@@ -16,7 +16,7 @@ actor Progress {
     receive fn get() -> i64 { stage }
 }
 
-fn observe(group: LocalPid<Group<string>>, progress: LocalPid<Progress>) {
+fn observe(group: Group<string>, progress: Progress) {
     progress.set(1).expect("observer started");
     closed(group);
     progress.set(2).expect("observer finished");

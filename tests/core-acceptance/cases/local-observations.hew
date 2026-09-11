@@ -1,7 +1,7 @@
 import std.link_monitor.{MonitorRef};
 actor Target { receive fn ping() -> i64 { 42 } }
 actor Watcher {
-    receive fn observe(target: LocalPid<Target>) -> i64 {
+    receive fn observe(target: Target) -> i64 {
         link(target).expect("link live target");
         link(target).expect("duplicate link is idempotent");
         unlink(target);
@@ -13,14 +13,14 @@ actor Watcher {
         let _scoped = monitor(target).expect("scope-owned registration");
         1
     }
-    receive fn observe_dead(target: LocalPid<Target>) -> i64 {
+    receive fn observe_dead(target: Target) -> i64 {
         assert(match link(target) { .Err(LinkError.Dead) => true, _ => false });
         unlink(target);
         2
     }
 }
-fn link_from_helper(target: LocalPid<Target>) -> Result<(), LinkError> { link(target) }
-fn monitor_from_helper(target: LocalPid<Target>) -> Result<MonitorRef, LinkError> { monitor(target) }
+fn link_from_helper(target: Target) -> Result<(), LinkError> { link(target) }
+fn monitor_from_helper(target: Target) -> Result<MonitorRef, LinkError> { monitor(target) }
 
 fn main() {
     let target = spawn Target;

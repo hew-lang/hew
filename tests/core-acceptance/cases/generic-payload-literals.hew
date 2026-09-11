@@ -14,7 +14,7 @@ fn result_case(value: Result<bool, string>) -> string {
     }
 }
 
-fn ask_case(gate: LocalPid<Gate>, value: bool) -> string {
+fn ask_case(gate: Gate, value: bool) -> string {
     match gate.ready(value) {
         .Ok(true) => "ask true",
         .Ok(false) => "ask false",

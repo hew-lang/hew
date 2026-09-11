@@ -40,10 +40,10 @@ actor Service {
 // Health monitor — checks registered services and reports status.
 actor HealthMonitor {
     var svc_names: Vec<string>,
-    var svc_refs: Vec<LocalPid<Service>>,
+    var svc_refs: Vec<Service>,
     var svc_status: Vec<i64>, // 1=healthy, 0=unhealthy per service
     var check_count: i64,
-    receive fn register(name: string, svc: LocalPid<Service>) {
+    receive fn register(name: string, svc: Service) {
         svc_names.push(name);
         svc_refs.push(svc);
         svc_status.push(1);
@@ -117,7 +117,7 @@ fn main() {
     let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
     // Create monitor
     let empty_names: Vec<string> = Vec.new();
-    let empty_refs: Vec<LocalPid<Service>> = Vec.new();
+    let empty_refs: Vec<Service> = Vec.new();
     let empty_status: Vec<i64> = Vec.new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services

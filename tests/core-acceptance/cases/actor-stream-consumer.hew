@@ -12,7 +12,7 @@ actor Source {
 
 actor Consumer {
     var drained: i64 = 0,
-    receive fn drain(source: LocalPid<Source>, count: i64, limit: i64) -> i64 {
+    receive fn drain(source: Source, count: i64, limit: i64) -> i64 {
         var seen = 0;
         for item in source.items(count) {
             println(item);

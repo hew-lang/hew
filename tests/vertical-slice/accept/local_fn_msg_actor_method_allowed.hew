@@ -11,6 +11,6 @@ actor Worker {
     receive fn carry(f: fn(i64) -> i64) {}
 }
 
-fn send_local(pid: LocalPid<Worker>) {
+fn send_local(pid: Worker) {
     let _ = pid.carry(inc);
 }

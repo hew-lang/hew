@@ -14,14 +14,14 @@ actor Watcher {
     var expected_monitor: u64 = 0,
     var exit_actor: u64 = 0,
 
-    receive fn watch(target: LocalPid<Target>) -> link_monitor.MonitorRef {
+    receive fn watch(target: Target) -> link_monitor.MonitorRef {
         link(target).expect("link target");
         let observation = monitor(target).expect("monitor target");
         expected_monitor = observation.id().value;
         observation
     }
 
-    receive fn watch_normal(target: LocalPid<Target>) -> link_monitor.MonitorRef {
+    receive fn watch_normal(target: Target) -> link_monitor.MonitorRef {
         let observation = monitor(target).expect("monitor normal target");
         expected_monitor = observation.id().value;
         exit_actor = 0;

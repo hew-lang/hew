@@ -13,7 +13,7 @@ supervisor Pool {
     pool workers: Worker count: 2,
 }
 
-fn inspect(sup: LocalPid<Pool>) -> i64 {
+fn inspect(sup: Pool) -> i64 {
     let workers = sup.workers;
     match workers.get(0) {
         .Some(_) => workers.len(),

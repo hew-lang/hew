@@ -2,7 +2,7 @@
 import std.failure;
 actor Peer { receive fn ping() {} }
 actor Watcher {
-    let peer: LocalPid<Peer>,
+    let peer: Peer,
     #[on(exit)] fn notified(note: failure.CrashNotification) {
         peer.ping().expect("peer");
         

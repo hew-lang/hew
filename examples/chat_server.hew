@@ -5,7 +5,7 @@
 //
 // Architecture:
 //   main          — accepts TCP connections, spawns a ClientHandler per client
-//   ChatRoom      — holds Vec<LocalPid<ClientHandler>>, broadcasts via actor dispatch
+//   ChatRoom      — holds Vec<ClientHandler>, broadcasts via actor dispatch
 //   ClientHandler — reads from one TCP connection, forwards messages to ChatRoom
 //
 // All inter-component communication uses actor messages (receive fn calls).
@@ -17,15 +17,15 @@ import std.net.{Connection};
 import std.os;
 
 actor ChatRoom {
-    var handlers: Vec<LocalPid<ClientHandler>>,
+    var handlers: Vec<ClientHandler>,
     var names: Vec<string>,
-    receive fn register(handler: LocalPid<ClientHandler>, name: string) {
+    receive fn register(handler: ClientHandler, name: string) {
         handlers.push(handler);
         names.push(name);
         println(f"{name} joined the chat");
     }
     receive fn unregister(name: string) {
-        var new_handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
+        var new_handlers: Vec<ClientHandler> = Vec.new();
         var new_names: Vec<string> = Vec.new();
         for i in 0 .. names.len() {
             if names[i] != name {
@@ -49,7 +49,7 @@ actor ChatRoom {
 actor ClientHandler {
     let conn: Connection,
     let name: string,
-    let room: LocalPid<ChatRoom>,
+    let room: ChatRoom,
     receive fn start(unused: i32) {
         match conn.write_string(f"[server] welcome {name}") {
             .Ok(_) => {},
@@ -110,7 +110,7 @@ fn main() {
     };
     println("=== Hew TCP Chat Server ===");
     println(f"Listening on {addr}");
-    let handlers: Vec<LocalPid<ClientHandler>> = Vec.new();
+    let handlers: Vec<ClientHandler> = Vec.new();
     let names: Vec<string> = Vec.new();
     let room = spawn ChatRoom(handlers: handlers, names: names);
     var next_id: i32 = 1;

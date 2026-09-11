@@ -1,11 +1,11 @@
 // `actor |msg| { .. }` is an actor declaration without a source name: its
 // captures are its state, its body is its one receive handler, and its
-// `LambdaPid<M, R>` handle addresses it exactly as a pid addresses a named
+// `actor(M) -> R` handle addresses it exactly as a pid addresses a named
 // actor. A call on the handle is the completion call, so it waits for the
 // handler and yields the same envelope a named actor's call does.
 type Job {
     name: string,
-    run: LambdaPid<i64, i64>,
+    run: actor(i64) -> i64,
 }
 
 fn main() {

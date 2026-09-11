@@ -323,26 +323,24 @@ pub(super) fn depends_on(function: &PhysicalFunction, mut id: StorageId, owner: 
 }
 
 pub(super) fn invalidate_captures(
-    function: &PhysicalFunction,
+    borrows: &super::BorrowDependents,
     state: &mut FlowState,
     environment: StorageId,
 ) {
-    for slot in &function.storage {
-        if matches!(slot.origin, StorageOrigin::Capture { environment: owner, .. } if owner == environment)
-        {
-            state.slots[slot.id.0 as usize] = InitState::Uninitialized;
-        }
+    for slot in borrows.captures_of(environment) {
+        state.slots[slot.0 as usize] = InitState::Uninitialized;
     }
 }
 
 pub(super) fn verify_capture_return(
     function: &PhysicalFunction,
+    borrows: &super::BorrowDependents,
     state: &FlowState,
 ) -> Result<(), PhysicalError> {
-    for slot in &function.storage {
-        if let StorageOrigin::Capture { environment, .. } = slot.origin {
+    for slot in borrows.capture_slots() {
+        if let StorageOrigin::Capture { environment, .. } = storage(function, *slot)?.origin {
             if storage(function, environment)?.own == OwnKind::Guaranteed
-                && state.slots[slot.id.0 as usize] != InitState::Initialized
+                && state.slots[slot.0 as usize] != InitState::Initialized
             {
                 return Err(PhysicalError::new(
                     "borrowed closure return must restore every capture",

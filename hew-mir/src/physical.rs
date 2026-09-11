@@ -6055,12 +6055,24 @@ fn define(
 /// visits that root's dependants instead of every slot in the function.
 pub(super) struct BorrowDependents {
     children: BTreeMap<StorageId, Vec<StorageId>>,
+    /// Capture slots grouped by the environment they belong to, and every
+    /// capture slot in declaration order. A closure boundary asks both
+    /// questions per operation, which is a scan of the whole function each
+    /// time without them.
+    captures: BTreeMap<StorageId, Vec<StorageId>>,
+    capture_slots: Vec<StorageId>,
 }
 
 impl BorrowDependents {
     fn of(function: &PhysicalFunction) -> Self {
         let mut children = BTreeMap::<StorageId, Vec<StorageId>>::new();
+        let mut captures = BTreeMap::<StorageId, Vec<StorageId>>::new();
+        let mut capture_slots = Vec::new();
         for slot in &function.storage {
+            if let StorageOrigin::Capture { environment, .. } = slot.origin {
+                captures.entry(environment).or_default().push(slot.id);
+                capture_slots.push(slot.id);
+            }
             let parent = if let Some(parent) = slot.borrow_parent {
                 Some(parent)
             } else if let StorageOrigin::Capture { environment, .. } = slot.origin {
@@ -6076,7 +6088,21 @@ impl BorrowDependents {
                 children.entry(parent).or_default().push(slot.id);
             }
         }
-        Self { children }
+        Self {
+            children,
+            captures,
+            capture_slots,
+        }
+    }
+
+    /// The capture slots of one environment, in declaration order.
+    pub(super) fn captures_of(&self, environment: StorageId) -> &[StorageId] {
+        self.captures.get(&environment).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every capture slot in the function, in declaration order.
+    pub(super) fn capture_slots(&self) -> &[StorageId] {
+        &self.capture_slots
     }
 
     /// Whether any loan that depends on `root` still holds a value.
@@ -6151,7 +6177,7 @@ fn consume_if_owned(
             .get_mut(id.0 as usize)
             .ok_or_else(|| PhysicalError::new(format!("unknown physical storage {}", id.0)))? =
             InitState::Uninitialized;
-        callable::invalidate_captures(function, state, id);
+        callable::invalidate_captures(borrows, state, id);
     }
     Ok(())
 }
@@ -6345,12 +6371,12 @@ fn apply_operation(
             partial::require_root(function, state, *source, block, "destroy")?;
             partial::require_droppable(module, function, state, *source, cleanup.mode())?;
             require_no_live_borrows(function, borrows, state, *source)?;
-            invalidate_storage(function, state, *source);
+            invalidate_storage(function, borrows, state, *source);
         }
         PhysicalOp::EndBorrow { source } => {
             initialized(function, state, *source, block, "end-borrow")?;
             require_no_live_borrows(function, borrows, state, *source)?;
-            invalidate_storage(function, state, *source);
+            invalidate_storage(function, borrows, state, *source);
         }
         PhysicalOp::Assign { dest, source, .. } => {
             partial::require_root(function, state, *dest, block, "assignment destination")?;
@@ -6393,10 +6419,15 @@ fn apply_operation(
     Ok(())
 }
 
-fn invalidate_storage(function: &PhysicalFunction, state: &mut FlowState, id: StorageId) {
+fn invalidate_storage(
+    function: &PhysicalFunction,
+    borrows: &BorrowDependents,
+    state: &mut FlowState,
+    id: StorageId,
+) {
     state.slots[id.0 as usize] = InitState::Uninitialized;
     partial::set_leaves(function, state, id, InitState::Uninitialized);
-    callable::invalidate_captures(function, state, id);
+    callable::invalidate_captures(borrows, state, id);
 }
 
 fn apply_edge(
@@ -6420,7 +6451,7 @@ fn apply_edge(
         if storage(function, *source)?.own == OwnKind::Guaranteed
             && storage(function, *source)?.borrow_parent.is_some()
         {
-            invalidate_storage(function, &mut state, *source);
+            invalidate_storage(function, borrows, &mut state, *source);
         }
     }
     for (source, destination) in &edge.transfers {
@@ -6996,7 +7027,7 @@ fn terminator_successors(
         }
 
         PhysicalTerminator::Return { value } => {
-            callable::verify_capture_return(function, &state)?;
+            callable::verify_capture_return(function, borrows, &state)?;
             if state.exit != defer::ORDINARY {
                 return Err(PhysicalError::new(
                     "physical trap cleanup cannot return normally",

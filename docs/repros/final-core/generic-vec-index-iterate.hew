@@ -1,0 +1,14 @@
+fn first<T>(xs: Vec<T>) -> T { xs[0] }
+
+fn count<T>(xs: Vec<T>) -> i64 {
+    var n = 0;
+    for x in xs {
+        n = n + 1;
+    }
+    n
+}
+
+fn main() {
+    let xs: Vec<i64> = [7, 8, 9];
+    println(f"first={first(xs)} count={count(xs)}");
+}

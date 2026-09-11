@@ -1,0 +1,18 @@
+import std.channel;
+
+actor Worker {
+    receive fn deliver(pair: (channel.Receiver<i64>, i64)) {
+        let (rx, n) = pair;
+        rx.close();
+        println(f"worker got {n}");
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    tx.close();
+    let w = spawn Worker;
+    let _ = w.deliver((rx, 99));
+    sleep(100ms);
+    println("done");
+}

@@ -1,0 +1,6 @@
+fn main() {
+    var a: Vec<i64> = [1, 2];
+    let b: Vec<i64> = [3, 4];
+    a.append(b);
+    println(f"len={a.len()}");
+}

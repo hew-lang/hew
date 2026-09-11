@@ -21831,21 +21831,16 @@ impl LowerCtx {
             span: span.clone(),
         });
 
-        // The collected vec (map/filter) or the mutable accumulator (reduce).
+        // The collected vec (map/filter) or the folded accumulator (reduce).
+        // Every op mutates this binding in the loop body - map and filter push
+        // into it, reduce reassigns it - so it is declared mutable and the
+        // place root the push resolves is a mutable one.
         let acc_name = format!("__hew_pipe_out_{}", self.ids.binding().0);
-        let (acc_init, acc_mutable) = match op {
-            HofOp::Map | HofOp::Filter => (
-                self.make_vec_new_expr(result_ty.clone(), span.clone()),
-                false,
-            ),
-            HofOp::Reduce => (self.lower_expr(args[1].expr(), IntentKind::Read), true),
+        let acc_init = match op {
+            HofOp::Map | HofOp::Filter => self.make_vec_new_expr(result_ty.clone(), span.clone()),
+            HofOp::Reduce => self.lower_expr(args[1].expr(), IntentKind::Read),
         };
-        let acc_binding = self.bind(
-            acc_name.clone(),
-            result_ty.clone(),
-            acc_mutable,
-            span.clone(),
-        );
+        let acc_binding = self.bind(acc_name.clone(), result_ty.clone(), true, span.clone());
         let acc_id = acc_binding.id;
         statements.push(HirStmt {
             node: self.ids.node(),

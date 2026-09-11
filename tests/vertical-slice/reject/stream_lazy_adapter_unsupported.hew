@@ -1,5 +1,5 @@
 // Reject fixture: the lazy stream adapters (#2530 diagnostic-honesty gate).
-// `Stream<T>.take/map/filter` type-check (they carry builtin signatures) but
+// `Stream<T>.map/filter` type-check (they carry builtin signatures) but
 // have no MIR lowering. They previously routed to the legacy `DeferToLowering`
 // codegen path the Rust MIR pipeline does not consume, so they dead-ended in
 // HIR lowering with TWO misleading, internal-shaped `E_NOT_YET_IMPLEMENTED`
@@ -11,7 +11,7 @@
 // Expected: exactly one error carrying `E_STREAM_ADAPTER_UNSUPPORTED`, and NO
 // leftover `E_NOT_YET_IMPLEMENTED` / "reached verification" internal noise.
 fn use_stream(s: Stream<string>) {
-    let _t = s.take(3);
+    let _t = s.map(|x: string| x);
 }
 
 fn main() {}

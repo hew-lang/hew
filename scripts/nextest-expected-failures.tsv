@@ -253,7 +253,6 @@ macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_re
 macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_tuple_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_bind_len_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_for_in_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-linux	failure	hew-cli::opaque_resource_close_counterfactual	opaque_close_with_extra_side_effect_is_not_a_canonical_release	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::opaque_resource_vec_containment	vec_of_exact_imported_opaque_resources_uses_exact_drop_only_descriptor	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::param_record_field_loop_drop_leak_oracle	projection_store_mid_loop_rejects_at_check_time	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	rvalue_rooted_projection_cursor_still_frees_its_snapshot	#3120 makes Vec iterator cleanup path-sensitive

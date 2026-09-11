@@ -1,7 +1,7 @@
-// `v.get(i)` over a Vec whose element has no clone is a borrowed read: `Some`
-// carries a loan of the slot the vector still owns, `None` is the past-end
-// answer, and the vector is whole afterwards. The element is released once,
-// by the owning drain.
+// D490: `get` copies the element out and leaves the vector's own in place,
+// so a concrete element with no copy operation refuses there exactly as it
+// refuses at `v[i]` and at a range slice. The owning drain is how the
+// element leaves the vector.
 #[resource]
 type Token {
     label: string,
@@ -23,22 +23,9 @@ fn main() -> i64 {
     tokens.push(Token { label: "t", id: 1 });
     tokens.push(Token { label: "t", id: 2 });
 
-    match tokens.get(0) {
-        Option.Some(token) => {
-            println(token.id);
-            token.show();
-        },
-        Option.None => println("missing"),
-    }
-    // The same slot reads again: the borrow moved nothing.
-    match tokens.get(0) {
-        Option.Some(token) => println(token.label),
-        Option.None => println("missing"),
-    }
-    match tokens.get(7) {
-        Option.Some(token) => println(token.id),
-        Option.None => println("missing"),
-    }
+    let _first = tokens.get(0);
+    let _again = tokens.get(0);
+    let _past_end = tokens.get(7);
     println(f"len={tokens.len()}");
 
     for token in tokens.into_iter() {

@@ -1,11 +1,25 @@
 [[case]]
 id = "vector-get-borrowed"
-intent = "`get(i)` over a Vec of a clone-free `#[resource]` type reads `Some` as a loan of the slot the vector still owns and `None` past the end, the same slot reads twice without moving, and the owning drain releases each element exactly once."
+intent = "D490: `get` copies the element out, so a Vec of a clone-free `#[resource]` type refuses every `get` - in bounds, repeated and past the end alike - rather than handing out a second owner. The owning drain stays the way an element leaves."
 source = "cases/vector-get-borrowed.hew"
-suites = ["acceptance", "safety"]
-timeout_seconds = 15
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
 
-[case.expected]
-stdout = "1\nshow t1\nt\nmissing\nlen=2\nclose t1\nclose t2\ndrained\n"
-exit = 0
-stderr = ""
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 26
+column = 18
+message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 27
+column = 18
+message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 28
+column = 21
+message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"

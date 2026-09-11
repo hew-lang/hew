@@ -500,7 +500,9 @@ impl<'a> Flow<'a> {
                         .iter()
                         .filter(move |target| target.id == arm.target.target)
                 })
-                .flat_map(|target| target.args.iter().map(|arg| arg.value))
+                .flat_map(|target| target.args.iter())
+                .filter(|arg| arg.own == OwnKind::Guaranteed)
+                .map(|arg| arg.value)
             {
                 parents.insert(parameter, owner);
                 local_borrows.insert(parameter);

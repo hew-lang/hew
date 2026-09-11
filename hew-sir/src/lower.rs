@@ -6082,10 +6082,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let mut branch_live = inherited_live.clone();
             for field in &variant.fields {
                 self.service.require_type_facts(&field.ty)?;
-                let mut own = OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?;
-                if borrowed {
-                    own = OwnKind::Guaranteed;
-                }
+                let own = if borrowed {
+                    OwnKind::of_loan_result(&field.ty, self.service.checked_facts.rows())?
+                } else {
+                    OwnKind::of_ty(&field.ty, self.service.checked_facts.rows())?
+                };
                 let field_value = self.fresh_value();
                 fields.push(ValueDef {
                     id: field_value,

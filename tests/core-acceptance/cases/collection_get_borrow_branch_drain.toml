@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 0
-column = 0
-message = "borrowed by a live element loan"
+code = "InvalidOperation"
+line = 19
+column = 17
+message = "E_ELEMENT_NO_COPY: `Vec<Tok>` cannot be read with `get`"

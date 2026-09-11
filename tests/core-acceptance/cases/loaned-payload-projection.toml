@@ -1,11 +1,19 @@
 [[case]]
 id = "loaned-payload-projection"
-intent = "Nested field reads through a borrowed record element carrying a resource are dependent borrows of the same region: the record stays whole, both a direct and a `let`-bound scrutinee project through it, and the owning drain releases each resource exactly once."
+intent = "D490: a record element carrying a resource has no copy, so `get` refuses before any projection through it; the owning drain releases each nested resource exactly once."
 source = "cases/loaned-payload-projection.hew"
-suites = ["acceptance", "safety"]
-timeout_seconds = 15
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
 
-[case.expected]
-stdout = "one\nfirst\n1\nshow t1\ntwo t2\nlen=2\nclose t1\nclose t2\ndrained\n"
-exit = 0
-stderr = ""
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 42
+column = 18
+message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 43
+column = 19
+message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"

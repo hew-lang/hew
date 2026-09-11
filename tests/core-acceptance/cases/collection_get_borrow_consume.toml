@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 0
-column = 0
-message = "is borrowed here"
+code = "InvalidOperation"
+line = 18
+column = 11
+message = "E_ELEMENT_NO_COPY: `Vec<Tok>` cannot be read with `get`"

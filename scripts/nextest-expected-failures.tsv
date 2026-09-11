@@ -270,7 +270,6 @@ macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_af
 macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_under_release	#3079 derives cleanup from exact owner states
 macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
 macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_under_release	#3079 derives cleanup from exact owner states
-linux	failure	hew-cli::record_builtin_handle_overwrite_failclosed	ordinary_record_builtin_handle_overwrites_are_refused	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract

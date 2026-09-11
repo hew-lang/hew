@@ -341,18 +341,13 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
 
 #[test]
 fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
-    // `Stream<T>.take/map/filter` type-check (they carry builtin signatures)
-    // but have no MIR lowering: they previously routed to the legacy
-    // `DeferToLowering` codegen path the Rust MIR pipeline does not consume, so
-    // they dead-ended in HIR lowering with TWO misleading, internal-shaped
-    // `E_NOT_YET_IMPLEMENTED` notes ("method-call rewrite variant" +
-    // "Unsupported HIR node reached verification"). They must now fail closed at
-    // the checker with exactly ONE honest, user-facing capability-boundary
-    // diagnostic (issue #2530).
-    for method in ["take", "map", "filter"] {
-        let arg = if method == "take" { "3" } else { "|x| x" };
+    // `lines`/`chunks`/`take` reach their runtime rows. `map`/`filter` carry a
+    // user callback with no type-erased runtime entry, so they must fail closed
+    // at the checker with exactly ONE honest, user-facing capability-boundary
+    // diagnostic rather than dead-ending in HIR lowering.
+    for method in ["map", "filter"] {
         let source =
-            format!("fn use_stream(s: Stream<string>) {{\n    let _t = s.{method}({arg});\n}}\n");
+            format!("fn use_stream(s: Stream<string>) {{\n    let _t = s.{method}(|x| x);\n}}\n");
         let (errors, _warnings) = parse_and_check(&source);
         let adapter_errors: Vec<_> = errors
             .iter()
@@ -380,6 +375,23 @@ fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
             adapter_errors[0].message
         );
     }
+    // Positive control: the three lowered adaptors are admitted on a content
+    // element, chained, with no diagnostic of their own.
+    let (errors, _warnings) = parse_and_check(
+        "fn use_stream(s: Stream<string>) {\n    let _t = s.lines().chunks(4).take(2);\n}\n",
+    );
+    assert!(
+        errors.is_empty(),
+        "the lowered stream adaptors must type-check; got errors: {errors:?}"
+    );
+    // Negative control: the runtime adaptors read the content witness, so a
+    // non-content element is refused before lowering.
+    let (errors, _warnings) =
+        parse_and_check("fn use_stream(s: Stream<i64>) {\n    let _t = s.take(2);\n}\n");
+    assert!(
+        !errors.is_empty(),
+        "`Stream<i64>.take` must be refused: the adaptors need a content element"
+    );
 }
 
 #[test]

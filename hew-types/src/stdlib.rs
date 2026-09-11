@@ -139,7 +139,10 @@ mod tests {
             resolve_stream_method(STREAM, "collect", None),
             Some("hew_stream_collect_string")
         );
-        assert_eq!(resolve_stream_method(STREAM, "lines", None), None);
+        assert_eq!(
+            resolve_stream_method(STREAM, "lines", None),
+            Some("hew_stream_lines")
+        );
         assert_eq!(
             resolve_stream_method(STREAM, "chunks", None),
             Some("hew_stream_chunks")

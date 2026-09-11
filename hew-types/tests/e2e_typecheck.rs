@@ -632,11 +632,10 @@ fn consume(s: Stream<string>) {
 }
 
 #[test]
-fn method_call_stream_take_fails_closed_with_honest_diagnostic() {
-    // `take` shares the lazy-adapter capability boundary with `map`/`filter`:
-    // it previously recorded a `DeferToLowering` rewrite that dead-ended in HIR
-    // lowering with an internal-shaped `NotYetImplemented` note. Per issue #2530
-    // it now fails closed at the checker with one honest diagnostic.
+fn method_call_stream_take_reaches_its_runtime_row() {
+    // `take` is a lowered adaptor: it consumes its source stream and returns a
+    // fresh one through `hew_stream_take`, so it type-checks clean and records
+    // a runtime rewrite instead of the adapter capability boundary.
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
@@ -644,39 +643,28 @@ fn consume(s: Stream<bytes>) {
 }
 ",
     );
-    let adapter_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
-        .collect();
-    assert_eq!(
-        adapter_errors.len(),
-        1,
-        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. })),
+        "`take` must not report the adapter capability boundary, got: {:#?}",
         output.errors
     );
     assert!(
-        matches!(
-            &adapter_errors[0].kind,
-            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
-                if method == "take" && element_ty == "bytes"
-        ),
-        "expected `take`/`bytes` in the diagnostic, got: {:?}",
-        adapter_errors[0].kind
-    );
-    assert!(
-        !output
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| matches!(rewrite, hew_types::MethodCallRewrite::DeferToLowering)),
-        "fail-closed adapters must record no DeferToLowering rewrite, got: {:?}",
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_stream_take"
+        )),
+        "`take` must record its runtime rewrite, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 #[test]
 fn method_call_stream_map_fails_closed_with_honest_diagnostic() {
-    // The lazy stream adapters (`take`/`map`/`filter`) have no MIR lowering.
+    // The callback adapters (`map`/`filter`) have no MIR lowering.
     // They previously type-checked clean and recorded `StreamInstance` receiver
     // metadata before dead-ending in HIR lowering with internal-shaped
     // `E_NOT_YET_IMPLEMENTED` noise. Per issue #2530 they now fail closed at the

@@ -9,7 +9,7 @@ fn test_bool_ops() {
     let b = false;
     let c = a && b;
     let d = a || b;
-    if d {
+    if d && !c {
         println("PASS: bool operators")
     }
 }
@@ -33,7 +33,9 @@ fn test_pattern_match() {
 // 3. Lambda
 fn test_lambda() {
     let dbl = |x| x * 2;
-    println("PASS: lambda")
+    if dbl(21) == 42 {
+        println("PASS: lambda")
+    }
 }
 
 // 4. Loops with var

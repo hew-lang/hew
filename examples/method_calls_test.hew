@@ -32,6 +32,8 @@ impl PointMethods for Point {
 fn main() {
     let p1 = Point { x: 3.0, y: 4.0 };
     let dist = p1.distance();
+    println(f"distance = {dist}");
     let p2 = p1.translate(1.0, 2.0);
     let mag = p2.magnitude();
+    println(f"magnitude = {mag}");
 }

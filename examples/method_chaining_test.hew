@@ -24,4 +24,5 @@ fn main() {
     let p2 = p1.translate(1.0, 1.0);
     let p3 = p2.scale(2.0);
     let d = p3.distance();
+    println(f"distance = {d}");
 }

@@ -107,13 +107,13 @@ fn main() {
     }
     // Print summary
     println("=== Parsed Arguments ===");
-    if flags.len() > 0 {
+    if !flags.is_empty() {
         print_flags(flags);
     }
-    if opt_keys.len() > 0 {
+    if !opt_keys.is_empty() {
         print_options(opt_keys, opt_vals);
     }
-    if positional.len() > 0 {
+    if !positional.is_empty() {
         print_positional(positional);
     }
 }

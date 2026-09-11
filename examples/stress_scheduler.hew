@@ -17,8 +17,7 @@ actor Worker {
     receive fn process(x: i32) {
 
         // Do some real computation to exercise the scheduler
-        let result = fib(x % 15);
-        let combined = result + id;
+        let _ = fib(x % 15) + id;
     }
 }
 

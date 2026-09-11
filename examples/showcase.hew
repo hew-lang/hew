@@ -64,8 +64,9 @@ fn main() {
 
     // 1. Struct types
     let p = Vec2 { x: 3.0, y: 4.0 };
+    let len_sq = vec2_length(p);
     println("1. Struct types:");
-    println("  Vec2 created with x=3, y=4");
+    println(f"  Vec2 created with x=3, y=4, length_sq={len_sq}");
 
     // 2. Enums
     println("2. Enums:");
@@ -89,7 +90,7 @@ fn main() {
     // 4. Lambdas
     println("4. Lambdas:");
     let square = |n: i64| n * n;
-    println("  Lambda defined");
+    println(f"  square(5) = {square(5)}");
 
     // 5. Fibonacci
     println("5. Fibonacci:");
@@ -100,8 +101,14 @@ fn main() {
     println("6. Result type:");
     let r1 = divide(10, 3);
     let r2 = divide(10, 0);
-    println("  divide(10,3) and divide(10,0) computed");
-
+    match r1 {
+        .Ok(v) => println(f"  divide(10,3) = {v}"),
+        .Err(e) => println(f"  divide(10,3) failed: {e}"),
+    }
+    match r2 {
+        .Ok(v) => println(f"  divide(10,0) = {v}"),
+        .Err(e) => println(f"  divide(10,0) failed: {e}"),
+    }
     // 7. string interpolation
     println("7. string interpolation:");
     let name = "Hew";

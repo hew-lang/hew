@@ -14,7 +14,7 @@ fn main() {
         if value > 0 {
             current = Some(value - 1);
         } else {
-            var stop: Option<i64> = None;
+            let stop: Option<i64> = None;
             current = stop;
         }
     }

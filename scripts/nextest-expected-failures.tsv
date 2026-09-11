@@ -124,7 +124,6 @@ linux	failure	hew-cli::actor_resource_opaque_state	user_receiver_resource_shadow
 linux	failure	hew-cli::actor_resource_opaque_state	wrapped_resource_actor_state_still_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_state_resource_field_leak_oracle	actor_state_resource_reassign_refused	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_state_resource_field_leak_oracle	positive_control_ir_single_close_in_state_drop	#3370 gives every type the checker admits a SIR value contract
-linux	failure	hew-cli::actor_state_resource_field_leak_oracle	unreassigned_resource_field_closes_once	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
 linux	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
 linux	failure	hew-cli::affine_resource_carrier_boundaries	resource_parameter_reuse_after_collection_transfer_is_rejected	#3377 fix/collections-final-path: reports a use-after-consume as a source diagnostic
@@ -203,7 +202,6 @@ linux	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_ru
 linux	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 linux	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
 linux	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
-linux	failure	hew-cli::run_e2e	suspended_actor_fresh_state_handoff_closes_each_child_once	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::run_e2e	suspending_remote_ask_flip_in_execution_context	#3373 lowers a remote actor ask
 linux	failure	hew-cli::sort_complexity_e2e	sort_merge_authority_runs_under_wasmtime	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child

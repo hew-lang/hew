@@ -1,0 +1,10 @@
+[[case]]
+id = "arena-generic-insert"
+intent = "`Arena<T>::insert` is a generic direct callee that takes ownership of its value: a `#[resource]` carrier inserted into the arena is closed exactly once, by the arena's own cleanup at scope end, in insertion order."
+source = "cases/arena-generic-insert.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "before insert\n2\nafter insert\nclosing token id=41\nclosing token id=42\n"
+exit = 0

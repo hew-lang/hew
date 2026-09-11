@@ -844,6 +844,30 @@ fn main() { println(add(2, 3)); println(square(5)); }   // 5, 25
 
 Prefer the bare trailing expression (no semicolon) as the return value; reserve explicit `return expr;` for early exits. A trailing semicolon turns the last expression into unit.
 
+### A `var` parameter is the callee's own copy
+
+```hew
+fn grown(buf: bytes, val: i64) -> bytes {
+    var out = buf;
+    out.push(val as u8);
+    out
+}
+fn push_here(var buf: bytes, val: i64) { buf.push(val as u8); }
+fn main() {
+    var packet = bytes.new();
+    push_here(packet, 7);
+    println(packet.len());              // 0: the callee grew its own copy
+    packet = grown(packet, 7);
+    println(packet.len());              // 1
+}
+```
+
+Values are passed by value. `var` on a parameter lets the callee mutate its
+copy; the caller's binding never changes. To hand a grown collection back,
+return it and reassign at the call site. The same rule covers `Vec`, `string`,
+`HashMap` and records. Only handles — actors, channels, resources — share
+identity across a call.
+
 ### Unit return and bare early return
 
 ```hew
@@ -1420,7 +1444,7 @@ fn main() {
 
 `spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
-`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
+`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
 
 ### Calling a handler that returns nothing
 

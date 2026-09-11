@@ -1110,35 +1110,39 @@ fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
     }
 }
 
-/// F4 / #2208 — the actor ask-reply ABI-boundary leg, pinned at the IR level.
+/// F4 / #2208 - the actor ask-reply ABI-boundary leg, pinned at the IR level.
 ///
 /// ## Why an IR assertion here, not a `leaks --atExit` slope
 ///
 /// The registered reply destructor fires at RUNTIME only on a reply that is
-/// deposited-but-never-consumed — the cancel / timeout / select-loser teardown
-/// legs. Every source construct that abandons a reply that way (`await … |
-/// after d`, `select { reply from … }`) currently FAILS TO COMPILE for an
-/// `indirect enum` reply: the suspending deadline/select consume path moves the
-/// pointer-lowered reply into an inline-`{ tag, payload }`-typed match/result
-/// binder and fails closed (`Move type mismatch: src=ptr dest=%Tree`,
-/// `hew-codegen-rs/src/llvm.rs`). That is a SEPARATE consume-side ABI defect —
-/// the reply DESTRUCTOR routing this oracle pins is independent of it — so a
-/// runtime per-iteration leak slope for the abandoned-reply leg is not
-/// expressible until that consume path is ABI-consistent. The runtime firing of
-/// the channel destructor itself is already proven for a heap reply by
+/// deposited-but-never-consumed - the cancel / timeout / select-loser teardown
+/// legs. Every source construct that abandons a reply that way currently fails
+/// to compile for an `indirect enum` reply, because the suspending
+/// deadline/select consume path moves the pointer-lowered reply into an
+/// inline-`{ tag, payload }`-typed binder. That is a separate consume-side ABI
+/// defect; the destructor routing pinned here is independent of it. The runtime
+/// firing of the destructor is already proven for a heap reply by
 /// `ask_reply_owned_leak_oracle` (the owned-`string` cancel leg); this oracle
-/// pins the remaining unknown — that a pointer-backed `indirect enum` reply is
-/// routed through the recursive node free, not the inline helper.
+/// pins the remaining unknown - that a pointer-backed `indirect enum` reply is
+/// routed through the recursive node free, not an inline in-place helper.
+///
+/// ## Where the registration lives
+///
+/// The ask caller knows the reply type statically and registers the destructor
+/// when it builds the operation: `hew_actor_call_new` takes the drop thunk and
+/// hands it to the reply channel's constructor before the request is published.
+/// The replying handler passes the same thunk to `hew_actor_reply_native`, which
+/// runs it directly when the submission was one-way. A bit-copy reply registers
+/// `ptr null` - the fixture's `i64` ask is that control.
 ///
 /// ## Teeth (fail-without-fix)
 ///
-/// The reply channel must register `__hew_reply_drop_indirect_Tree` (which loads
-/// the node pointer and calls the recursive `__hew_indirect_enum_free_Tree`).
-/// Reverting the routing re-registers the inline `__hew_enum_drop_inplace_Tree`
-/// on the pointer buffer — it reads the node pointer's bits as a tag and frees
-/// nothing — flipping both the registered-symbol assertion and the
-/// recursive-free-in-thunk assertion. Platform-independent (reads emitted IR,
-/// no `leaks(1)`), so it holds the invariant on every codegen target.
+/// The `Tree` ask must name a real drop thunk, and that thunk must load the
+/// heap-node pointer out of the reply buffer and reach a recursive variant
+/// destroyer that deallocates the node. Registering an inline `{ tag, payload }`
+/// helper instead would read the node pointer's bits as a tag and free nothing;
+/// dropping the registration would leave `ptr null` on both asks. Either flips
+/// an assertion here. Platform-independent (reads emitted IR, no `leaks(1)`).
 #[test]
 fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
     require_codegen();
@@ -1155,42 +1159,96 @@ fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
     let ir = std::fs::read_to_string(dir.path().join("ask_reply_indirect.ll"))
         .expect("read emitted LLVM IR for the indirect-enum ask-reply fixture");
 
-    // Every reply-destructor registration for this fixture must name the
-    // indirect-aware wrapper; none may name the inline in-place helper.
-    let registrations: Vec<&str> = ir
+    // The reply-drop argument of `hew_actor_call_new` is its seventh: after the
+    // target, message id, request pointer, request size, request drop thunk and
+    // reply size.
+    let reply_drop_argument = |line: &str| -> String {
+        let arguments = line
+            .split_once("@hew_actor_call_new(")
+            .expect("ask construction names its runtime entry")
+            .1;
+        arguments
+            .rsplit_once(')')
+            .expect("ask construction closes its argument list")
+            .0
+            .split(',')
+            .nth(6)
+            .expect("ask construction carries a reply drop argument")
+            .trim()
+            .to_string()
+    };
+    let constructions: Vec<String> = ir
         .lines()
-        .filter(|l| l.contains("call void @hew_reply_channel_set_reply_drop_fn("))
+        .filter(|line| line.contains("call ptr @hew_actor_call_new("))
+        .map(reply_drop_argument)
         .collect();
     assert!(
-        !registrations.is_empty(),
-        "expected the SuspendingAsk lowering to register a reply destructor \
-         (`hew_reply_channel_set_reply_drop_fn`) for the pointer-backed indirect-enum reply; \
-         found none — the ask no longer wires a destructor, so a never-consumed reply leaks its \
-         heap node unconditionally.\n--- IR ---\n{ir}"
+        constructions.len() >= 2,
+        "expected the fixture's `Tree` ask and its `i64` ask; found {} operation(s)\n--- IR ---\n{ir}",
+        constructions.len()
     );
     assert!(
-        registrations
-            .iter()
-            .all(|l| l.contains("@__hew_reply_drop_indirect_Tree")),
-        "the indirect-enum reply destructor must be `__hew_reply_drop_indirect_Tree` (loads the \
-         node pointer, frees the subtree via `__hew_indirect_enum_free_Tree`). A registration \
-         naming `__hew_enum_drop_inplace_Tree` runs the inline `{{ tag, payload }}` helper over a \
-         buffer that holds only a heap-node pointer — it misreads the pointer as a tag and frees \
-         nothing, leaking the node (#2208 F4 ask-reply boundary). Registrations found:\n{}",
-        registrations.join("\n")
+        constructions.iter().any(|argument| argument == "ptr null"),
+        "a bit-copy reply needs no destructor, so at least one ask must register `ptr null`; \
+         found {constructions:?}"
+    );
+    let registered: Vec<&String> = constructions
+        .iter()
+        .filter(|argument| *argument != "ptr null")
+        .collect();
+    assert_eq!(
+        registered.len(),
+        1,
+        "exactly the `Tree` ask registers a reply destructor; found {constructions:?}"
+    );
+    let symbol = registered[0]
+        .strip_prefix("ptr @")
+        .expect("a registered reply destructor names a function")
+        .to_string();
+
+    // The replying handler hands the same thunk to the reply transfer, so a
+    // one-way submission destroys the payload instead of leaking it.
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call void @hew_actor_reply_native(")
+                && line.contains(&format!("ptr @{symbol}"))),
+        "the handler must hand `@{symbol}` to `hew_actor_reply_native`; a reply with no \
+         destructor on the one-way leg leaks its heap node\n--- IR ---\n{ir}"
     );
 
-    // The wrapper body must reach the recursive node free — not the inline helper.
-    let thunk = llvm_fn_body(&ir, "__hew_reply_drop_indirect_Tree").unwrap_or_else(|| {
-        panic!(
-            "reply channel registered `__hew_reply_drop_indirect_Tree` but its body is not defined \
-             in the module — a dangling reply destructor.\n--- IR ---\n{ir}"
-        )
+    // The thunk loads the node pointer out of the reply buffer and destroys the
+    // node through the recursive variant walk.
+    let thunk = llvm_fn_body(&ir, &symbol).unwrap_or_else(|| {
+        panic!("the ask registered `@{symbol}` but its body is not defined in the module - a dangling reply destructor.\n--- IR ---\n{ir}")
     });
     assert!(
-        thunk.contains("call void @__hew_indirect_enum_free_Tree("),
-        "`__hew_reply_drop_indirect_Tree` must free the reply through the recursive \
-         `__hew_indirect_enum_free_Tree` node walk; its body does not call it, so the subtree \
-         under the reply node leaks:\n{thunk}"
+        thunk.contains("load ptr, ptr %0"),
+        "`@{symbol}` must load the heap-node pointer out of the reply buffer; reading the buffer \
+         as an inline `{{ tag, payload }}` value misreads the pointer as a tag and frees \
+         nothing:\n{thunk}"
+    );
+    let recursive = thunk
+        .lines()
+        .find_map(|line| line.split_once("call void @__hew_variant_drop_"))
+        .map(|(_, rest)| {
+            format!(
+                "__hew_variant_drop_{}",
+                rest.split('(').next().unwrap_or_default()
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!("`@{symbol}` must destroy the reply node through a variant destroyer:\n{thunk}")
+        });
+    let walk = llvm_fn_body(&ir, &recursive).unwrap_or_else(|| {
+        panic!("`@{recursive}` is registered but not defined\n--- IR ---\n{ir}")
+    });
+    assert!(
+        walk.contains(&format!("call void @{recursive}(")),
+        "`@{recursive}` must walk the node's own `Node` children, or the subtree under the reply \
+         node leaks:\n{walk}"
+    );
+    assert!(
+        walk.contains("call void @hew_dealloc("),
+        "`@{recursive}` must deallocate each visited node:\n{walk}"
     );
 }

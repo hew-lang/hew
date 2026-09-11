@@ -153,19 +153,6 @@ linux	failure	hew-cli::eval_e2e	eval_wasm_json_ok_inline_expression	#3368 implem
 linux	failure	hew-cli::eval_e2e	eval_wasm_json_runtime_failure_captures_stderr_without_leaking	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::eval_e2e	eval_wasm_timeout_is_reported	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::explain_cow_e2e	explain_cow_no_sends_produces_no_send_lines	#3383 makes hew check --explain-cow report what it explains
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_container_over_a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hashmap_insert_of_a_wrapped_extern_record_is_refused	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_domestic_record_still_releases_once_per_frame	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_domestic_enum_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_wrapped_extern_enum_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_embedding_a_direct_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_of_a_domestic_field_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_returned_string_interpolation_releases_exactly_once	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_sink_that_retains_a_payload_sees_no_caller_release	#3389 keeps an extern's string argument owned after the handle is retained
 linux	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
 linux	failure	hew-cli::generic_monomorphization_e2e	generic_record_with_inline_owned_enum_drops_on_all_exits	#3394 ports the ownership oracles whose observation mechanism was retired

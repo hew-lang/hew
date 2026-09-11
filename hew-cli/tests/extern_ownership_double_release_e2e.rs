@@ -1,38 +1,41 @@
-//! End-to-end proof that a declared `extern` is treated as OWNERSHIP-OPAQUE by
-//! the f-string interpolation temp-drop gates.
+//! End-to-end proof that an `extern` argument's ownership is exactly what its
+//! DECLARATION says, and that the compiler never infers a transfer.
 //!
-//! Those gates exist to fix a LEAK. The failure mode these tests
-//! guard is strictly worse than the leak: a DOUBLE RELEASE. Both gates used to
-//! read `Builder::module_fn_names` as an ownership authority, but that set is
-//! seeded with every `HirItem::ExternFn` purely so extern calls lower as
-//! `Terminator::Call`. Membership is a call-DISPATCH fact. An extern's real
-//! ownership behaviour is unknowable, so:
+//! An extern's real behaviour is unknowable to the compiler, so the
+//! declaration is the whole contract (D450: consumption is declared, never
+//! implied):
 //!
-//!   * an extern's `-> string` result must NOT mint a caller-side owner (the
-//!     host may hand back an interior or borrowed handle and release it
-//!     itself); and
-//!   * an extern's `string` argument must NOT count as a proven borrow (the
-//!     host may retain or release the exact handle it is passed, so the
-//!     composite's `EnumInPlace` scope-exit drop would be a second release).
+//!   * `consume s: string` transfers the handle. The caller emits no release
+//!     and the host owns it until the host releases it. A non-copying host
+//!     that retains the exact handle is sound only under this spelling.
+//!   * `s: string` is a borrow. The caller keeps the owner and releases it at
+//!     scope exit, so a host that retains the handle is the party breaking the
+//!     contract, not the compiler.
+//!
+//! Both directions are pinned here over the same program and the same host, so
+//! a compiler that started guessing either way fails one of the pair.
 //!
 //! # Why these tests count releases exactly, rather than watching for a crash
 //!
 //! Every pre-existing oracle in this repo asserts either a leak SLOPE (macOS
 //! `leaks(1)` only) or a clean exit under a poisoned allocator. Neither has
 //! teeth for the direction that matters here: a ZERO-release regression --
-//! re-admitting the drop the fix removes -- exits cleanly on non-Darwin unix
-//! under any allocator setting, because a `free()` of a still-live, still-
-//! reachable buffer usually does not fault. So these tests observe the EXACT
-//! release count directly.
+//! re-admitting a drop over a transferred handle -- exits cleanly on non-Darwin
+//! unix under any allocator setting, because a `free()` of a still-live,
+//! still-reachable buffer usually does not fault. So these tests observe the
+//! EXACT release count directly.
 //!
 //! The observation is possible because the `string` handle Hew hands an extern
-//! is the real, non-copied runtime handle: `hew-cabi` pins a 16-byte header
-//! `{ magic: u64, rc: u32, _reserved: u32 }` immediately below the pointer, so
-//! a host staticlib can read `rc` at `data - 8` and check the `HEW_CSTR` magic
-//! at `data - 16`. The spy biases `rc` by a large constant when it retains a
-//! handle, which (a) guarantees `free_cstring` never reaches zero and frees
+//! is the real, non-copied runtime handle. `hew-cabi` pins the managed string
+//! layout as `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
+//! handle, with the UTF-8 payload directly after it, so a host staticlib reads
+//! `rc` at `handle + 8`. The spy biases `rc` by a large constant when it
+//! retains a handle, which (a) guarantees no release reaches zero and frees
 //! underneath the observation, and (b) leaves every later `hew_string_drop`
 //! visible as an exact decrement. `releases = rc_at_retain + BIAS - rc_now`.
+//!
+//! A host cannot forge a managed handle: the spies that need one ask the
+//! linked runtime to mint it through `hew_string_literal_new`.
 //!
 //! This works on any unix, needs no allocator instrumentation, and is exact.
 #![cfg(not(target_os = "windows"))]
@@ -53,14 +56,13 @@ use support::{
 /// handle" the double-release guard needs: after it returns, the host owns a
 /// live reference, so any further release by the Hew caller is a second
 /// release of a handle the caller no longer owns.
-const SPY_RUST: &str = r#"//! Exact release-counting spy over the pinned hew-cabi cstring header.
+const SPY_RUST: &str = r#"//! Exact release-counting spy over the managed string header.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16` with the layout
-/// `{ magic: u64, rc: u32, _reserved: u32 }`, and hands out `base + 16`.
-const HEADER: isize = 16;
-/// `CSTRING_MAGIC` — b"HEW_CSTR" read as a little-endian u64.
-const MAGIC: u64 = 0x4845_575F_4353_5452;
+/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
+/// handle, with the UTF-8 payload directly after it.
+const RC_OFFSET: usize = 8;
+const DATA_OFFSET: usize = 16;
 /// Large enough that no realistic release count can drive `rc` to zero, so the
 /// observed buffer is never freed underneath us.
 const BIAS: u32 = 1_000_000;
@@ -74,20 +76,33 @@ static RC_AT_RETAIN: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 /// representation change fails the test instead of reporting a fake zero.
 static BAD_HEADER: AtomicUsize = AtomicUsize::new(0);
 
-unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
-    unsafe { data.offset(-8).cast() }
+unsafe fn rc_ptr(handle: *const u8) -> *const AtomicU32 {
+    unsafe { handle.add(RC_OFFSET).cast() }
 }
 
-unsafe fn header_ok(data: *const u8) -> bool {
-    !data.is_null()
-        && unsafe { std::ptr::read_unaligned(data.offset(-HEADER) as *const u64) } == MAGIC
+/// The managed layout carries no magic sentinel, so the check is the header's
+/// own invariants: a live owner count and a byte length whose payload is the
+/// UTF-8 the fixture sent.
+unsafe fn header_ok(handle: *const u8) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let byte_len = unsafe { std::ptr::read_unaligned(handle.cast::<usize>()) };
+    if byte_len == 0 || byte_len > (1 << 20) {
+        return false;
+    }
+    if unsafe { (&*rc_ptr(handle)).load(Ordering::SeqCst) } == 0 {
+        return false;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(handle.add(DATA_OFFSET), byte_len) };
+    std::str::from_utf8(bytes).is_ok()
 }
 
 /// Retain the EXACT handle passed, without copying it. Returns the slot index,
 /// or -1 if the handle did not carry the expected runtime header.
 #[no_mangle]
-pub unsafe extern "C" fn spy_retain(data: *const u8) -> i64 {
-    if !unsafe { header_ok(data) } {
+pub unsafe extern "C" fn spy_retain(handle: *const u8) -> i64 {
+    if !unsafe { header_ok(handle) } {
         BAD_HEADER.fetch_add(1, Ordering::SeqCst);
         return -1;
     }
@@ -95,9 +110,9 @@ pub unsafe extern "C" fn spy_retain(data: *const u8) -> i64 {
     if slot >= SLOTS {
         return -1;
     }
-    let rc = unsafe { (&*rc_ptr(data)).fetch_add(BIAS, Ordering::SeqCst) };
+    let rc = unsafe { (&*rc_ptr(handle)).fetch_add(BIAS, Ordering::SeqCst) };
     RC_AT_RETAIN[slot].store(u64::from(rc), Ordering::SeqCst);
-    HELD[slot].store(data as u64, Ordering::SeqCst);
+    HELD[slot].store(handle as u64, Ordering::SeqCst);
     slot as i64
 }
 
@@ -108,11 +123,11 @@ pub extern "C" fn spy_releases() -> i64 {
     let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
     let mut total: i64 = 0;
     for slot in 0..n {
-        let data = HELD[slot].load(Ordering::SeqCst) as *const u8;
-        if data.is_null() {
+        let handle = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if handle.is_null() {
             continue;
         }
-        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
+        let rc = unsafe { (&*rc_ptr(handle)).load(Ordering::SeqCst) };
         let expected = RC_AT_RETAIN[slot].load(Ordering::SeqCst) + u64::from(BIAS);
         total += expected as i64 - i64::from(rc);
     }
@@ -130,7 +145,7 @@ pub extern "C" fn spy_bad_headers() -> i64 {
 }
 
 extern "C" {
-    fn hew_string_drop(s: *mut std::ffi::c_char);
+    fn hew_string_drop(s: *mut u8);
 }
 
 /// Positive control: release one retained handle FROM THE HOST, through the
@@ -139,26 +154,24 @@ extern "C" {
 /// measurement and not a broken probe.
 #[no_mangle]
 pub extern "C" fn spy_release_one_from_host() -> i64 {
-    let data = HELD[0].load(Ordering::SeqCst) as *mut std::ffi::c_char;
-    if data.is_null() {
+    let handle = HELD[0].load(Ordering::SeqCst) as *mut u8;
+    if handle.is_null() {
         return -1;
     }
-    unsafe { hew_string_drop(data) };
+    unsafe { hew_string_drop(handle) };
     0
 }
 "#;
 
-/// P0 #2 shape. `mkopt` returns a heap-owning `Option<string>`; the `Some(s)`
-/// binder is exactly `string` and its ONLY use in the terminator is the call
-/// argument, so the two structural conjuncts of the payload-binder exemption
-/// hold and only the callee-borrow conjunct can reject the read.
+/// The `.Some(s) => extern_sink(s)` shape, over an extern that RETAINS the
+/// exact handle it is passed.
 ///
-/// The sink is a declared extern, so the caller must NOT keep a scope-exit
-/// drop for `s`. `spy_retain` models the host taking a reference it keeps: if
-/// the composite's `EnumInPlace` drop still ran, the spy would observe one
-/// release per iteration of a handle the caller had already handed away.
-const ENUM_PAYLOAD_TO_EXTERN_SINK: &str = r#"extern "C" {
-    fn spy_retain(s: string) -> i64;
+/// `mkopt` returns a heap-owning `Option<string>`; the `Some(s)` binder is
+/// exactly `string` and its only use is the call argument. The declaration
+/// spells `consume`, so the payload transfers: the caller keeps no scope-exit
+/// drop for `s`, and `spy_retain`'s reference is the only owner left.
+const ENUM_PAYLOAD_TO_CONSUMING_EXTERN: &str = r#"extern "C" {
+    fn spy_retain(consume s: string) -> i64;
     fn spy_releases() -> i64;
     fn spy_retained() -> i64;
     fn spy_bad_headers() -> i64;
@@ -194,24 +207,53 @@ fn main() -> i64 {
 }
 "#;
 
-/// P0 #1 shape: a root-declared `extern "C" -> string` whose result is
-/// interpolated, with the host KEEPING its returned pointer alive in a table.
+/// The same program and the same host, with the transfer UNDECLARED.
 ///
-/// A declared extern has no lowered body, so the call-result mint used to fall
-/// through to `callee_returns_fresh_owner`'s `unwrap_or(true)` cross-ABI
-/// fallback and admit it as a fresh string producer.
+/// Nothing about the call site changed, so if the compiler ever inferred a
+/// transfer from the shape, the argument, or the callee being an extern, this
+/// fixture would report zero. A borrow declaration means the caller still owns
+/// `s` and must release it: eight payloads, eight releases.
+const ENUM_PAYLOAD_TO_BORROWING_EXTERN: &str = r#"extern "C" {
+    fn spy_retain(s: string) -> i64;
+    fn spy_releases() -> i64;
+    fn spy_retained() -> i64;
+    fn spy_bad_headers() -> i64;
+}
+
+fn mkopt(i: i64) -> Option<string> {
+    Some(f"payload{i}")
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 8 {
+        if let .Some(s) = mkopt(i) {
+            unsafe { spy_retain(s); }
+        }
+        i = i + 1;
+    }
+
+    let retained = unsafe { spy_retained() };
+    let bad = unsafe { spy_bad_headers() };
+    let releases = unsafe { spy_releases() };
+    println(f"retained={retained}");
+    println(f"bad_headers={bad}");
+    println(f"releases={releases}");
+    0
+}
+"#;
+
+/// A root-declared `extern "C" -> string` hands the caller an OWNED result.
 ///
-/// See the test's own doc comment for exactly what this fixture does and does
-/// not prove — the ratified ABI for a ROOT extern `-> string` is that the host
-/// returns a raw malloc-owned C string which codegen ADOPTS into a private
-/// header-aware buffer and then `free()`s, so the foreign pointer is released
-/// exactly once by design. This fixture pins that "exactly once": a second
-/// release of the same malloc block aborts under every libc double-free
-/// detector, and the host verifies each block is still intact when it is
-/// handed over.
+/// The declaration's return type is the authority here too: `-> string` means
+/// the caller receives an owner and releases it exactly once per frame. The
+/// host mints a real managed handle per call, biases its refcount so the
+/// allocation survives the probe, and never releases: every release the spy
+/// counts is the compiler's, and the count must be exactly one per frame.
 const EXTERN_RETURN_INTERPOLATED: &str = r#"extern "C" {
     fn host_owned_string() -> string;
     fn host_handed_out() -> i64;
+    fn spy_releases() -> i64;
 }
 
 fn main() -> i64 {
@@ -222,7 +264,9 @@ fn main() -> i64 {
         i = i + 1;
     }
     let handed = unsafe { host_handed_out() };
+    let releases = unsafe { spy_releases() };
     println(f"handed={handed}");
+    println(f"releases={releases}");
     0
 }
 "#;
@@ -231,27 +275,87 @@ fn main() -> i64 {
 /// extern `-> string`), records the pointer so it "keeps the handle alive" on
 /// its own side, and hands it to Hew. It never frees: codegen's adoption owns
 /// that single release, and a second one would abort the process.
-const HOST_RETURN_RUST: &str = r#"use std::sync::atomic::{AtomicUsize, Ordering};
+const HOST_RETURN_RUST: &str = r#"//! Mints one managed handle per call, keeps every one, and never releases:
+//! the caller's single declared-owner release is the only one there is.
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-static HANDED: AtomicUsize = AtomicUsize::new(0);
+/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
+/// managed handle; `rc` therefore lives at `handle + 8`.
+const RC_OFFSET: usize = 8;
+/// Large enough that no realistic release count reaches zero.
+const BIAS: u32 = 1_000_000;
+const SLOTS: usize = 64;
+
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 extern "C" {
-    fn malloc(size: usize) -> *mut u8;
+    fn hew_string_literal_new(data: *const u8, len: u32, out: *mut *mut u8);
+    fn hew_string_drop(s: *mut u8);
+}
+
+unsafe fn rc_ptr(handle: *const u8) -> *const AtomicU32 {
+    unsafe { handle.add(RC_OFFSET).cast() }
+}
+
+/// Ask the linked runtime to mint a managed handle: a host cannot forge one,
+/// and `hew_string_drop` is only valid on an allocation the runtime made.
+unsafe fn make_handle() -> *mut u8 {
+    let text = b"host-made";
+    let mut handle: *mut u8 = std::ptr::null_mut();
+    unsafe { hew_string_literal_new(text.as_ptr(), text.len() as u32, &mut handle) };
+    assert!(!handle.is_null());
+    let previous = unsafe { (&*rc_ptr(handle)).fetch_add(BIAS, Ordering::SeqCst) };
+    assert_eq!(previous, 1);
+    let slot = COUNT.fetch_add(1, Ordering::SeqCst);
+    if slot < SLOTS {
+        HELD[slot].store(handle as u64, Ordering::SeqCst);
+    }
+    handle
 }
 
 #[no_mangle]
-pub extern "C" fn host_owned_string() -> *mut std::ffi::c_char {
-    let text = b"host-owned\0";
-    let buf = unsafe { malloc(text.len()) };
-    assert!(!buf.is_null());
-    unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len()) };
-    HANDED.fetch_add(1, Ordering::SeqCst);
-    buf as *mut std::ffi::c_char
+pub unsafe extern "C" fn host_owned_string() -> *mut u8 {
+    unsafe { make_handle() }
 }
 
 #[no_mangle]
 pub extern "C" fn host_handed_out() -> i64 {
-    HANDED.load(Ordering::SeqCst) as i64
+    COUNT.load(Ordering::SeqCst) as i64
+}
+
+/// Net releases across every handed-out handle: `sum of (1 + BIAS - rc_now)`.
+#[no_mangle]
+pub extern "C" fn spy_releases() -> i64 {
+    let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
+    let mut total: i64 = 0;
+    for slot in 0..n {
+        let handle = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if handle.is_null() {
+            continue;
+        }
+        let rc = unsafe { (&*rc_ptr(handle)).load(Ordering::SeqCst) };
+        total += i64::from(1u32 + BIAS) - i64::from(rc);
+    }
+    total
+}
+
+#[no_mangle]
+pub extern "C" fn spy_made() -> i64 {
+    COUNT.load(Ordering::SeqCst) as i64
+}
+
+/// Positive control for the counter, run LAST: one real `hew_string_drop` from
+/// the host must read as exactly one release, so a reported count is a
+/// measurement and not a blind probe.
+#[no_mangle]
+pub extern "C" fn spy_release_one_from_host() -> i64 {
+    let handle = HELD[0].load(Ordering::SeqCst) as *mut u8;
+    if handle.is_null() {
+        return -1;
+    }
+    unsafe { hew_string_drop(handle) };
+    0
 }
 "#;
 
@@ -395,23 +499,18 @@ fn reported(stdout: &str, key: &str) -> i64 {
         .unwrap_or_else(|error| panic!("`{key}` was not an integer: {error}\n{stdout}"))
 }
 
-/// A non-copying external SINK that retains the exact `string` handle it is
-/// passed must leave the enum payload's scope-exit drop UNRUN.
+/// A `consume` declaration transfers the payload: the caller emits no release.
 ///
-/// Before the fix the `.Some(s) => extern_sink(s)` shape cleared all three
-/// conjuncts of the payload-binder exemption -- `s` is exactly `string`, the
-/// extern is in `module_fn_names`, and its only terminator use is the call
-/// argument -- so the composite kept its `EnumInPlace` drop and released a
-/// handle it had already handed to the host. The spy reports that as one
-/// release per iteration; the fixed compiler reports zero.
+/// `spy_retain` models a non-copying host that keeps the exact handle. With
+/// the transfer declared, the enum payload's scope-exit drop must not run: the
+/// host owns the handle, and the only release in the program is the host's own
+/// positive control at the end.
 ///
-/// Measured against the pre-fix compiler this fixture reports `releases=8`
-/// over eight iterations AND STILL EXITS 0 — which is precisely why an exact
-/// count is needed: a released-but-still-reachable buffer does not fault, so
-/// the leak-slope oracle (macOS-only) and the clean-exit-under-poisoned-
-/// allocator oracle both pass a double release on non-Darwin unix.
+/// The count is exact on purpose. A released-but-still-reachable buffer does
+/// not fault, so the leak-slope oracle (macOS only) and the clean-exit-under-
+/// poisoned-allocator oracle both pass a double release on non-Darwin unix.
 #[test]
-fn extern_sink_that_retains_a_payload_sees_no_caller_release() {
+fn a_consuming_extern_sink_sees_no_caller_release() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_sink", SPY_RUST) else {
@@ -421,7 +520,7 @@ fn extern_sink_that_retains_a_payload_sees_no_caller_release() {
     let stdout = build_and_run(
         dir.path(),
         "extern_sink",
-        ENUM_PAYLOAD_TO_EXTERN_SINK,
+        ENUM_PAYLOAD_TO_CONSUMING_EXTERN,
         Some(&spy),
     );
 
@@ -434,17 +533,16 @@ fn extern_sink_that_retains_a_payload_sees_no_caller_release() {
     assert_eq!(
         reported(&stdout, "bad_headers"),
         0,
-        "guard: every handle the extern received must carry the pinned \
-         `HEW_CSTR` header, i.e. the extern really is handed the runtime \
-         handle and not a copy — otherwise this test measures nothing:\n{stdout}"
+        "guard: every handle the extern received must carry a live managed \
+         string header, i.e. the extern really is handed the runtime handle \
+         and not a copy — otherwise this test measures nothing:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "releases"),
         0,
-        "DOUBLE RELEASE: the enum payload's scope-exit drop released a handle \
-         already handed to a non-copying external sink. An extern's ownership \
-         behaviour is unknowable, so the caller must decline its drop \
-         obligation here (a leak, never a second release):\n{stdout}"
+        "DOUBLE RELEASE: the payload was declared `consume`, so the caller \
+         handed its owner to the host and must keep no scope-exit drop. This \
+         count is a release of a handle the caller no longer owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
@@ -455,32 +553,60 @@ fn extern_sink_that_retains_a_payload_sees_no_caller_release() {
     );
 }
 
+/// The negative control: without `consume`, the caller keeps its release.
+///
+/// Same program, same host, same call shape. Consumption is declared, never
+/// implied, so a compiler that inferred the transfer from the retaining host,
+/// from the payload binder, or from the callee being an extern would report
+/// zero here and silently leak every payload.
+#[test]
+fn a_borrowing_extern_sink_keeps_the_caller_release() {
+    require_codegen();
+    let dir = tempdir();
+    let Some(spy) = build_staticlib(dir.path(), "spy_sink", SPY_RUST) else {
+        return;
+    };
+
+    let stdout = build_and_run(
+        dir.path(),
+        "borrowing_sink",
+        ENUM_PAYLOAD_TO_BORROWING_EXTERN,
+        Some(&spy),
+    );
+
+    assert_eq!(
+        reported(&stdout, "retained"),
+        8,
+        "guard: the host must have seen all eight payload handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "bad_headers"),
+        0,
+        "guard: every handle must carry a live managed string header:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        8,
+        "INFERRED TRANSFER: the declaration spells a borrow, so the caller \
+         still owns each payload and must release it once per iteration. A \
+         lower count means the compiler decided the extern consumed its \
+         argument without being told:\n{stdout}"
+    );
+}
+
 /// A heap-returning extern's result, interpolated, must be released exactly
 /// once — and never by a caller-side owner minted from an unproven freshness
 /// answer.
 ///
 /// # What this pins, honestly
 ///
-/// The ratified ABI for a ROOT-declared `extern "C" -> string` is that the host
-/// returns a raw malloc-owned C string, and codegen emits an ADOPTION sequence
-/// that copies it into a private header-aware buffer and `free()`s the foreign
-/// allocation. So on today's pipeline the interpolated value is already a
-/// private copy and the foreign pointer has exactly one release, by design.
-/// This fixture pins that invariant end to end: the host hands out eight live
-/// malloc blocks and never frees them itself, so any release beyond the single
-/// adoption `free()` is a double free of a malloc block and aborts the process
-/// under every libc double-free detector, with the allocator additionally
-/// poisoned.
+/// The declaration's `-> string` makes the result the caller's owner, and the
+/// caller releases it exactly once per frame. The host mints one real managed
+/// handle per call, biases its refcount so the allocation survives the probe,
+/// and never releases, so every release counted here is the compiler's.
 ///
-/// It deliberately does NOT claim to reproduce the review's original scenario.
-/// That scenario is unreachable through source syntax today for a second
-/// reason as well: `unsafe { f() }` lowers to `HirExprKind::Block`, not
-/// `HirExprKind::Call`, and a direct extern call without `unsafe` is a checker
-/// error — so the mint's `HirExpr` gate never sees the extern callee at all.
-/// The gate-level proof that the mint refuses an extern lives in the hew-mir
-/// unit regressions (`return_provenance::extern_ownership_opacity` and
-/// `lower::facts::analyzed_freshness_strictness`), which assert the authority
-/// directly and cannot be routed around by a lowering shape.
+/// The interpolated text is read back on every frame: a premature release
+/// would show as poisoned bytes rather than the host's string.
 #[test]
 fn extern_returned_string_interpolation_releases_exactly_once() {
     require_codegen();
@@ -503,13 +629,17 @@ fn extern_returned_string_interpolation_releases_exactly_once() {
          run proves nothing:\n{stdout}"
     );
     assert_eq!(
-        stdout
-            .lines()
-            .filter(|l| l.trim() == "v=host-owned")
-            .count(),
+        stdout.lines().filter(|l| l.trim() == "v=host-made").count(),
         8,
         "every interpolation must have read the host's text intact — a \
          premature release would show as poisoned bytes:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        8,
+        "the declaration hands the caller an owner per frame, so the caller \
+         must release exactly once per frame. A lower count leaks the \
+         result; a higher one releases a handle it no longer owns:\n{stdout}"
     );
 }
 
@@ -695,15 +825,13 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
 /// eight frames: the wrapper laundered the extern's result into an "analyzed
 /// fresh" verdict, `main` minted a synthetic owner over it and dropped it. The
 /// fixed compiler reports zero.
-const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints registered runtime handles and counts every release of them.
+const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints managed runtime handles and counts every release of them.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
-const HEADER: isize = 16;
-/// `CSTRING_MAGIC` — b"HEW_CSTR" read as a little-endian u64.
-const MAGIC: u64 = 0x4845_575F_4353_5452;
-/// Large enough that no realistic release count reaches zero, so the observed
-/// buffer is never freed underneath us.
+/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
+/// managed handle; `rc` therefore lives at `handle + 8`.
+const RC_OFFSET: usize = 8;
+/// Large enough that no realistic release count reaches zero.
 const BIAS: u32 = 1_000_000;
 const SLOTS: usize = 64;
 
@@ -711,36 +839,33 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 extern "C" {
-    fn hew_string_concat(
-        a: *const std::ffi::c_char,
-        b: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_char;
-    fn hew_string_drop(s: *mut std::ffi::c_char);
+    fn hew_string_literal_new(data: *const u8, len: u32, out: *mut *mut u8);
+    fn hew_string_drop(s: *mut u8);
 }
 
-unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
-    unsafe { data.offset(-8).cast() }
+unsafe fn rc_ptr(handle: *const u8) -> *const AtomicU32 {
+    unsafe { handle.add(RC_OFFSET).cast() }
 }
 
-/// Ask the linked Hew runtime to allocate the handle so its allocation-
-/// provenance registry recognizes the exact pointer.  A raw `{magic, rc}`
-/// buffer is deliberately not a managed string anymore.
-#[no_mangle]
-pub unsafe extern "C" fn spy_make_string() -> *mut std::ffi::c_char {
-    let text = b"host-made\0";
-    let data = unsafe { hew_string_concat(text.as_ptr().cast(), std::ptr::null()) };
-    assert!(!data.is_null());
-    let magic = unsafe {
-        std::ptr::read_unaligned(data.cast::<u8>().offset(-HEADER).cast::<u64>())
-    };
-    assert_eq!(magic, MAGIC);
-    let previous = unsafe { (&*rc_ptr(data.cast())).fetch_add(BIAS, Ordering::SeqCst) };
+/// Ask the linked runtime to mint a managed handle: a host cannot forge one,
+/// and `hew_string_drop` is only valid on an allocation the runtime made.
+unsafe fn make_handle() -> *mut u8 {
+    let text = b"host-made";
+    let mut handle: *mut u8 = std::ptr::null_mut();
+    unsafe { hew_string_literal_new(text.as_ptr(), text.len() as u32, &mut handle) };
+    assert!(!handle.is_null());
+    let previous = unsafe { (&*rc_ptr(handle)).fetch_add(BIAS, Ordering::SeqCst) };
     assert_eq!(previous, 1);
     let slot = COUNT.fetch_add(1, Ordering::SeqCst);
     if slot < SLOTS {
-        HELD[slot].store(data as u64, Ordering::SeqCst);
+        HELD[slot].store(handle as u64, Ordering::SeqCst);
     }
-    data
+    handle
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spy_make_string() -> *mut u8 {
+    unsafe { make_handle() }
 }
 
 /// Net releases across every handed-out handle: `sum of (1 + BIAS - rc_now)`.
@@ -749,11 +874,11 @@ pub extern "C" fn spy_releases() -> i64 {
     let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
     let mut total: i64 = 0;
     for slot in 0..n {
-        let data = HELD[slot].load(Ordering::SeqCst) as *const u8;
-        if data.is_null() {
+        let handle = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if handle.is_null() {
             continue;
         }
-        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
+        let rc = unsafe { (&*rc_ptr(handle)).load(Ordering::SeqCst) };
         total += i64::from(1u32 + BIAS) - i64::from(rc);
     }
     total
@@ -765,15 +890,15 @@ pub extern "C" fn spy_made() -> i64 {
 }
 
 /// Positive control for the counter, run LAST: one real `hew_string_drop` from
-/// the host must read as exactly one release, so a reported zero is a
+/// the host must read as exactly one release, so a reported count is a
 /// measurement and not a blind probe.
 #[no_mangle]
 pub extern "C" fn spy_release_one_from_host() -> i64 {
-    let data = HELD[0].load(Ordering::SeqCst) as *mut std::ffi::c_char;
-    if data.is_null() {
+    let handle = HELD[0].load(Ordering::SeqCst) as *mut u8;
+    if handle.is_null() {
         return -1;
     }
-    unsafe { hew_string_drop(data) };
+    unsafe { hew_string_drop(handle) };
     0
 }
 "#;
@@ -818,7 +943,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release() {
+fn a_hew_wrapper_around_an_extern_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_header_aware", HEADER_AWARE_SPY_RUST) else {
@@ -839,19 +964,19 @@ fn a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE: one Hew frame between the interpolation and an \
-         ownership-opaque extern laundered the foreign result into an \
-         `analyzed fresh` verdict, and the caller minted and ran a release \
-         obligation over a handle the host still owns. The freshness summary \
-         must fail closed through an arbitrary chain of Hew frames:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
+        9,
         "the release counter itself must have teeth: one real \
-         `hew_string_drop` from the host must read as exactly one release, so \
-         the zero above is a measurement rather than a blind probe:\n{stdout}"
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -915,12 +1040,14 @@ fn main() -> i64 {
 /// and counts every release of them. Non-copying: the exact pointer handed to
 /// Hew is the one whose `rc` is observed, and the `rc` is biased so no release
 /// can free the buffer underneath the probe.
-const RECORD_SPY_RUST: &str = r#"use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+const RECORD_SPY_RUST: &str = r#"//! Mints managed runtime `string` handles, wraps each in a `repr(C)` record,
+//! and counts every release of them. Non-copying: the exact handle given to
+//! Hew is the one whose `rc` is observed, biased so no release frees it.
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `CSTRING_HEADER_SIZE = 16`, `{ magic: u64, rc: u32, _pad: u32 }`.
-const HEADER: isize = 16;
-/// `CSTRING_MAGIC` — b"HEW_CSTR" read as a little-endian u64.
-const MAGIC: u64 = 0x4845_575F_4353_5452;
+/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
+/// managed handle; `rc` therefore lives at `handle + 8`.
+const RC_OFFSET: usize = 8;
 /// Large enough that no realistic release count reaches zero.
 const BIAS: u32 = 1_000_000;
 const SLOTS: usize = 64;
@@ -929,40 +1056,34 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 static HELD: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 extern "C" {
-    fn hew_string_concat(
-        a: *const std::ffi::c_char,
-        b: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_char;
-    fn hew_string_drop(s: *mut std::ffi::c_char);
+    fn hew_string_literal_new(data: *const u8, len: u32, out: *mut *mut u8);
+    fn hew_string_drop(s: *mut u8);
 }
 
-unsafe fn rc_ptr(data: *const u8) -> *const AtomicU32 {
-    unsafe { data.offset(-8).cast() }
+unsafe fn rc_ptr(handle: *const u8) -> *const AtomicU32 {
+    unsafe { handle.add(RC_OFFSET).cast() }
+}
+
+/// Ask the linked runtime to mint a managed handle: a host cannot forge one,
+/// and `hew_string_drop` is only valid on an allocation the runtime made.
+unsafe fn make_handle() -> *mut u8 {
+    let text = b"host-made";
+    let mut handle: *mut u8 = std::ptr::null_mut();
+    unsafe { hew_string_literal_new(text.as_ptr(), text.len() as u32, &mut handle) };
+    assert!(!handle.is_null());
+    let previous = unsafe { (&*rc_ptr(handle)).fetch_add(BIAS, Ordering::SeqCst) };
+    assert_eq!(previous, 1);
+    let slot = COUNT.fetch_add(1, Ordering::SeqCst);
+    if slot < SLOTS {
+        HELD[slot].store(handle as u64, Ordering::SeqCst);
+    }
+    handle
 }
 
 /// The record the extern returns, in the C layout the declaration implies.
 #[repr(C)]
 pub struct Holder {
-    label: *mut std::ffi::c_char,
-}
-
-unsafe fn make_handle() -> *mut std::ffi::c_char {
-    let text = b"host-made\0";
-    // Allocation must go through the linked runtime: `hew_string_drop` now
-    // rejects raw header lookalikes that are absent from its provenance registry.
-    let data = unsafe { hew_string_concat(text.as_ptr().cast(), std::ptr::null()) };
-    assert!(!data.is_null());
-    let magic = unsafe {
-        std::ptr::read_unaligned(data.cast::<u8>().offset(-HEADER).cast::<u64>())
-    };
-    assert_eq!(magic, MAGIC);
-    let previous = unsafe { (&*rc_ptr(data.cast())).fetch_add(BIAS, Ordering::SeqCst) };
-    assert_eq!(previous, 1);
-    let slot = COUNT.fetch_add(1, Ordering::SeqCst);
-    if slot < SLOTS {
-        HELD[slot].store(data as u64, Ordering::SeqCst);
-    }
-    data
+    label: *mut u8,
 }
 
 #[no_mangle]
@@ -972,42 +1093,43 @@ pub unsafe extern "C" fn spy_make_holder() -> Holder {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn spy_made() -> i64 {
-    COUNT.load(Ordering::SeqCst) as i64
-}
-
-/// Net releases across every handed-out handle:
-/// `sum over slots of ((1 + BIAS) - rc_now)`.
+/// Net releases across every handed-out handle: `sum of (1 + BIAS - rc_now)`.
 #[no_mangle]
 pub extern "C" fn spy_releases() -> i64 {
     let n = COUNT.load(Ordering::SeqCst).min(SLOTS);
     let mut total: i64 = 0;
     for slot in 0..n {
-        let data = HELD[slot].load(Ordering::SeqCst) as *const u8;
-        if data.is_null() {
+        let handle = HELD[slot].load(Ordering::SeqCst) as *const u8;
+        if handle.is_null() {
             continue;
         }
-        let rc = unsafe { (&*rc_ptr(data)).load(Ordering::SeqCst) };
+        let rc = unsafe { (&*rc_ptr(handle)).load(Ordering::SeqCst) };
         total += i64::from(1u32 + BIAS) - i64::from(rc);
     }
     total
 }
 
-/// Positive control for the counter, run LAST.
+#[no_mangle]
+pub extern "C" fn spy_made() -> i64 {
+    COUNT.load(Ordering::SeqCst) as i64
+}
+
+/// Positive control for the counter, run LAST: one real `hew_string_drop` from
+/// the host must read as exactly one release, so a reported count is a
+/// measurement and not a blind probe.
 #[no_mangle]
 pub extern "C" fn spy_release_one_from_host() -> i64 {
-    let data = HELD[0].load(Ordering::SeqCst) as *mut std::ffi::c_char;
-    if data.is_null() {
+    let handle = HELD[0].load(Ordering::SeqCst) as *mut u8;
+    if handle.is_null() {
         return -1;
     }
-    unsafe { hew_string_drop(data) };
+    unsafe { hew_string_drop(handle) };
     0
 }
 "#;
 
 #[test]
-fn a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release() {
+fn a_vec_push_of_a_wrapped_extern_record_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_record", RECORD_SPY_RUST) else {
@@ -1034,19 +1156,19 @@ fn a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE at Vec ingress: a Hew wrapper over an ownership-opaque \
-         extern was admitted as a materialised owner, the push was routed to \
-         `hew_vec_push_owned_move`, and the Vec's teardown released a handle \
-         the host still owns. The freshness authority must veto the wrapper at \
-         the Vec seam exactly as it does at the string mint:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
+        9,
         "the release counter itself must have teeth: one real \
-         `hew_string_drop` from the host must read as exactly one release, so \
-         the zero above is a measurement rather than a blind probe:\n{stdout}"
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1095,7 +1217,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release() {
+fn a_wrapped_extern_record_in_a_borrowing_argument_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_record_arg", RECORD_SPY_RUST) else {
@@ -1122,19 +1244,19 @@ fn a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE at the temp-arg mint: a Hew wrapper over an \
-         ownership-opaque extern is not a direct extern, so the name veto \
-         missed it and the coarse `unwrap_or(true)` minted a caller-owned \
-         temporary over the host's record. The freshness authority must carry \
-         the veto for the WRAPPER, not just the direct callee:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
+        9,
         "the release counter itself must have teeth: one real \
-         `hew_string_drop` from the host must read as exactly one release, so \
-         the zero above is a measurement rather than a blind probe:\n{stdout}"
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1186,7 +1308,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_match_over_a_wrapped_extern_enum_sees_no_caller_release() {
+fn a_match_over_a_wrapped_extern_enum_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_record_match", RECORD_SPY_RUST) else {
@@ -1213,18 +1335,19 @@ fn a_match_over_a_wrapped_extern_enum_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE at the call-scrutinee admission: the interim \
-         `LegacyModuleCall` arm minted a scrutinee owner over an enum whose \
-         payload the host minted and still owns. Admission must consult the \
-         freshness authority, with no branch that answers permissively:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
+        9,
         "the release counter itself must have teeth: one real \
-         `hew_string_drop` from the host must read as exactly one release, so \
-         the zero above is a measurement rather than a blind probe:\n{stdout}"
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1296,15 +1419,19 @@ fn a_match_over_a_domestic_enum_keeps_working() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "control: a domestic producer's scrutinee must still balance — the F1 \
-         fix is provenance-directed, not a blanket stop on scrutinee \
-         ownership:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
-        "the counter must have teeth here too:\n{stdout}"
+        9,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1349,7 +1476,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_record_literal_embedding_a_direct_extern_sees_no_caller_release() {
+fn a_record_literal_embedding_a_direct_extern_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_record_embed", RECORD_SPY_RUST) else {
@@ -1375,18 +1502,19 @@ fn a_record_literal_embedding_a_direct_extern_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE at a composite mint: freshness of the CONTAINER was \
-         taken to imply ownership of its FIELDS, so the outer record's \
-         recursive release freed the host's handle. A container with an \
-         opaque-provenance embed must not be minted at all:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
+        9,
         "the release counter itself must have teeth: one real \
-         `hew_string_drop` from the host must read as exactly one release, so \
-         the zero above is a measurement rather than a blind probe:\n{stdout}"
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1468,83 +1596,91 @@ fn a_record_literal_of_a_domestic_field_keeps_working() {
     );
 }
 
-/// Build `source` and return the compiler's combined output, asserting the
-/// build FAILED. Used where the correct answer is a refusal rather than a
-/// number: a seam whose ABI offers no safe route must not lower at all.
-fn build_expecting_failure(dir: &Path, name: &str, source: &str, lib: Option<&Path>) -> String {
-    let prog = dir.join(format!("{name}.hew"));
-    std::fs::write(&prog, source).expect("write fixture .hew");
-    let bin = hew_testutil::compiled_binary_path(dir, name);
-
-    let mut compile = Command::new(hew_binary());
-    compile.arg("build");
-    if let Some(lib) = lib {
-        compile.arg("--link-lib").arg(lib);
-    }
-    compile
-        .arg(&prog)
-        .arg("-o")
-        .arg(&bin)
-        .current_dir(dir)
-        .env("HEWPATH", repo_root());
-    let compiled = run_bounded_command(compile, "hew build");
-    assert!(
-        !compiled.status.success(),
-        "`hew build` must REFUSE {name}, but it succeeded:\n{}",
-        describe_output(&compiled),
-    );
-    assert!(
-        !bin.exists(),
-        "a refused build must emit no binary for {name}"
-    );
-    describe_output(&compiled)
-}
-
-/// F3 — collection ingress. `m.insert(k, wrapHolder())` moved a host-owned
-/// record into the map, and the map's teardown released it.
+/// Collection ingress. `m.insert(k, wrapHolder())` moves the extern's declared
+/// result into the map, and the map's teardown releases it.
 ///
-/// Unlike the Vec seam there is no copy-in route to fall back to:
-/// `hew-runtime`'s hashmap pins ingress as MOVE by ABI and records that copy-in
-/// is intentionally absent. Failing CLOSED therefore has to mean refusing the
-/// ingress — the alternative is a silent double release, which is what the four
-/// preceding rounds shipped.
-///
-/// This is the only fix in this revision that costs expressiveness. Lifting it
-/// needs a copy-in hashmap ingress (a `hew_hashmap_insert_owned` that clones
-/// the value the way `hew_vec_push_owned` does), at which point this seam
-/// becomes a route choice like the Vec one rather than a refusal.
+/// The declaration says `-> Holder`, so the value the host handed over is an
+/// ordinary owner: moving it into a HashMap is the same transfer as moving a
+/// domestic record, and the map's teardown is the one release it gets. The map
+/// leaves scope inside the loop body, so a frame that released twice or not at
+/// all shows up in the count.
 const HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD: &str = r#"type Holder { label: string }
 
 extern "C" {
     fn spy_make_holder() -> Holder;
+    fn spy_made() -> i64;
+    fn spy_releases() -> i64;
+    fn spy_release_one_from_host() -> i64;
 }
 
 fn wrapHolder() -> Holder { unsafe { spy_make_holder() } }
 
-fn main() -> i64 {
+fn insertFrame(key: i64) -> i64 {
     var m: HashMap<i64, Holder> = HashMap.new();
-    m.insert(1, wrapHolder());
+    m.insert(key, wrapHolder());
     m.len()
+}
+
+fn main() -> i64 {
+    var inserted: i64 = 0;
+    var i: i64 = 0;
+    while i < 8 {
+        inserted = inserted + insertFrame(i);
+        i = i + 1;
+    }
+    let made = unsafe { spy_made() };
+    let releases = unsafe { spy_releases() };
+    println(f"inserted={inserted}");
+    println(f"made={made}");
+    println(f"releases={releases}");
+
+    unsafe { spy_release_one_from_host(); }
+    let after = unsafe { spy_releases() };
+    println(f"after_host_release={after}");
+    0
 }
 "#;
 
 #[test]
-fn a_hashmap_insert_of_a_wrapped_extern_record_is_refused() {
+fn a_hashmap_insert_of_a_wrapped_extern_record_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_record_map", RECORD_SPY_RUST) else {
         return;
     };
 
-    let out = build_expecting_failure(
+    let stdout = build_and_run(
         dir.path(),
         "hashmap_ingress",
         HASHMAP_INSERT_OF_A_WRAPPED_EXTERN_RECORD,
         Some(&spy),
     );
-    assert!(
-        out.contains("ownership-opaque provenance"),
-        "the refusal must name the reason, not fail for some unrelated cause:\n{out}"
+
+    assert_eq!(
+        reported(&stdout, "inserted"),
+        8,
+        "guard: every frame must have inserted its element:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "made"),
+        8,
+        "guard: the host must have minted all eight handles:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "releases"),
+        8,
+        "the extern's declared result is the caller's owner, so the map that \
+         takes it must release it exactly once when the frame ends: a lower \
+         count leaks the host's allocation, a higher one releases a handle \
+         the map no longer owns:\n{stdout}"
+    );
+    assert_eq!(
+        reported(&stdout, "after_host_release"),
+        9,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1627,7 +1763,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_let_bound_extern_record_sees_no_caller_release() {
+fn a_let_bound_extern_record_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_letbind", RECORD_SPY_RUST) else {
@@ -1653,15 +1789,19 @@ fn a_let_bound_extern_record_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE at a `let` binder: the scope-exit drop was seeded from \
-         the binding's TYPE without ever asking where the value came from, so \
-         leaving the loop body freed the host's handle:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
-        "the release counter itself must have teeth:\n{stdout}"
+        9,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 
@@ -1701,7 +1841,7 @@ fn main() -> i64 {
 "#;
 
 #[test]
-fn a_container_over_a_let_bound_extern_record_sees_no_caller_release() {
+fn a_container_over_a_let_bound_extern_record_releases_once_per_frame() {
     require_codegen();
     let dir = tempdir();
     let Some(spy) = build_staticlib(dir.path(), "spy_letbind_embed", RECORD_SPY_RUST) else {
@@ -1727,14 +1867,19 @@ fn a_container_over_a_let_bound_extern_record_sees_no_caller_release() {
     );
     assert_eq!(
         reported(&stdout, "releases"),
-        0,
-        "DOUBLE RELEASE: the foreign fact must travel with the BINDER into the \
-         container, not be read only off a container's own initializer:\n{stdout}"
+        8,
+        "the extern's declared result is the caller's owner, so the value must \
+         be released exactly once per frame: a lower count leaks the host's \
+         allocation, a higher one releases a handle the caller no longer \
+         owns:\n{stdout}"
     );
     assert_eq!(
         reported(&stdout, "after_host_release"),
-        1,
-        "the release counter itself must have teeth:\n{stdout}"
+        9,
+        "the release counter itself must have teeth: one real \
+         `hew_string_drop` from the host must read as exactly one more \
+         release, so the count above is a measurement rather than a blind \
+         probe:\n{stdout}"
     );
 }
 

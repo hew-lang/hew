@@ -284,10 +284,10 @@ impl SemActor {
                 builtin: Some(hew_types::BuiltinType::ActorHandle),
                 ..
             } => {
-                if !self
+                if self
                     .handle_ty
                     .actor_handle_instance()
-                    .is_some_and(|instance| instance.nominal.declaration() == &self.declaration)
+                    .is_none_or(|instance| instance.nominal.declaration() != &self.declaration)
                 {
                     return Err("actor handle refers to another declaration".into());
                 }

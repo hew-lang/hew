@@ -1966,6 +1966,23 @@ impl<'a> Formatter<'a> {
     // Types
     // ------------------------------------------------------------------
 
+    /// One parameter list and optional reply, shared by `fn` and `actor` types.
+    fn format_callable_type(
+        &mut self,
+        head: &str,
+        params: &[Spanned<TypeExpr>],
+        return_type: &Spanned<TypeExpr>,
+    ) {
+        self.write(head);
+        self.write("(");
+        self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
+        self.write(")");
+        if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
+            self.write(" -> ");
+            self.format_type_expr(&return_type.0);
+        }
+    }
+
     fn format_type_expr(&mut self, ty: &TypeExpr) {
         match ty {
             TypeExpr::Named { name, type_args } => {
@@ -2025,27 +2042,11 @@ impl<'a> Formatter<'a> {
                 capabilities,
                 params,
                 return_type,
-            } => {
-                self.write(&format!("fn{capabilities}("));
-                self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
-                self.write(")");
-                if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
-                    self.write(" -> ");
-                    self.format_type_expr(&return_type.0);
-                }
-            }
+            } => self.format_callable_type(&format!("fn{capabilities}"), params, return_type),
             TypeExpr::ActorFn {
                 params,
                 return_type,
-            } => {
-                self.write("actor(");
-                self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
-                self.write(")");
-                if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
-                    self.write(" -> ");
-                    self.format_type_expr(&return_type.0);
-                }
-            }
+            } => self.format_callable_type("actor", params, return_type),
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,

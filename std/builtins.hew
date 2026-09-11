@@ -23,7 +23,6 @@
 // Calls to receive handlers wait for completion, including void handlers.
 // Use `mailbox(target, on_full: ...)` for submission and
 // `policy(target, on_full: ...)` to choose completion-call admission.
-
 /// A stable reference to a supervised actor role.
 ///
 /// Unlike an actor handle, a `ChildRef<T>` never snapshots an actor

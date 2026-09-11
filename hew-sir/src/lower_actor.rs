@@ -113,18 +113,18 @@ impl InstanceService<'_> {
         // the descriptor is keyed by the handle. An anonymous actor's handle is
         // already its own spelling and has no separate role.
         let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
-        let ty = &match lambda_handle {
-            Some(handle) => handle,
-            None => {
-                let instance = crate::actor::local_actor_instance(ty)
-                    .ok_or("declaration() matched a local actor reference")?;
-                ResolvedTy::named_builtin(
-                    instance.nominal.full_path(),
-                    hew_types::BuiltinType::ActorHandle,
-                    instance.args.clone(),
-                )
-            }
+        let handle_ty = if let Some(handle) = lambda_handle {
+            handle
+        } else {
+            let instance = crate::actor::local_actor_instance(ty)
+                .ok_or("declaration() matched a local actor reference")?;
+            ResolvedTy::named_builtin(
+                instance.nominal.full_path(),
+                hew_types::BuiltinType::ActorHandle,
+                instance.args.clone(),
+            )
         };
+        let ty = &handle_ty;
         let substitution = actor_substitution(&source, ty)?;
         for argument in &substitution.args {
             self.require_type_facts(argument)?;

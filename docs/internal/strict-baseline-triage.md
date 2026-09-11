@@ -23,8 +23,8 @@ path.
 The ledger now carries 224 rows: every remaining Linux failure in the triage
 half has one naming the issue that will remove it, and the 20 stale Linux
 selectors are gone. 15 of those 20 are outside the triage half and were dropped
-because the tests pass at this head. `make test` is still red here on the 45
-failures the mechanical half has left to row; once those rows land, `make test`
+because the tests pass at this head. `make test` is still red here on the failures
+the mechanical half has left to row; once those rows land, `make test`
 and `make test-strict` differ only by this ledger.
 
 ## Dispositions
@@ -37,7 +37,7 @@ and `make test-strict` differ only by this ledger.
   or covered a surface that no longer exists.
 - **Defect**: a real gap on the final path. The test stays failing with a
   ledger row pointing at its issue, and where the gap is a lowering or
-  verification refusal, a minimal reproducer under `repros/final-core/`. Where
+  verification refusal, a minimal reproducer under `docs/repros/final-core/`. Where
   a dispatched lane already owns the gap, the disposition names that lane and
   the ledger row carries its branch alongside the issue.
 - **Rewrite specified**: the observation mechanism is retired and the

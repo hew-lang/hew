@@ -1,0 +1,10 @@
+// Repro: `std.pipeline.run` returns `LocalPid<SourceI64>`.
+import std.pipeline;
+
+fn main() {
+    let source = pipeline.run(pipeline.from(1));
+    match source.count() {
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
+    }
+}

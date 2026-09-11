@@ -296,32 +296,6 @@ fn verify_argument(
     Ok(())
 }
 
-pub(super) fn depends_on(function: &PhysicalFunction, mut id: StorageId, owner: StorageId) -> bool {
-    for _ in 0..=function.storage.len() {
-        if id == owner {
-            return true;
-        }
-        let Some(slot) = function.storage.get(id.0 as usize) else {
-            return false;
-        };
-        if let Some(parent) = slot.borrow_parent {
-            id = parent;
-        } else if let StorageOrigin::Capture { environment, .. } = slot.origin {
-            id = environment;
-        } else if let Some(projection) = function
-            .place_storage
-            .get(&id)
-            .filter(|projection| projection.root != id)
-        {
-            id = projection.root;
-        } else {
-            return false;
-        }
-    }
-    // A cycle cannot prove independence from an owner.
-    true
-}
-
 pub(super) fn invalidate_captures(
     borrows: &super::BorrowDependents,
     state: &mut FlowState,

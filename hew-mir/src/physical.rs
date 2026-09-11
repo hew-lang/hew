@@ -6050,9 +6050,10 @@ fn define(
 
 /// Storage that borrows, or projects from, each storage root.
 ///
-/// `callable::depends_on` walks a slot upward to its root; this is the same
-/// relation read downward, so asking whether a live loan depends on one root
-/// visits that root's dependants instead of every slot in the function.
+/// A slot's borrow parent, capture environment or partition root is the one
+/// step upward to what it depends on; this is that relation read downward, so
+/// asking whether a live loan depends on one root visits that root's
+/// dependants instead of every slot in the function.
 pub(super) struct BorrowDependents {
     children: BTreeMap<StorageId, Vec<StorageId>>,
     /// Capture slots grouped by the environment they belong to, and every
@@ -6116,7 +6117,10 @@ impl BorrowDependents {
         let mut seen = BTreeSet::new();
         while let Some(id) = pending.pop() {
             if !seen.insert(id) {
-                continue;
+                // Every slot has one parent, so reaching one twice means the
+                // table is cyclic. A cycle cannot prove independence from a
+                // root, so it counts as a live loan.
+                return true;
             }
             for &child in self.children.get(&id).into_iter().flatten() {
                 if function.storage[child.0 as usize].borrow_parent.is_some()

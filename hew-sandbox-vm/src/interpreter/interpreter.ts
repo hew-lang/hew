@@ -1340,9 +1340,12 @@ class Interpreter {
           instruction.args[1],
           instruction.span,
         );
-        // Use valuesEqual so f64 non-finite values (NaN, +/-Infinity) follow
-        // native fcmp-OEQ semantics: [NaN].contains(NaN) == false.
-        const found = vec.items.some((item) => valuesEqual(item, needle));
+        // Membership is total float equality, as in native containers:
+        // [NaN].contains(NaN) is true and -0.0 is not 0.0. Scalar `==` stays
+        // IEEE-754 (`cmp.eq` through valuesEqual).
+        const found = vec.items.some((item) =>
+          containerValuesEqual(item, needle),
+        );
         this.writeDst(frame, instruction, { kind: "bool", value: found });
         return;
       }
@@ -3350,6 +3353,18 @@ function valuesEqual(a: VmValue, b: VmValue): boolean {
     return a.value === b.value;
   }
   return canonicalComparable(a) === canonicalComparable(b);
+}
+
+/**
+ * Container membership equality: f64 compares by identity (`Object.is`), so
+ * NaN finds NaN and the two zeros stay distinct, matching the native
+ * total-order comparison inside collections.
+ */
+function containerValuesEqual(a: VmValue, b: VmValue): boolean {
+  if (a.kind === "f64" && b.kind === "f64") {
+    return Object.is(a.value, b.value);
+  }
+  return valuesEqual(a, b);
 }
 
 function renderComparable(value: VmValue): JsonValue {

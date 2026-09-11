@@ -37,14 +37,14 @@ test("serialized bytecode preserves supervisor child i64 bounds", () => {
   const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
     `
 actor Bounds {
-    let max: i64;
-    let min: i64;
+    let max: i64,
+    let min: i64,
 }
 
 supervisor BoundsTree {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
-    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808),
 }
 
 fn main() {

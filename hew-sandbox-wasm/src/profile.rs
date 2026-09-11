@@ -1413,15 +1413,26 @@ fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
 
 /// Returns true if the expression is a constant literal that the emitter
 /// can bake directly into a bytecode layout (integer, float, string, bool, char).
+/// A literal the emitter can bake: a scalar literal, or a numeric literal
+/// under unary minus (the parser keeps `-1` as a negation of `1`).
 fn is_literal_expr(expr: &Expr) -> bool {
-    matches!(
-        expr,
+    match expr {
         Expr::Literal(
             hew_parser::ast::Literal::Integer { .. }
-                | hew_parser::ast::Literal::Float(_)
-                | hew_parser::ast::Literal::String(_)
-                | hew_parser::ast::Literal::Bool(_)
-                | hew_parser::ast::Literal::Char(_)
-        )
-    )
+            | hew_parser::ast::Literal::Float(_)
+            | hew_parser::ast::Literal::String(_)
+            | hew_parser::ast::Literal::Bool(_)
+            | hew_parser::ast::Literal::Char(_),
+        ) => true,
+        Expr::Unary {
+            op: hew_parser::ast::UnaryOp::Negate,
+            operand,
+        } => matches!(
+            operand.0,
+            Expr::Literal(
+                hew_parser::ast::Literal::Integer { .. } | hew_parser::ast::Literal::Float(_)
+            )
+        ),
+        _ => false,
+    }
 }

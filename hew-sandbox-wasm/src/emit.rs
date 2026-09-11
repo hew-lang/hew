@@ -3412,9 +3412,34 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             self.emit_unsupported(Some(span.clone()));
             return Ok(self.emit_const_unit(Some(span)));
         };
+        self.lower_actor_ask(receiver, method, args, span)
+    }
 
+    /// An actor's own name, or a supervisor child slot of that actor.
+    fn is_actor_handle(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { name, args, .. } if name == "ChildRef" => args
+                .first()
+                .is_some_and(|inner| self.is_actor_handle(inner)),
+            Ty::Named { name, .. } => self.package.actor_field_order.contains_key(name),
+            _ => false,
+        }
+    }
+
+    /// A call on an actor handle is the ask: the handler runs in the actor
+    /// and the caller suspends for its reply.
+    fn lower_actor_ask(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
         let actor_local = self.lower_expr(receiver)?;
-        let mut operands = vec![Operand::local(actor_local), Operand::symbol(method.clone())];
+        let mut operands = vec![
+            Operand::local(actor_local),
+            Operand::symbol(method.to_owned()),
+        ];
         for arg in args {
             operands.push(Operand::local(self.lower_expr(arg.expr())?));
         }
@@ -3583,6 +3608,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     return self.lower_machine_method(receiver, method, args, span);
                 }
             }
+        }
+
+        let receiver_ty = self.ty_for_expr(receiver);
+        if self.is_actor_handle(&receiver_ty) {
+            return self.lower_actor_ask(receiver, method, args, span);
         }
 
         let receiver_local = self.lower_expr(receiver)?;
@@ -5564,15 +5594,13 @@ fn i64_requires_string_encoding(value: i64) -> bool {
 /// supervisor child's initial state. Returns `None` for non-literal initializers
 /// (which the educational profile does not yet admit in child specs).
 fn literal_json(expr: &Expr) -> Option<Value> {
-    match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => {
-            Some(supervisor_i64_literal(i64::try_from(*value).ok()?))
-        }
-        Expr::Literal(Literal::Float(value)) => Some(Value::from(*value)),
-        Expr::Literal(Literal::String(value)) => Some(Value::from(value.clone())),
-        Expr::Literal(Literal::Bool(value)) => Some(Value::from(*value)),
-        Expr::Literal(Literal::Char(value)) => Some(Value::from(value.to_string())),
-        _ => None,
+    match const_literal(expr)? {
+        Literal::Integer { value, .. } => Some(supervisor_i64_literal(i64::try_from(value).ok()?)),
+        Literal::Float(value) => Some(Value::from(value)),
+        Literal::String(value) => Some(Value::from(value)),
+        Literal::Bool(value) => Some(Value::from(value)),
+        Literal::Char(value) => Some(Value::from(value.to_string())),
+        Literal::Duration(_) => None,
     }
 }
 

@@ -17,11 +17,11 @@
   },
   {
     "id": "actors-intro",
-    "starterCode": "// Lesson 5: Actors Intro\n// A simple counter actor that tracks a value.\n// Send it a message with `await`.\n\nactor Counter {\n    var count: i64;\n\n    receive fn increment() -> i64 {\n        count = count + 1;\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let counter = spawn Counter(count: 0);\n    await counter.increment();\n    await counter.increment();\n    await counter.increment();\n}\n"
+    "starterCode": "// Lesson 5: Actors Intro\n// A simple counter actor that tracks a value.\n// Send it a message with `await`.\n\nactor Counter {\n    var count: i64,\n\n    receive fn increment() -> i64 {\n        count = count + 1;\n        println(count);\n        count\n    }\n}\n\nfn main() {\n    let counter = spawn Counter(count: 0);\n    let _ = counter.increment();\n    let _ = counter.increment();\n    let _ = counter.increment();\n}\n"
   },
   {
     "id": "actor-messaging",
-    "starterCode": "// Lesson 6: Actor Messaging\n// Spawn several actors and send each its own message.\n// Each actor runs concurrently on its own task.\n\nactor Worker {\n    let id: i64;\n\n    receive fn task(name: string) -> i64 {\n        println(f\"Worker {id} got task: {name}\");\n        id\n    }\n}\n\nfn main() {\n    let w1 = spawn Worker(id: 1);\n    let w2 = spawn Worker(id: 2);\n    await w1.task(\"build widgets\");\n    await w2.task(\"paint widgets\");\n}\n"
+    "starterCode": "// Lesson 6: Actor Messaging\n// Spawn several actors and send each its own message.\n// Each actor runs concurrently on its own task.\n\nactor Worker {\n    let id: i64,\n\n    receive fn task(name: string) -> i64 {\n        println(f\"Worker {id} got task: {name}\");\n        id\n    }\n}\n\nfn main() {\n    let w1 = spawn Worker(id: 1);\n    let w2 = spawn Worker(id: 2);\n    let _ = w1.task(\"build widgets\");\n    let _ = w2.task(\"paint widgets\");\n}\n"
   },
   {
     "id": "for-loops",
@@ -29,7 +29,7 @@
   },
   {
     "id": "enums",
-    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64);\n    Rectangle(i64, i64);\n}\n\nfn describe(s: Shape) {\n    match s {\n        .Circle(r) => println(f\"circle with radius {r}\"),\n        .Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(.Circle(5));\n    describe(.Rectangle(3, 4));\n}\n"
+    "starterCode": "// Lesson 8: Enums & Match\n// TODO: Add a Triangle variant and handle it in the match.\n\nenum Shape {\n    Circle(i64),\n    Rectangle(i64, i64),\n}\n\nfn describe(s: Shape) {\n    match s {\n        .Circle(r) => println(f\"circle with radius {r}\"),\n        .Rectangle(w, h) => println(f\"rectangle {w}x{h}\"),\n    }\n}\n\nfn main() {\n    describe(.Circle(5));\n    describe(.Rectangle(3, 4));\n}\n"
   },
   {
     "id": "option-type",
@@ -45,10 +45,10 @@
   },
   {
     "id": "async-await",
-    "starterCode": "// Lesson 12: Async / Await\n// Hew has no `async fn` — actors are the unit of concurrency.\n// `await` sends a message to an actor and waits for its reply.\n\nfn fib(n: i64) -> i64 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\n\nactor Calculator {\n    receive fn compute(n: i64) -> i64 {\n        fib(n)\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator;\n    match await calc.compute(10) {\n        .Ok(result) => println(f\"fib(10) = {result}\"),\n        .Err(_) => println(\"failed\"),\n    }\n}\n"
+    "starterCode": "// Lesson 12: Async / Await\n// Hew has no `async fn` — actors are the unit of concurrency.\n// `await` sends a message to an actor and waits for its reply.\n\nfn fib(n: i64) -> i64 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\n\nactor Calculator {\n    receive fn compute(n: i64) -> i64 {\n        fib(n)\n    }\n}\n\nfn main() {\n    let calc = spawn Calculator;\n    match calc.compute(10) {\n        .Ok(result) => println(f\"fib(10) = {result}\"),\n        .Err(_) => println(\"failed\"),\n    }\n}\n"
   },
   {
     "id": "state-machines",
-    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => .On;\n    on Toggle: On => .Off;\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
+    "starterCode": "// Lesson 13: State Machines\n// TODO: Toggle the light twice and print each state.\n\nmachine Light {\n    events { Toggle, }\n    state Off,\n    state On,\n    on Toggle: Off => .On,\n    on Toggle: On => .Off,\n}\n\nfn main() -> i64 {\n    var light = Light.Off;\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    light.step(.Toggle);\n    println(light.state_name());\n    0\n}\n"
   }
 ]

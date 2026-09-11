@@ -671,7 +671,7 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.bump(4);
+    let _ = c.bump(4);
 }
 ";
         let bare = r"
@@ -688,7 +688,7 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.bump(4);
+    let _ = c.bump(4);
 }
 ";
         assert_eq!(
@@ -1006,7 +1006,7 @@ fn main() {
     fn vector_index_expression_emits_bounds_trapping_index_opcode() {
         let source = r"
 fn main() {
-    let values = Vec<i64>.new();
+    var values = Vec<i64>.new();
     values.push(7);
     println(values[0]);
 }
@@ -2299,7 +2299,7 @@ actor Echo {
 }
 fn main() {
     let e = spawn Echo;
-    let r = match await e.echo(42) {
+    let r = match e.echo(42) {
         .Ok(v) => v,
         .Err(_) => -1,
     };
@@ -2348,8 +2348,8 @@ actor Counter {
 }
 fn main() {
     let c = spawn Counter(count: 100);
-    println(match await c.bump(5) { .Ok(v) => v, .Err(_e) => 0-1 });
-    println(match await c.get()   { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match c.bump(5) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match c.get()   { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -2430,8 +2430,8 @@ actor Pair {
 }
 fn main() {
     let p = spawn Pair(a: 1, b: 99);
-    println(match await p.set_a_return_b(42) { .Ok(v) => v, .Err(_e) => 0-1 });
-    println(match await p.get_a()            { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match p.set_a_return_b(42) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match p.get_a()            { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))

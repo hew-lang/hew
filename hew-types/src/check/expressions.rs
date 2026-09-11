@@ -1050,7 +1050,7 @@ impl Checker {
                     | BinaryOp::Shr
             ),
             Expr::Unary {
-                op: UnaryOp::BitNot,
+                op: UnaryOp::BitNot | UnaryOp::Negate,
                 ..
             } => true,
             _ => false,
@@ -3874,13 +3874,26 @@ impl Checker {
 
             (
                 Expr::Unary {
-                    op: UnaryOp::BitNot,
+                    op: op @ (UnaryOp::BitNot | UnaryOp::Negate),
                     operand,
                 },
                 ty,
-            ) if ty.is_integer() && !ty.is_integer_literal() => {
-                // Complement uses the contextual width for both its operand
-                // and result, including nested literal expressions.
+            ) if ty.is_integer()
+                && !ty.is_integer_literal()
+                && !(*op == UnaryOp::Negate
+                    && matches!(operand.0, Expr::Literal(Literal::Integer { .. }))) =>
+            {
+                // Complement and negation both use the contextual width for
+                // their operand and result, including nested literal
+                // expressions (`-(1 + 2)` against `i32` narrows the `1 + 2`
+                // arithmetic to `i32` the same way `~(1 + 2)` already did;
+                // otherwise the literal defaults to `i64` and MIR has no
+                // lowering for the resulting mixed-width unary). A bare
+                // `-LITERAL` is excluded: it stays on the `is_integer_literal`
+                // arm below, which negates before the range check so the
+                // most-negative value of each width (`-128i8`, `i32::MIN`,
+                // …) is admitted even though the positive literal alone
+                // would overflow.
                 let operand_ty = self.check_against(&operand.0, &operand.1, expected);
                 if matches!(operand_ty, Ty::Never | Ty::Error) {
                     operand_ty

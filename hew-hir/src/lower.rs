@@ -35390,10 +35390,11 @@ impl Widget {
         assert!(
             matches!(
                 &init.ty,
-                ResolvedTy::Named { builtin: Some(BuiltinType::ActorHandle), args, .. }
-                    if args == &[ResolvedTy::named_user("Worker", Vec::new())]
+                ResolvedTy::Named { builtin: Some(BuiltinType::ActorHandle), name, args, .. }
+                    if name == "Worker" && args.is_empty()
             ),
-            "spawn must retain the exact builtin PID and authored actor type: {:?}",
+            "an actor is the type of its handle: spawn must carry the actor's own \
+             name under the handle discriminator, not a wrapper argument: {:?}",
             init.ty
         );
     }

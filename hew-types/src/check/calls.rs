@@ -2242,6 +2242,23 @@ impl Checker {
             {
                 self.mark_module_owner_bindings_used(&module);
             }
+            // `Node.register` hands the actor's own handle to the node
+            // registry; codegen calls `hew_actor_pid` on it. An actor is the
+            // type of its handle and no wrapper type names "any actor", so the
+            // registered signature carries a free variable for the operand and
+            // the operand is proved here against the checked fact instead.
+            // Checked before signature application and without returning, so a
+            // refused operand still leaves the call its published rewrite and
+            // runtime target.
+            if resolved_fn_name == "Node::register" && args.len() == 2 {
+                let (handle_expr, handle_span) = args[1].expr();
+                let handle_ty = self.synthesize(handle_expr, handle_span);
+                let resolved = self
+                    .subst
+                    .resolve(&handle_ty)
+                    .materialize_literal_defaults();
+                self.require_actor_handle_argument(&resolved, "Node.register", handle_span);
+            }
             let assoc_bindings = self
                 .fn_type_param_assoc_bindings
                 .get(&resolved_fn_name)

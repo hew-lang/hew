@@ -1186,9 +1186,13 @@ mod tests {
     }
 
     #[test]
-    fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
-        // Completing on an actor handle surfaces the actor handle's own impl
-        // methods and the actor's declared receive handlers.
+    fn dot_completions_for_actor_handle_surface_its_receive_handlers() {
+        // An actor is the type of its handle, so a dot on a handle offers the
+        // actor's declared receive handlers. There is no handle wrapper with
+        // its own impl block any more: `send` was a method on the retired
+        // `LocalPid<T>` and the checker refuses `.send` on a handle whose actor
+        // declares no `receive fn send`, so offering it would teach a call that
+        // does not compile. Internal state fields stay hidden.
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1230,8 +1234,9 @@ mod tests {
         );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(
-            labels.contains(&"send"),
-            "expected `send` in actor-handle completions, got: {labels:?}"
+            !labels.contains(&"send"),
+            "`send` is not a method on an actor handle; delivery is by handler \
+             name, got: {labels:?}"
         );
         let removed_method = ["to_remote", "_via"].concat();
         assert!(

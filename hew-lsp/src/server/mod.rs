@@ -1167,9 +1167,10 @@ mod tests {
             labels.contains(&"collect"),
             "expected method 'collect' in completions, got: {labels:?}"
         );
+        // `lines`, `chunks` and `take` are stream methods on the final path.
         assert!(
-            !labels.contains(&"lines"),
-            "method 'lines' should not appear in completions, got: {labels:?}"
+            labels.contains(&"lines"),
+            "expected method 'lines' in completions, got: {labels:?}"
         );
         let recv_item = items
             .iter()

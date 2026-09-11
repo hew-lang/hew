@@ -1,0 +1,12 @@
+[[case]]
+id = "resource-missing-close"
+suites = ["acceptance"]
+kind = "check"
+intent = "A `#[resource]` type with no inherent `close` reports exactly one ResourceMissingClose diagnostic, not a follow-on CheckerBoundaryViolation."
+source = "cases/resource-missing-close.hew"
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+code = "ResourceMissingClose"
+line = 1
+column = 1

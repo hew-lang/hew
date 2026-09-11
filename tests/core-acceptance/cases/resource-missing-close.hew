@@ -1,0 +1,9 @@
+#[resource]
+type Token {
+    id: i64,
+}
+
+fn main() {
+    let t = Token { id: 1 };
+    println(f"{t.id}");
+}

@@ -6132,6 +6132,7 @@ pub fn lower_program_with_mono_cap(
     admit_resource_record_lifecycles(
         &items,
         &ctx.identity,
+        &ctx.resource_close_discipline_failures,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
@@ -6185,6 +6186,7 @@ fn impl_receiver_is(
 fn admit_resource_record_lifecycles(
     items: &[HirItem],
     identity: &hew_types::IdentityView,
+    resource_close_discipline_failures: &HashSet<hew_types::DefId>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -6192,7 +6194,8 @@ fn admit_resource_record_lifecycles(
         HirItem::TypeDecl(decl)
             if !decl.is_opaque
                 && decl.marker == ResourceMarker::Resource
-                && decl.kind == HirTypeDeclKind::Struct =>
+                && decl.kind == HirTypeDeclKind::Struct
+                && !resource_close_discipline_failures.contains(&decl.declaration) =>
         {
             Some(decl)
         }
@@ -7642,6 +7645,16 @@ struct LowerCtx {
     /// so `LinearNoConsumingMethods` only fires when NEITHER a type-body nor a
     /// sibling-inherent consuming method exists.
     impl_consuming_methods: HashSet<String>,
+    /// Resource declarations for which `check_resource_close_discipline`
+    /// already pushed a user-facing close-discipline diagnostic
+    /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
+    /// `ResourceCloseSourceUnsupported`). `admit_resource_record_lifecycles`
+    /// consults this set so it never re-derives the same missing-or-invalid
+    /// close fact as a `CheckerBoundaryViolation`: that diagnostic means an
+    /// HIR-internal invariant broke on a program this pass already believes
+    /// is sound, and a declaration already reported here is known unsound,
+    /// not an invariant violation.
+    resource_close_discipline_failures: HashSet<hew_types::DefId>,
     diagnostics: Vec<HirDiagnostic>,
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
@@ -8500,6 +8513,7 @@ impl LowerCtx {
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
+            resource_close_discipline_failures: HashSet::new(),
             diagnostics: Vec::new(),
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.identity`; HIR must never
@@ -14448,12 +14462,19 @@ impl LowerCtx {
     ///
     ///   3. Otherwise no `close` is reachable from any surface;
     ///      emit `ResourceMissingClose` as before.
-    fn check_resource_close_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+    fn check_resource_close_discipline(
+        &mut self,
+        decl: &TypeDecl,
+        span: &Span,
+        declaration: &hew_types::DefId,
+    ) {
         let inline_close = decl
             .body
             .iter()
             .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == "close"));
         if inline_close {
+            self.resource_close_discipline_failures
+                .insert(declaration.clone());
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceCloseSourceUnsupported {
                     name: decl.name.clone(),
@@ -14471,6 +14492,8 @@ impl LowerCtx {
             if !sig.return_ty_unit {
                 let display = sig.return_ty_display.clone();
                 let decl_span = sig.decl_span.clone();
+                self.resource_close_discipline_failures
+                    .insert(declaration.clone());
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ResourceCloseMustReturnUnit {
                         name: decl.name.clone(),
@@ -14489,6 +14512,8 @@ impl LowerCtx {
             }
             return;
         }
+        self.resource_close_discipline_failures
+            .insert(declaration.clone());
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::ResourceMissingClose {
                 name: decl.name.clone(),
@@ -14582,7 +14607,7 @@ impl LowerCtx {
 
         match decl.resource_marker {
             AstResourceMarker::Resource => {
-                self.check_resource_close_discipline(decl, &span);
+                self.check_resource_close_discipline(decl, &span, &declaration);
             }
             AstResourceMarker::Linear => {
                 self.check_linear_consume_discipline(decl, &span);
@@ -34894,6 +34919,7 @@ impl Widget {
         admit_resource_record_lifecycles(
             &items,
             &hew_types::IdentityView::default(),
+            &HashSet::new(),
             &mut table,
             &mut diagnostics,
         );

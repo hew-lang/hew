@@ -757,7 +757,7 @@ fn classify(
             // the actor, so its drop frees nothing.
             | BuiltinType::ActorHandle
             // A lambda actor's handle is a pid under another spelling, and
-            // owns the actor no more than `LocalPid` does.
+            // owns the actor no more than `ActorHandle` does.
             | BuiltinType::ActorFn
             | BuiltinType::HewActor => bits,
             // Enums whose class is the join over their payload arguments.

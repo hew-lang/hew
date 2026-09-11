@@ -491,7 +491,7 @@ pub unsafe extern "C" fn hew_vec_new_f32() -> *mut HewVec {
     unsafe { hew_vec_new_with_elem_size(4) }
 }
 
-/// Create a new `HewVec` for pointer-sized elements (e.g. `LocalPid<A>`, handles).
+/// Create a new `HewVec` for pointer-sized elements (e.g. actor handles).
 ///
 /// # Safety
 ///

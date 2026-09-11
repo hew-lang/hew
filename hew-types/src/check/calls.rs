@@ -1918,7 +1918,7 @@ impl Checker {
                 let resolved = self.subst.resolve(&actor_ty);
                 // Supervisor close uses the tree's terminal contract, which
                 // tears down every child before returning.
-                if let Some(Ty::Named { name, .. }) = resolved.as_actor_handle() {
+                if let Some(Ty::Named { name, .. }) = resolved.as_local_actor_ref() {
                     if self.supervisor_children.contains_key(name) {
                         if func_name == "close" {
                             self.record_direct_call_target(
@@ -2003,9 +2003,9 @@ impl Checker {
                 return self.make_vec_type(elem, span);
             }
             // `link`/`unlink` of a `RemotePid<T>` → a targeted "use link_remote"
-            // diagnostic. The local `link(LocalPid<T>)` form stays on the generic
+            // diagnostic. The local `link(<actor handle>)` form stays on the generic
             // `fn_sigs` path below; a `link`/`unlink` of a remote pid would
-            // otherwise surface as an opaque LocalPid-vs-RemotePid type mismatch.
+            // otherwise surface as an opaque actor-handle-vs-RemotePid type mismatch.
             // The cross-node link surface is `link_remote(pid, policy)` — it
             // carries a `PartitionPolicy` the bare `link` cannot express — so name
             // it explicitly here rather than letting the mismatch stand.
@@ -2032,8 +2032,8 @@ impl Checker {
                 // path, which applies the builtin's own result type.
             }
             // Cross-node monitor: `monitor(RemotePid<T>)`. The local
-            // `monitor(LocalPid<T>)` form stays on the generic `fn_sigs` path
-            // below (registered with a `LocalPid` receiver). When the argument
+            // `monitor(<actor handle>)` form stays on the generic `fn_sigs` path
+            // below (registered with an actor-handle receiver). When the argument
             // resolves to a `RemotePid<T>`, accept it here and return
             // `Result<MonitorRef, MonitorError>` — remote setup can fail before
             // a registration exists, so it must not manufacture a zero-valued
@@ -2077,7 +2077,7 @@ impl Checker {
                     name: sup_name,
                     args: sup_args,
                     ..
-                }) = sup_ty_resolved.as_actor_handle()
+                }) = sup_ty_resolved.as_local_actor_ref()
                 {
                     if let Some(sup_children) = self.supervisor_children.get(sup_name) {
                         // `supervisor_child` builtin indexes into the static slot space.
@@ -2394,7 +2394,7 @@ impl Checker {
 
             let func_ty = binding.ty.clone();
             // Explicit fail-closed gate: a regular fn-closure must not capture a
-            // lambda-actor handle (`LambdaPid<M,R>`) and call it with call syntax.
+            // lambda-actor handle (`actor(M) -> R`) and call it with call syntax.
             //
             // Authority: checker (this site). MIR has a defence-in-depth guard at
             // `materialize_closure_env` that names this site as authoritative. The
@@ -2632,10 +2632,10 @@ impl Checker {
                 self.check_arity(args, 0, "this function", span);
                 Ty::Unit
             }
-            // LambdaPid<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
+            // actor(Msg) -> Reply: lambda-actor handle — call-syntax dispatch.
             //
-            // tell-shaped: `LambdaPid<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
-            // ask-shaped:  `LambdaPid<Msg, R>`  — `handle(msg)` returns `Result<R, ActorError>`
+            // tell-shaped: `actor(Msg) -> ()` — `handle(msg)` returns `Result<(), SendError>`
+            // ask-shaped:  `actor(Msg) -> R`  — `handle(msg)` returns `Result<R, ActorError>`
             //
             // Exactly one argument required (the message). The message type must match
             // the handle's message type (M). The message must be Send (crosses actor boundary).
@@ -2663,7 +2663,7 @@ impl Checker {
                     args: type_args, ..
                 } = &target
                 else {
-                    unreachable!("a lambda view target is a `LambdaPid<M, R>`")
+                    unreachable!("a lambda view target is an `actor(M) -> R` handle")
                 };
                 let type_args = type_args.clone();
                 self.check_lambda_actor_call(
@@ -2716,7 +2716,7 @@ impl Checker {
         let msg_ty = type_args[0].clone();
         let reply_ty = type_args[1].clone();
         // A multi-param lambda actor carries a Tuple message type
-        // (`actor |a: i64, b: string| { .. }` -> `LambdaPid<(i64, string), R>`).
+        // (`actor |a: i64, b: string| { .. }` -> `actor((i64, string)) -> R`).
         // Its call surface is the N-arg form `handle(a, b)`: each call
         // argument checks against its tuple component and each crosses
         // the actor boundary independently (per-arg Send enforcement).

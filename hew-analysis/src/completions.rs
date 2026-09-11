@@ -1899,7 +1899,7 @@ impl Box {
 
     #[test]
     fn actor_handle_dot_completions_include_receive_handler_and_exclude_internal_fields() {
-        // Dot-completing on a `LocalPid<Counter>` handle must offer the actor's
+        // Dot-completing on a `Counter` actor handle must offer the actor's
         // declared receive handler (`increment`) and must NOT leak the actor's
         // internal struct fields (`count`).
         //

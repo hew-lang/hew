@@ -1844,7 +1844,7 @@ impl Checker {
         // Active-mode transport `attach(handler)` methods rewrite to
         // callee-name-dispatch symbols intercepted by the LLVM backend. The
         // backend resolves the concrete actor type from the `handler` arg's
-        // recorded `LocalPid<Actor>` (the structural handler coercion
+        // recorded actor-handle type (the structural handler coercion
         // deliberately does not erase that recorded type), synthesises each
         // transport protocol's handler `msg_id`s, and emits the real four-arg
         // runtime attach ABI. The source impl bodies are stubs, so these
@@ -2213,9 +2213,9 @@ impl Checker {
     /// (`bank`), whereas the checker registers the actor under its exact source
     /// owner (`hew.bank.Account`, keyed off `current_module`). Left raw, the
     /// alias-prefixed string never matches the canonical `fn_sigs` /
-    /// `actor_init_params` / `type_defs` keys, so a `LocalPid<bank.Account>`
-    /// finds no `receive fn` and every wall keyed on the actor identity silently
-    /// skips.
+    /// `actor_init_params` / `type_defs` keys, so `bank.Account`'s own
+    /// actor-handle type finds no `receive fn` and every wall keyed on the
+    /// actor identity silently skips.
     ///
     /// Resolve dotted module bindings and bare named/aliased import bindings
     /// through the same lexical facts ordinary type resolution consumes. A
@@ -4272,7 +4272,7 @@ impl Checker {
         }
     }
 
-    /// Type-check a method call on `LambdaPid<M, R>` — the lambda-actor handle.
+    /// Type-check a method call on `actor(M) -> R` — the lambda-actor handle.
     ///
     /// Wired methods (the actor surface, NOT the channel surface):
     ///   - `.send(msg: M)` → `Result<(), SendError>` (tell-shaped, R = ()) or
@@ -4296,7 +4296,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        // Extract M and R from LambdaPid<M, R>; fabricate fresh vars if malformed.
+        // Extract M and R from the `actor(M) -> R` handle; fabricate fresh vars if malformed.
         let (m_ty, _r_ty) = if let [m, r] = type_args {
             (m.clone(), r.clone())
         } else {
@@ -4307,7 +4307,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "internal error: LambdaPid type has wrong arity".to_string(),
+                "internal error: actor(M) -> R handle type has wrong arity".to_string(),
             );
             return Ty::Error;
         };
@@ -4319,7 +4319,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid.send expects one argument (the message), but {} were supplied",
+                            "`send` on an actor handle expects one argument (the message), but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4349,13 +4349,13 @@ impl Checker {
             "close" => {
                 // No arguments expected. Synthesize any supplied args for
                 // recovery diagnostics, but do not accept them: MIR lowers only
-                // the receiver for LambdaPid::close.
+                // the receiver for the handle's close.
                 if !args.is_empty() {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid.close expects no arguments, but {} were supplied",
+                            "`close` on an actor handle expects no arguments, but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4371,7 +4371,7 @@ impl Checker {
                     crate::actor_delivery::ActorDeliveryCall::Close,
                 );
                 self.record_submission_suspension(span, true);
-                // Consuming: the LambdaPid<M, R> binding is moved.
+                // Consuming: the actor(M) -> R handle binding is moved.
                 self.method_call_consumes_receiver
                     .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
@@ -5147,7 +5147,7 @@ impl Checker {
     /// and `string` elements unconditionally, and pointer / layout-descriptor
     /// elements **only when the element is `Copy`**. The `Copy` gate is what
     /// makes the pointer and layout arms safe: it admits identity handles
-    /// (`LocalPid`) and bit-copy value records, while deferring
+    /// (actor handles) and bit-copy value records, while deferring
     /// every shape with an ownership contract — owned heap-handles, non-`Copy`
     /// records, closures (each owns a captured environment), and nested
     /// collections (each owns a backing store). Those would alias an owner
@@ -8176,7 +8176,7 @@ impl Checker {
             // Local actor-reference methods first check the concrete reference
             // type's own impl, then fall through to actor receive-fn dispatch.
             //
-            // `ChildRef<T>` and `LocalPid<T>` are distinct value representations;
+            // `ChildRef<T>` and an actor handle are distinct value representations;
             // their own methods are registered under their respective nominal
             // owners. Named receive handlers share the local dispatch path.
             (resolved, _) if resolved.as_local_actor_ref().is_some() => {
@@ -8204,7 +8204,7 @@ impl Checker {
                 } else {
                     false
                 };
-                // A concrete `LocalPid<T>.send(msg)` with no user
+                // A concrete actor-handle `.send(msg)` call with no user
                 // `receive fn send` handler has no lowerable local-
                 // mailbox delivery path (#2367). Declaring `impl
                 // ActorMsg for T` records a message-envelope binding but
@@ -8246,7 +8246,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                // Try LocalPid's own methods first.
+                // Try the actor handle's own methods first.
                 if !has_user_send_handler {
                     if let Ty::Named {
                         args: receiver_args,
@@ -8290,9 +8290,9 @@ impl Checker {
                     ..
                 } = inner
                 {
-                    // An annotation-derived `LocalPid<Account>` carries the
-                    // bare inner name; resolve it to the registered actor
-                    // identity (current module's actor, root actor, or a
+                    // An annotation-derived `Account` actor-handle type carries
+                    // the actor's bare name directly; resolve it to the
+                    // registered actor identity (current module's actor, root actor, or a
                     // unique module export) before keying `fn_sigs`. Spawn-
                     // derived handles already carry the dotted identity.
                     let actor_identity = if self
@@ -8533,7 +8533,7 @@ impl Checker {
                 },
                 _,
             ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
-            // LambdaPid<M, R>: lambda-actor handle.
+            // actor(M) -> R: lambda-actor handle.
             //
             // Methods: .send(msg) / .close()
             //
@@ -9148,7 +9148,7 @@ impl Checker {
                     // `fn_sigs` keyed `{Actor}::{method}`, but a value of bare
                     // actor type `W` is still an actor handle, not a struct: the
                     // call must cross the mailbox boundary exactly like the
-                    // `LocalPid<W>` arm above. Route it through
+                    // actor-handle arm above. Route it through
                     // the same send/ask dispatch machinery instead of falling
                     // through to the synchronous `W::method(self, ...)`
                     // `RewriteToFunction` path (which HIR cannot lower — there is

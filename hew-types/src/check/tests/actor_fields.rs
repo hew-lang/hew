@@ -172,7 +172,7 @@ actor Counter {
     );
 }
 
-// ── LocalPid<T> dispatch rejects plain (non-receive) actor methods ─────────
+// ── actor-handle dispatch rejects plain (non-receive) actor methods ───────
 //
 // `pid.method(...)` may only reach a `receive fn` handler — MIR's actor
 // handler layout is built from `receive_fns` only, so a plain `fn` has no
@@ -242,7 +242,7 @@ fn main() {
     assert_eq!(
         undefined_method.len(),
         1,
-        "a plain `fn send` must not satisfy LocalPid's own `send`; got: {:#?}",
+        "a plain `fn send` must not satisfy the actor handle's own `send`; got: {:#?}",
         output.errors
     );
     let msg = &undefined_method[0].message;
@@ -272,11 +272,11 @@ fn pid_call_to_receive_fn_still_dispatches() {
 #[test]
 fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     // Bare-name self-dispatch (`bump()` with no receiver) never reaches the
-    // `LocalPid<T>` match arm — it resolves through call-expression lookup
+    // actor-handle match arm — it resolves through call-expression lookup
     // (`hew-types/src/check/calls.rs`), a distinct path, which since #3285
     // resolves it to the enclosing actor's own method. This test pins the
     // regression boundary for the pid-dispatch guard: the guard in the
-    // `LocalPid<T>` arm must not additionally fire `UndefinedMethod` on a
+    // actor-handle arm must not additionally fire `UndefinedMethod` on a
     // fixture it was never meant to see.
     let output = check_source(
         r"
@@ -296,7 +296,7 @@ actor Counter {
             .errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
-        "bare self-dispatch never reaches the LocalPid<T> arm, so the new \
+        "bare self-dispatch never reaches the actor-handle arm, so the new \
          pid-dispatch guard must not fire UndefinedMethod here; got: {:#?}",
         output.errors
     );

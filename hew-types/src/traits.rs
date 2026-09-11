@@ -587,7 +587,7 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ChildRef`/`LocalPid`/`RemotePid` are always `Send` and `Frozen`
+    /// - `ChildRef`/`ActorHandle`/`RemotePid` are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
@@ -809,7 +809,7 @@ impl TraitRegistry {
                 _ => false,
             },
 
-            // LambdaPid<M, R>: the user-visible lambda-actor handle.
+            // actor(M) -> R: the user-visible lambda-actor handle.
             // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
             // the actor boundary).
             // NOT Clone: a lambda actor handle is not split or duplicated by
@@ -941,7 +941,7 @@ impl TraitRegistry {
                 // All markers derive structurally from type arguments — same rule as
                 // `implements_serializable_inner` at line ~473 which already had this arm.
                 // Resource uses ANY (not all): if any type argument is a built-in resource
-                // handle (Duplex, LambdaPid, CancellationToken), the wrapper MAY hold one and
+                // handle (Duplex, ActorFn, CancellationToken), the wrapper MAY hold one and
                 // must be treated as a resource too. Note: user `#[resource]` types (e.g.
                 // `#[resource] type Conn { fd: i64 }`) return Resource=false from their own
                 // structural field derivation (fields like i64 are not Resource), so

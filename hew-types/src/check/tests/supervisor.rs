@@ -321,11 +321,11 @@ fn supervisor_wired_cycle_reports_distinct_kind() {
     let output = check_source(
         r"
         actor ActorA {
-            init(dep: LocalPid<ActorB>) {}
+            init(dep: ActorB) {}
             receive fn ping() {}
         }
         actor ActorB {
-            init(dep: LocalPid<ActorA>) {}
+            init(dep: ActorA) {}
             receive fn ping() {}
         }
 

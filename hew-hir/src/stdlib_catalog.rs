@@ -85,11 +85,11 @@ pub enum BuiltinLinkage {
     CalleeNameDispatchOnly,
     /// `Node::register<T>(name, pid)` — register an actor by bare PID.
     ///
-    /// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a `u64` at
+    /// Per registry R81 (2026-05-23), an actor handle lowers to a `u64` at
     /// the C-ABI boundary, not a `*mut HewActor`. Codegen must therefore
     /// synthesise a two-step call sequence:
     /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
-    ///    from the `LocalPid<T>` alloca (which is a `ptr` in LLVM).
+    ///    from the actor-handle alloca (which is a `ptr` in LLVM).
     /// 2. `hew_node_api_register_by_pid_string(name: ptr, pid: u64) -> i32` — the
     ///    actual C-ABI registration call.
     ///
@@ -1187,7 +1187,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_push_str",
         },
     ),
-    // Pointer-shaped element family (`Vec<LocalPid<T>>`): the local actor-handle
+    // Pointer-shaped element family (a `Vec` of actor handles): the actor-handle
     // builtin lowers to a single pointer-sized word (`*mut HewActor`) and the
     // checker classifies it via
     // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
@@ -2523,13 +2523,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::U64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+    // `Node::register<T>(name: String, actor: T) -> i32`
     //
-    // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
-    // boundary.  The catalog param list `[String, U64]` is a placeholder
-    // for HIR/MIR name-resolution purposes — codegen handles this linkage
-    // variant specially and does not use the generic `declare_catalog_ffi`
-    // path (which would construct the wrong LLVM function type).
+    // T is an actor type; an actor is the type of its own handle, so passing
+    // `actor` here passes that handle. Per R81, an actor handle lowers to a
+    // bare `u64` PID at the C-ABI boundary. The catalog param list
+    // `[String, U64]` is a placeholder for HIR/MIR name-resolution purposes —
+    // codegen handles this linkage variant specially and does not use the
+    // generic `declare_catalog_ffi` path (which would construct the wrong
+    // LLVM function type).
     direct(
         "Node::register",
         BuiltinClass::ClassB,
@@ -2663,8 +2665,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // (see hew-types::check::methods); HIR's direct-call lowering produces a
     // `Terminator::Call("hew_tcp_attach_local", [conn, handler])`. Codegen
     // intercepts that call by name (`emit_tcp_attach_local_call`): it resolves
-    // the concrete actor type from the `handler` arg's recorded
-    // `LocalPid<Actor>` type, looks up the actor's `on_data` / `on_close`
+    // the concrete actor type from the `handler` arg's recorded actor-handle
+    // type, looks up the actor's `on_data` / `on_close`
     // handler `msg_id`s in its `ActorLayout`, and emits the real runtime ABI
     // `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id)`.
     //

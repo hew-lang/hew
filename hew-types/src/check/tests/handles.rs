@@ -1195,7 +1195,7 @@ mod opaque_receive_fn_param_rules {
             }
 
             actor Server {
-                receive fn register(worker: LocalPid<Worker>) {}
+                receive fn register(worker: Worker) {}
                 receive fn register_remote(worker: RemotePid<Worker>) {}
             }
             ",
@@ -1545,14 +1545,15 @@ actor Sink {
 
     #[test]
     fn lambda_actor_handle_shared_by_two_spawns_is_rejected() {
-        // A `LambdaPid` is a refcounted wrapper, not an address: the runtime
+        // An anonymous actor's handle (`actor(M) -> R`) is a refcounted wrapper,
+        // not an address: the runtime
         // exposes an explicit clone that allocates a distinct owning wrapper
         // precisely because copying the address is unsafe. Sharing one wrapper
         // between two actor states released it twice and crashed (SIGSEGV).
         let output = check_source(
             r"
             actor Holder {
-                let printer: LambdaPid<i64, ()>,
+                let printer: actor(i64),
                 receive fn go(n: i64) {
                     let _ = printer.send(n);
                 }
@@ -1630,7 +1631,7 @@ actor Sink {
             }
 
             actor Registry {
-                receive fn register(worker: LocalPid<Leaf>) {}
+                receive fn register(worker: Leaf) {}
             }
 
             fn probe() {
@@ -1716,7 +1717,7 @@ mod actor_self_handle {
             .expect("the `self` span must carry a checker type");
         assert_eq!(
             handle_ty.user_facing().to_string(),
-            "LocalPid<Counter>",
+            "Counter",
             "bare `self` must synthesize the actor handle"
         );
     }

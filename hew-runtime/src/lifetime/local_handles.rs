@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crate::lifetime::PoisonSafe;
 use crate::runtime_id::RuntimeId;
 
-/// One-word semantic identity carried by an in-language `LocalPid<T>`.
+/// One-word semantic identity carried by an in-language actor handle.
 ///
 /// Zero is reserved as the invalid/`None` niche. Production identities are
 /// allocated from one process-global counter and are never reset or reused.
@@ -31,7 +31,7 @@ use crate::runtime_id::RuntimeId;
 pub struct HewLocalPidId(usize);
 
 impl HewLocalPidId {
-    /// Invalid handle value and the scalar niche used by `Option<LocalPid<T>>`.
+    /// Invalid handle value and the scalar niche used by an `Option`-wrapped actor handle.
     pub const INVALID: Self = Self(0);
 
     /// Return the target-word representation used by the runtime ABI.

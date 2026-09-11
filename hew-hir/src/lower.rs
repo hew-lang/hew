@@ -741,7 +741,7 @@ const SYNTHETIC_LINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 9);
 const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `unlink` builtin.
 /// Mirrors `SYNTHETIC_LINK_ITEM` / `SYNTHETIC_MONITOR_ITEM`; the checker
-/// (`registration.rs`) registers `unlink` as a 1-arg `LocalPid<T> → Unit`
+/// (`registration.rs`) registers `unlink` as a 1-arg actor-handle → `Unit`
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
@@ -5559,7 +5559,7 @@ pub fn lower_program_with_mono_cap(
                                 //    not resolve at the MIR boundary — a
                                 //    cross-module dotted type (`fs.IoError`) or a
                                 //    user trait/type used as a generic argument
-                                //    (`LocalPid<WebSocketHandler>`). Only
+                                //    (an actor handle such as `WebSocketHandler`). Only
                                 //    primitives/builtins and the impl's own self
                                 //    type are admitted.
                                 //
@@ -5646,7 +5646,7 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Emit `HirItem::Actor` entries for imported pub actors
+                        // Emit `HirItem::Actor` entries for imported actors
                         // so MIR's actor-layout pass (which walks `module.items`)
                         // builds a layout keyed by the actor's bare name. Without
                         // it, `spawn module.Actor(...)` and the subsequent
@@ -5658,7 +5658,11 @@ pub fn lower_program_with_mono_cap(
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
-                        Item::Actor(actor) if actor.visibility.is_pub() => {
+                        // Visibility governs what a program may name, not what
+                        // the module needs to run: a module's own non-pub actor
+                        // is still spawned by its pub functions, so it needs its
+                        // layout here.
+                        Item::Actor(actor) => {
                             // Fail-closed target gate: actors require the actor
                             // runtime ABI (x86_64/aarch64), same as the root-item
                             // actor arm in the source-order emit pass.
@@ -5730,7 +5734,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Record(_)
-                        | Item::Actor(_)
                         | Item::Machine(_)
                         | Item::Supervisor(_) => {}
                     }
@@ -7921,12 +7924,13 @@ struct LowerCtx {
     /// Names of every `TypeDefKind::Actor` declaration in the program, lifted
     /// from `TypeCheckOutput.type_defs`. Consumed by `lower_actor` to recognise
     /// an actor-state field whose annotated type is a bare actor name (e.g.
-    /// `let out: W;` where `W` is an actor): such a field holds an actor handle
-    /// (a `LocalPid`), never the actor's state by value, so its lowered type is
-    /// canonicalised to `LocalPid<W>`. That canonical form is the one the MIR
-    /// state-clone classifier and codegen already lower (bit-copyable Pid),
-    /// matching `spawn W`'s `LocalPid<W>` result. Without it the bare `W` field
-    /// reaches MIR as an unresolvable nested user record and fails closed.
+    /// `let out: W;` where `W` is an actor): such a field holds an actor
+    /// handle, never the actor's state by value, so its lowered type is
+    /// canonicalised to `W`'s own actor-handle type. That canonical form is
+    /// the one the MIR state-clone classifier and codegen already lower
+    /// (bit-copyable pid), matching `spawn W`'s handle result. Without it
+    /// the bare `W` field reaches MIR as an unresolvable nested user record
+    /// and fails closed.
     actor_type_names: HashSet<String>,
     /// Distinct concrete instantiations of generic top-level user fns,
     /// accumulated as `Expr::Call` lowering walks the program. Drained
@@ -8373,7 +8377,7 @@ fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering>
 /// name, and only for `builtin: None` types — a user `record Sender` keeps
 /// ordinary copy treatment while the real builtin handle transfers.
 ///
-/// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+/// Actor references (`ActorHandle`, `BoxedActor`, `ActorFn`, `MonitorRef`)
 /// carry the `Resource` MARKER for drop elaboration but are shareable
 /// addresses; sending a pid must not consume the sender's own handle, so they
 /// are excluded on both sides.
@@ -8999,7 +9003,7 @@ impl LowerCtx {
     /// before any function body is lowered, so a `Resource` / `Linear` marker
     /// is always available here.
     ///
-    /// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+    /// Actor references (`ActorHandle`, `BoxedActor`, `ActorFn`, `MonitorRef`)
     /// carry the `Resource` MARKER for drop elaboration but are shareable
     /// addresses, so they are excluded on both sides — sending a pid must not
     /// consume the sender's own handle.
@@ -10013,7 +10017,7 @@ fn imported_impl_signature_type_is_safe(
             // a literal `Self` receiver/return normalises to that same self
             // type, so it is admitted on identical grounds. Scalar primitives
             // (`string`, `i64`, `bool`, …) and compound builtins (`Vec`,
-            // `Option`, `LocalPid`, …) are resolvable by name.
+            // `Option`, `ActorHandle`, …) are resolvable by name.
             let is_primitive = hew_types::ty::PRIMITIVE_ALIASES
                 .iter()
                 .any(|(canonical, aliases)| *canonical == name || aliases.contains(&name.as_str()));
@@ -10585,7 +10589,7 @@ impl LowerCtx {
 
     /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
     /// LinkError>` builtin. Unlike `link`/`monitor`/`unlink` (1-arg
-    /// `LocalPid`, self synthesized), `link_remote` is 2-arg: the explicit remote
+    /// actor handle, self synthesized), `link_remote` is 2-arg: the explicit remote
     /// target and the `PartitionPolicy`. The linking subject (self) is resolved
     /// inside the runtime. The checker records the call-result type at the call
     /// site, so `return_ty` is a placeholder; the params carry arity. Resolves to
@@ -10639,10 +10643,12 @@ impl LowerCtx {
         // stdlib catalog IDs and the source-item sequence) — nothing
         // resolves through it anymore.
         //
-        // `supervisor_stop(sup: LocalPid<S>) -> ()`.  The param type is a
-        // `LocalPid<S>` (named "LocalPid" in resolved form), which is what
-        // the checker registers.  The exact inner type does not matter here
-        // because MIR passes the sup place opaquely.
+        // `supervisor_stop(sup: S) -> ()`, where `S` is an actor type whose
+        // own type is the handle. The param's resolved form carries the
+        // internal name "LocalPid" (`BuiltinType::ActorHandle`'s
+        // `canonical_name()`), which is what the checker registers. The
+        // exact inner type does not matter here because MIR passes the sup
+        // place opaquely.
         self.fn_registry.insert(
             "supervisor_stop".to_string(),
             FnEntry {
@@ -10663,13 +10669,13 @@ impl LowerCtx {
         );
         // Actor `link(target)` / `monitor(target)` / `unlink(target)`
         // builtins.  The checker (`Checker::register_builtins`) registers
-        // them as **1-arg** `LocalPid<T>` — the linking/monitoring subject
+        // them as **1-arg** actor-handle — the linking/monitoring subject
         // is the implicit calling actor (`self`), matching Erlang/OTP
         // `link(Pid)` / `monitor(process, Pid)`.  They have no AST `fn`
         // item; `builtin_family` resolves them to `ResolvedRef::Builtin`,
         // and MIR's runtime-call producer synthesizes `hew_actor_self()`
         // as ABI arg0 with the user target as arg1.  The exact inner
-        // `LocalPid` arg matters only for arity; MIR passes the target
+        // actor-handle arg matters only for arity; MIR passes the target
         // place opaquely.
         for (name, id, family) in [
             ("link", SYNTHETIC_LINK_ITEM, RuntimeCallFamily::ActorLink),
@@ -14350,7 +14356,7 @@ impl LowerCtx {
             .filter(|(_, p)| !p.is_consume)
             .filter_map(|(index, p)| match &p.ty.0 {
                 TypeExpr::Named { name, .. } => {
-                    // Builtin affine handles (LocalPid/RemotePid/LambdaPid,
+                    // Builtin affine handles (ActorHandle/RemotePid/ActorFn,
                     // channel halves, CancellationToken, MonitorRef, ...) are
                     // runtime-managed pointer words: their drop is dispatched
                     // by the runtime on a coherent path, and their disposition
@@ -15022,10 +15028,11 @@ impl LowerCtx {
     /// Canonicalise an actor-state field's lowered type: a field annotated with
     /// a bare actor name (e.g. `let out: W;` where `W` is a `TypeDefKind::Actor`)
     /// holds an actor *handle*, never the actor by value — actors are reference
-    /// types and cannot be embedded inline. Wrap such a field in `LocalPid<W>`,
-    /// the same canonical handle representation `spawn W` produces, so the MIR
-    /// state-clone classifier and codegen lower it as a bit-copyable Pid instead
-    /// of failing closed on an unresolvable nested user record. Non-actor field
+    /// types and cannot be embedded inline. Canonicalise such a field to `W`'s
+    /// own actor-handle type, the same canonical handle representation
+    /// `spawn W` produces, so the MIR state-clone classifier and codegen
+    /// lower it as a bit-copyable pid instead of failing closed on an
+    /// unresolvable nested user record. Non-actor field
     /// types (records, enums, primitives, containers, real handle wrappers) are
     /// returned unchanged. Bare actor names nested inside containers/records are
     /// intentionally NOT rewritten here — that exotic shape stays fail-closed at
@@ -17635,9 +17642,10 @@ impl LowerCtx {
                                 },
                                 span.clone(),
                                 "`self` is the actor self-handle; its checker type must be \
-                                 `LocalPid<Self>`",
+                                 `Self`, the actor's own type",
                             ));
-                            return self.unsupported_expr(span, "`self` with non-LocalPid type");
+                            return self
+                                .unsupported_expr(span, "`self` with a non-actor-handle type");
                         }
                         Err(err) => {
                             self.diagnostics.push(HirDiagnostic::new(
@@ -19631,7 +19639,7 @@ impl LowerCtx {
         )
     }
 
-    /// Build the `LambdaPid<Msg, Reply>` `ResolvedTy` for an actor-lambda
+    /// Build the `actor(Msg) -> Reply` handle `ResolvedTy` for an actor-lambda
     /// from its parameter list and optional return-type annotation.
     /// Mirrors the forward-bind logic in `hew-types::check::statements`:
     /// zero params → Unit message; one param → that param's type;
@@ -20033,8 +20041,8 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         // Syntactic fallback only. The checker's spawn result type
-        // (`LocalPid<bank.Account>`) is the identity authority below; the
-        // dotted `{module}.{field}` spelling here mirrors the checker's
+        // (`bank.Account`'s own actor-handle type) is the identity authority
+        // below; the dotted `{module}.{field}` spelling here mirrors the checker's
         // qualified-spawn resolution for the diagnostic-recovery paths where
         // no expr_types entry exists.
         let actor_name = match &target.0 {
@@ -20143,8 +20151,8 @@ impl LowerCtx {
     /// classifies the strength: `id == current_actor_self.0` → Weak
     /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
     ///
-    /// The HIR `expr.ty` is the `LambdaPid<Msg, Reply>` handle type, whose
-    /// drop releases the runtime wrapper.
+    /// The HIR `expr.ty` is the `ActorFn` handle type (`actor(Msg) -> Reply`),
+    /// whose drop releases the runtime wrapper.
     fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
@@ -20205,7 +20213,7 @@ impl LowerCtx {
         captures: &[HirLambdaCapture],
         handle_ty: &ResolvedTy,
     ) {
-        // The handle carries the protocol: `LambdaPid<Msg, Reply>`.
+        // The handle carries the protocol: `actor(Msg) -> Reply`.
         let reply_ty = match handle_ty {
             ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
             _ => ResolvedTy::Unit,
@@ -23790,8 +23798,10 @@ impl LowerCtx {
                     _ => {
                         let resolved = self.resolve_named_type_ref(name, args);
                         // An actor is the type of its handle: a written actor
-                        // name in any position holds the actor.
-                        self.canonicalize_actor_ref_field_ty(resolved, None)
+                        // name in any position holds the actor, and a bare name
+                        // inside a module names that module's actor.
+                        let owner = self.current_module_name.clone();
+                        self.canonicalize_actor_ref_field_ty(resolved, owner.as_deref())
                     }
                 }
             }
@@ -35488,7 +35498,7 @@ impl Widget {
 
         #[test]
         fn non_owning_actor_references_are_not_transfers() {
-            // ChildRef, LocalPid, and the raw runtime word free nothing.
+            // ChildRef, the actor handle, and the raw runtime word free nothing.
             for (name, kind) in [
                 ("ChildRef", BuiltinType::ChildRef),
                 ("LocalPid", BuiltinType::ActorHandle),
@@ -36145,8 +36155,8 @@ impl Widget {
     //
     // Source shared by several tests below: two asks against the same actor
     // type. Both arm bodies return the bound name so the arm body types
-    // agree — `ActorError<E, M>` carries the source's `Message<LocalPid<_>,
-    // ..>` in its type, so arms asking different actor types would produce
+    // agree — `ActorError<E, M>` carries the source's actor-handle type
+    // inside `Message<_, ..>`, so arms asking different actor types would produce
     // distinct arm-body types and fail the select's own arm-unification
     // check; that is a real type distinction, not a scoping one, so both
     // arms ask the same actor here to isolate binding scoping from it.
@@ -37919,18 +37929,10 @@ impl Widget {
             .clone()
     }
 
-    /// The canonical `LocalPid<{qualified_actor_name}>` shape that
-    /// `canonicalize_actor_ref_field_ty` produces for a resolved actor field.
+    /// The canonical actor-handle shape an actor field resolves to: the actor's
+    /// own qualified name carrying the handle discriminator.
     fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: BuiltinType::ActorHandle.canonical_name().to_string(),
-            args: vec![ResolvedTy::named_user(
-                qualified_actor_name.to_string(),
-                Vec::new(),
-            )],
-            builtin: Some(BuiltinType::ActorHandle),
-            is_opaque: false,
-        }
+        ResolvedTy::named_builtin(qualified_actor_name, BuiltinType::ActorHandle, Vec::new())
     }
 
     /// Regression for the ambiguous-short-name case: two DIFFERENT modules

@@ -386,7 +386,7 @@ impl Checker {
             let ty = self.synthesize(&receiver.0, &receiver.1);
             self.subst.resolve(&ty)
         };
-        let actor_ty = match receiver_ty.as_actor_handle() {
+        let actor_ty = match receiver_ty.as_local_actor_ref() {
             Some(actor_ty) => self.subst.resolve(actor_ty),
             None => return None,
         };

@@ -1187,8 +1187,8 @@ mod tests {
 
     #[test]
     fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
-        // Completing on an actor handle surfaces LocalPid's own impl methods
-        // and the actor's declared receive handlers.
+        // Completing on an actor handle surfaces the actor handle's own impl
+        // methods and the actor's declared receive handlers.
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -6142,7 +6142,7 @@ machine Traffic {
     //  v05_generators                     | accepted                       | generator functions; LSP test passes
     //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
     //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
-    //  v05_is_operator                    | accepted                       | `is` operator on the accepted `LocalPid<Worker>` actor-handle value form (D340); the RHS type-pattern surfaces (resolver, semantic-token, completion) are asserted on an inline refused program, since no user declaration has an accepted `expr is Name` form (#3134)
+    //  v05_is_operator                    | accepted                       | `is` operator on the accepted `Worker` actor-handle value form (D340); the RHS type-pattern surfaces (resolver, semantic-token, completion) are asserted on an inline refused program, since no user declaration has an accepted `expr is Name` form (#3134)
     //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
     //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
     //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes
@@ -6587,7 +6587,7 @@ machine Traffic {
 
     /// An `is` whose RHS names a user declaration. No such program type-checks
     /// after #3134: the only identity-bearing user `TypeDef` is an actor, and
-    /// an actor's values are `LocalPid<T>` handles, so `handle is Actor` is a
+    /// an actor's values are actor handles, so `handle is Actor` is a
     /// type-pattern mismatch and every other declaration is a value type. The
     /// LSP still has to resolve the RHS as a type — jump-to-definition,
     /// semantic tokens and completion serve the buffer the user is typing,
@@ -6597,7 +6597,7 @@ machine Traffic {
     /// This source is inline rather than a `tests/fixtures/*.hew` file because
     /// the hew-corpus gate compiles every tracked `.hew` in the tree, and a
     /// refused program there would need a ratchet row it has not earned. The
-    /// accepted `LocalPid<Worker>` value form lives in the fixture instead.
+    /// accepted `Worker` actor-handle value form lives in the fixture instead.
     const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
          First,\n\
          Second,\n\
@@ -6617,7 +6617,7 @@ machine Traffic {
 
     #[test]
     fn v05_is_operator_value_form_fixture_is_accepted() {
-        // Negative control for the test below: the `LocalPid<Worker>` value
+        // Negative control for the test below: the `Worker` actor-handle value
         // form the fixture uses carries no hard type error, so the rejection
         // asserted there is about the enum operand and not about `is` itself.
         let source = include_str!("../../tests/fixtures/v05_is_operator.hew");

@@ -701,8 +701,8 @@ pub struct TypeCheckOutput {
     ///
     /// Keyed by the `SpanKey` of the field-access expression (e.g. the span of
     /// `app.cache` in `app.cache.query(req)`). Populated during type-checking
-    /// of field-access expressions whose object resolves to a `LocalPid<S>`
-    /// where `S` is a known supervisor type.
+    /// of field-access expressions whose object resolves to `S`'s own
+    /// actor-handle type, where `S` is a known supervisor type.
     ///
     /// The `index` field is the position of the child within its own slot space:
     /// - `Static` children index into `HewSupervisor.children[]` (0-based, source order).
@@ -2709,8 +2709,9 @@ pub(super) struct DeferredBoundCheck {
     pub(super) span: Span,
 }
 
-/// Result of resolving a bare actor reference (`spawn Account(...)`, a bare
-/// `LocalPid<Account>` inner name) against the local-first identity policy.
+/// Result of resolving a bare actor reference (`spawn Account(...)`, or the
+/// bare name carried by `Account`'s own actor-handle type) against the
+/// local-first identity policy.
 ///
 /// Produced by `Checker::resolve_bare_actor_identity`. `Resolved` carries the
 /// registered identity key — bare for root/flat actors, dotted
@@ -3142,6 +3143,10 @@ pub struct Checker {
     /// same nominal instantiation, but the reference site should emit one
     /// `BoundsNotSatisfied` diagnostic.
     pub(super) reported_type_def_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    /// Spans that already carry the retired-actor-handle-spelling refusal. A
+    /// signature is resolved more than once, and one written type earns one
+    /// diagnostic.
+    pub(super) reported_actor_handle_type_spans: HashSet<SpanKey>,
     /// `(trait_name, span_key)`: a `dyn Trait` annotation is resolved once
     /// during registration and again at its use, so the unknown-trait refusal
     /// reports each written spelling once.
@@ -3390,8 +3395,8 @@ pub struct Checker {
     /// imported `module_graph` modules are registered in a LATER pass where that
     /// module's own traits/types are not in the active `trait_defs` / `known_types`
     /// (those carry the root module's declarations) nor yet in the module-scoped
-    /// `local_*` sets. A `LocalPid<ConnectionHandler>` inside an imported
-    /// `std::net` would therefore false-positive against the per-pass tables.
+    /// `local_*` sets. A bare `ConnectionHandler` actor-handle type inside an
+    /// imported `std::net` would therefore false-positive against the per-pass tables.
     /// Consulting this program-wide set makes any declared nominal type resolve
     /// uniformly regardless of which pass is running. A genuinely undefined type
     /// (`Bogus`) is declared nowhere, so it is still caught; cross-module import
@@ -3588,7 +3593,7 @@ pub struct Checker {
     pub(super) place_write_depth: usize,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
-    /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an
+    /// `Actor`'s own actor-handle type → `ConnectionHandler`'s coercion can confirm an
     /// actor's `receive fn`s structurally satisfy a handler trait. Moved into
     /// `TypeCheckOutput::actor_protocol_descriptors` at the end of
     /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).
@@ -4011,6 +4016,7 @@ impl Checker {
             machine_const_params: HashMap::new(),
             reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
+            reported_actor_handle_type_spans: HashSet::new(),
             reported_unknown_dyn_traits: HashSet::new(),
             current_return_type: None,
             inferred_lambda_returns: None,

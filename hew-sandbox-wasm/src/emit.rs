@@ -1950,8 +1950,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 }
                 let object_ty = self.ty_for_expr(object);
                 // `supervisor.childName` resolves a running child actor handle.
-                // The supervisor handle is a `LocalPid<SupervisorName>`, so we
-                // detect it by the pid's type argument.
+                // We detect the supervisor handle by its type's first argument
+                // (see `supervisor_handle_arg`).
                 if self.supervisor_handle_arg(&object_ty).is_some() {
                     let supervisor_local = self.lower_expr(object)?;
                     let child_ty = self.ty_for_expr(expr);
@@ -4541,14 +4541,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
-    /// If `ty` is a pid handle whose type argument names a declared supervisor
-    /// (e.g. `LocalPid<WorkerPool>`), return that supervisor's name.
+    /// If `ty` names a declared supervisor (e.g. `WorkerPool`), return that
+    /// supervisor's name. A supervisor is the type of its handle, and a
+    /// `ChildRef` names it through its role parameter.
     fn supervisor_handle_arg(&self, ty: &Ty) -> Option<String> {
-        if let Ty::Named { args, .. } = ty {
-            if let Some(Ty::Named { name, .. }) = args.first() {
-                if self.package.supervisor_names.contains(name) {
-                    return Some(name.clone());
-                }
+        let named = ty.as_local_actor_ref().unwrap_or(ty);
+        if let Ty::Named { name, .. } = named {
+            if self.package.supervisor_names.contains(name) {
+                return Some(name.clone());
             }
         }
         None

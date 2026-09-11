@@ -2600,9 +2600,9 @@ fn is_initial_scalar(ty: &ResolvedTy) -> bool {
 fn is_initial_call_value(ty: &ResolvedTy) -> bool {
     crate::generator_parts(ty).is_some()
         || is_initial_scalar(ty)
-        // A lambda actor handle is an addressable pid like `LocalPid`: it has
-        // no source declaration to match against `module.actors`, so it names
-        // its own value contract here.
+        // A lambda actor handle is an addressable pid like any other actor
+        // handle: it has no source declaration to match against
+        // `module.actors`, so it names its own value contract here.
         || ty.is_builtin(hew_types::BuiltinType::ActorFn)
         || ty.is_builtin(hew_types::BuiltinType::NodeId)
         || ty.is_builtin(hew_types::BuiltinType::Location)

@@ -276,8 +276,8 @@ impl Checker {
     /// is not handler-style (it can never be satisfied by receive fns; the
     /// conservative empty-trait rule applies).
     ///
-    /// This gate is what keeps the `LocalPid<Actor>` → `LocalPid<Handler>`
-    /// coercion honest: for a handler trait, only the structural receive-fn
+    /// This gate is what keeps the `Actor`'s own actor-handle type →
+    /// `Handler`'s coercion honest: for a handler trait, only the structural receive-fn
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
     pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {

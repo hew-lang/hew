@@ -74,21 +74,13 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Bytes => Some(("bytes", &[])),
         Ty::CancellationToken => Some(("CancellationToken", &[])),
         Ty::Duration => Some(("duration", &[])),
-        // LocalPid<T> wraps an actor type T.
         // RemotePid<T> is intentionally NOT unwrapped here: its methods are
         // resolved against RemotePid itself, not T.
         //
-        // NOTE: `collect_method_sigs_for_receiver` handles LocalPid specially
-        // (collecting own handle methods + actor receive handlers) and does NOT
-        // call this helper for that type. This arm covers the single-method
-        // `lookup_method_sig` path used by the checker's fallback for actor
-        // receive-fn dispatch — it unwraps to T so e.g. `pid.increment(arg)`
-        // resolves against `Counter::increment` in fn_sigs.
-        Ty::Named {
-            builtin: Some(BuiltinType::ActorHandle),
-            args,
-            ..
-        } if args.len() == 1 => named_receiver_parts(&args[0]),
+        // An actor handle names the actor itself, so the single-method
+        // `lookup_method_sig` path the checker falls back to for receive-fn
+        // dispatch resolves `orders.order(arg)` against `Orders::order` in
+        // `fn_sigs` through the ordinary named arm below.
         Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }
@@ -252,7 +244,7 @@ pub fn lookup_type_def(type_defs: &HashMap<String, TypeDef>, type_name: &str) ->
 
 /// Look up the type definition for a named receiver.
 ///
-/// Returns `None` for `LocalPid<T>`: actor-handle types do not expose the
+/// Returns `None` for an actor handle: actor-handle types do not expose the
 /// actor's internal fields to callers. Method completions on handles come
 /// from `collect_method_sigs_for_receiver` instead.
 #[must_use]
@@ -326,57 +318,20 @@ pub fn collect_method_sigs_for_named_type(
 
 /// Collect all method signatures visible on a receiver type.
 ///
-/// For `LocalPid<T>`, this produces two groups:
-/// 1. The handle's own impl methods (`send`, etc.) registered
-///    in `fn_sigs` as `"LocalPid::{method}"`.
+/// For an actor handle, this produces two groups:
+/// 1. The handle's own impl methods (`send`, etc.).
 /// 2. The actor's receive handlers (the methods callers can dispatch to via the
-///    handle), resolved against the inner actor type T.
+///    handle), resolved against the handle's own name.
 ///
-/// This two-group collection is why the handle type is NOT unwrapped through
-/// `named_receiver_parts` for this call path — the checker's own `LocalPid` arm
-/// in `methods.rs` handles the dispatch logic; this path drives LSP completions.
+/// An actor handle is the actor's own type, so this path offers the actor's
+/// receive handlers; the checker's own dispatch arm in `methods.rs` decides the
+/// call, and this path drives LSP completions.
 #[must_use]
 pub fn collect_method_sigs_for_receiver(
     type_defs: &HashMap<String, TypeDef>,
     fn_sigs: &HashMap<String, FnSig>,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
-    // Actor-handle types: collect from the handle type itself AND from the
-    // inner actor type T (receive handlers).
-    let handle_name = match receiver_ty {
-        Ty::Named {
-            builtin: Some(BuiltinType::ActorHandle),
-            args,
-            ..
-        } if args.len() == 1 => Some(("LocalPid", &args[0])),
-        _ => None,
-    };
-
-    if let Some((handle_type_name, inner_ty)) = handle_name {
-        // Own handle methods (e.g. `send`).
-        let handle_methods =
-            collect_method_sigs_for_named_type(type_defs, fn_sigs, handle_type_name, &[]);
-        // Actor receive handlers resolved against the inner actor type.
-        let actor_methods = if let Some((actor_type_name, actor_type_args)) =
-            named_receiver_parts(inner_ty)
-        {
-            collect_method_sigs_for_named_type(type_defs, fn_sigs, actor_type_name, actor_type_args)
-        } else {
-            Vec::new()
-        };
-
-        // Merge: handle's own methods first, then actor methods, deduplicating
-        // by name so handle methods win over same-named actor methods.
-        let mut seen = HashSet::new();
-        let mut methods = Vec::with_capacity(handle_methods.len() + actor_methods.len());
-        for (name, sig) in handle_methods.into_iter().chain(actor_methods) {
-            if seen.insert(name.clone()) {
-                methods.push((name, sig));
-            }
-        }
-        return methods;
-    }
-
     let Some((type_name, type_args)) = named_receiver_parts(receiver_ty) else {
         return Vec::new();
     };

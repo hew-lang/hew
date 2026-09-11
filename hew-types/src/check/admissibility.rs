@@ -759,7 +759,7 @@ impl Checker {
         // A type is a valid Sink/Stream payload if and only if it implements
         // both the Encode and Decode marker traits (the "Wire capability").
         // implements_marker performs structural derivation — closures, raw
-        // pointers, dyn-Trait, LocalPid, and other non-serialisable types
+        // pointers, dyn-Trait, an actor handle, and other non-serialisable types
         // naturally fall out here without any explicit allowlist entry.
         let has_encode = self.registry.implements_marker(&inner, MarkerTrait::Encode);
         let has_decode = self.registry.implements_marker(&inner, MarkerTrait::Decode);

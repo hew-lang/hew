@@ -448,7 +448,7 @@ pub fn resolve_runtime_symbol(
 ) -> VecSymbolResolution {
     let spec = method_spec(method);
 
-    // A `Ptr`-token element (a heap-boxed indirect enum node, a `LocalPid`
+    // A `Ptr`-token element (a heap-boxed indirect enum node, an actor
     // handle, a closure/function value, ...) never selects the owned Vec
     // family, even when the element's value class reports an ownership
     // obligation. A recursive `indirect enum` element classes `CowValue` —
@@ -461,7 +461,7 @@ pub fn resolve_runtime_symbol(
     // construction is ever admitted for that element. Pinning the exclusion
     // at the authority (not as a codegen-side special case) keeps
     // construction and every element op congruent by construction, mirroring
-    // the existing `LocalPid` precedent
+    // the existing actor-handle precedent
     // (`BuiltinType::lowers_as_pointer_vec_element`).
     let is_owned = profile.is_owned && profile.abi != Some(VecElementToken::Ptr);
 

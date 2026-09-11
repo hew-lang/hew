@@ -1709,7 +1709,7 @@ fn main() {
 
     #[test]
     fn wasm_rejects_node_register_and_lookup() {
-        // `Node::register` (LocalPid arg) and `Node::lookup` (RemotePid result)
+        // `Node::register` (actor-handle arg) and `Node::lookup` (RemotePid result)
         // both ride the native registry transport and must fail closed too.
         let source = concat!(
             "actor Worker { receive fn ping() {} }\n",

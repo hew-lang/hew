@@ -13302,7 +13302,7 @@ mod tests {
             (HewSendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
             (RecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
             (HewRecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
-            (LambdaPid, None),
+            (ActorFn, None),
             (
                 CancellationToken,
                 Some(RuntimeDropDescriptor::CancellationTokenRelease),
@@ -13311,7 +13311,7 @@ mod tests {
             // These marker-bearing internal carriers have no executable
             // runtime close contract. They must remain unsupported rather
             // than acquiring one by spelling or marker alone.
-            (LocalPid, None),
+            (ActorHandle, None),
             (HewActor, None),
             (BoxedActor, None),
         ];

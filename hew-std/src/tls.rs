@@ -901,7 +901,7 @@ pub unsafe extern "C" fn hew_tls_attach(
         set_tls_last_error(detail);
         return -1;
     }
-    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // A Hew actor handle crosses an extern C call as the bare local actor
     // pointer. Build the stable by-value actor-ref snapshot the reader owns.
     let actor_ref = TlsActorRef {
         kind: TLS_ACTOR_REF_LOCAL,

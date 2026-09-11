@@ -1179,7 +1179,7 @@ impl Checker {
         // immediate return is `Result<(), LinkError>` (registration success — the
         // EXIT arrives async). The `PartitionPolicy` enum is declared in
         // `std/link_monitor.hew`; the call-site checker validates the precise arg
-        // type. The local `link(LocalPid)` form keeps its 1-arg shape; a
+        // type. The local `link(<actor handle>)` form keeps its 1-arg shape; a
         // `link(RemotePid)` is rejected with a "use link_remote" diagnostic
         // (`calls.rs`), so the cross-node link is never a silent type mismatch.
         let link_remote_t = TypeVar::fresh();
@@ -1532,7 +1532,7 @@ impl Checker {
                     if let Some(source_def) = self.type_defs.get(&canonical).cloned() {
                         self.register_canonical_type_def("std.builtins", &td.name, &source_def);
                     }
-                    // Compiler-carrier builtins (`LocalPid`, `NodeId`, ...)
+                    // Compiler-carrier builtins (`RemotePid`, `NodeId`, ...)
                     // retain the catalog's canonical identity; this source file
                     // supplies their declarative surface but does not turn them
                     // into `std.builtins.*` user nominals. Builtin error enums
@@ -9062,13 +9062,13 @@ impl Checker {
             } {
                 return Some(identity.to_string());
             }
+            // An actor is the type of its handle, so an actor handle's
+            // canonical key is the actor's own nominal, never a builtin
+            // presentation name.
             if builtin.is_collection()
                 || matches!(
                     builtin,
-                    BuiltinType::Generator
-                        | BuiltinType::ChildRef
-                        | BuiltinType::ActorHandle
-                        | BuiltinType::RemotePid
+                    BuiltinType::Generator | BuiltinType::ChildRef | BuiltinType::RemotePid
                 )
             {
                 return Some(builtin.canonical_name().to_string());
@@ -9090,14 +9090,13 @@ impl Checker {
                         BuiltinType::VecIter
                             | BuiltinType::HashMapIter
                             | BuiltinType::ChildRef
-                            | BuiltinType::ActorHandle
                             | BuiltinType::RemotePid
                     )
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::ChildRef | BuiltinType::ActorHandle | BuiltinType::RemotePid => {
+                    BuiltinType::ChildRef | BuiltinType::RemotePid => {
                         builtin.canonical_name().to_string()
                     }
                     _ => unreachable!("filter admits only compiler carrier builtins"),

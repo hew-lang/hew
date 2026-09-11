@@ -140,7 +140,6 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
         BuiltinNamedType::Stream => 2,
         BuiltinNamedType::Sink => 3,
         BuiltinNamedType::Duplex => 4,
-        BuiltinNamedType::LocalPid => 5,
         BuiltinNamedType::RemotePid => 6,
         BuiltinNamedType::CancellationToken => 7,
     }
@@ -303,27 +302,12 @@ builtin_named_types! {
         qualified: "duplex.Duplex",
         methods: []
     },
-    // LocalPid<T>: actor pid in this process, returned by `spawn`.
-    //
-    // A `LocalPid<T>` is process-local: it refers to an actor running in the current
-    // node. Built-in actor functions (`close`, `link`, `monitor`, etc.) use
-    // `LocalPid<T>` directly; it is nominally distinct from `RemotePid<T>`.
-    //
-    // Methods (`.send`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
-    // resolved via the normal user-type method dispatch path.
-    LocalPid {
-        consts: (LOCAL_PID, QUALIFIED_LOCAL_PID),
-        methods_const: LOCAL_PID_METHODS,
-        canonical: "LocalPid",
-        qualified: "LocalPid",
-        methods: []
-    },
     // RemotePid<T>: actor pid on a remote node.
     //
     // The constructor is `Node::lookup<T>(name) ->
     // Result<RemotePid<T>, LookupError>`, which snapshots the full registration
     // Location the StaleRef boundary tracks. `RemotePid<T>` does NOT unify with
-    // `LocalPid<T>` and has no provenance-free public constructor.
+    // an actor handle and has no provenance-free public constructor.
     //
     // `.send` returns Result<(), SendError>; a captured ref whose registration
     // was superseded fails closed with `SendError::StaleRef`.
@@ -361,7 +345,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
-        Some(BuiltinType::ActorHandle) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
@@ -392,6 +375,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
+            | BuiltinType::ActorHandle
             | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction

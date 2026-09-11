@@ -806,7 +806,7 @@ fn spawn_attach_reader(
         }
     }
 
-    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // A Hew actor handle crosses an extern C call as the bare local actor
     // pointer. The delivery authority is the only owner of that pointer and
     // can be synchronously revoked even if the reader itself has not exited.
     let delivery = Arc::new(ActorDelivery::new_local(actor));

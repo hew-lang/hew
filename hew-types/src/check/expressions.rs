@@ -858,7 +858,7 @@ impl Checker {
             // ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
-            // `LocalPid<T> is Vec<int>`) collapse into a single
+            // `<actor handle> is Vec<int>`) collapse into a single
             // `TypeErrorKind::Mismatch` diagnostic that requires the operands
             // share the same resolved type. Move/consumed-self semantics
             // follow the existing use-after-move rule (plan §D-D4, Q-N3).
@@ -3087,7 +3087,7 @@ impl Checker {
                         .to_string(),
                 );
             }
-            if ty.as_actor_handle().is_some() {
+            if ty.as_local_actor_ref().is_some() {
                 suggestions
                     .push("`closed(actor)` waits for an actor to finish terminating".to_string());
             }
@@ -3248,8 +3248,8 @@ impl Checker {
                     _ => Ty::Unit,
                 };
                 // E_LAMBDA_SELF_ESCAPE: the lambda body returns an actor handle.
-                // A lambda body that produces a `LambdaPid<...>` (lambda-actor handle)
-                // or a raw `Duplex<...>` channel is leaking a move-only handle outside
+                // A lambda body that produces an `actor(...) -> ...` handle (lambda-actor
+                // handle) or a raw `Duplex<...>` channel is leaking a move-only handle outside
                 // the actor boundary — the handle's lifetime is bound to the let-binding
                 // site, not to values the body produces.
                 //
@@ -3291,9 +3291,9 @@ impl Checker {
                 };
                 // The reply type determines send vs ask:
                 //   send-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
-                //     → `LambdaPid<Msg, ()>` — call-site returns `Result<(), SendError>`
+                //     → `actor(Msg) -> ()` — call-site returns `Result<(), SendError>`
                 //   ask-shaped (`actor |p| -> Reply { ... }`)
-                //     → `LambdaPid<Msg, Reply>` — call-site returns `Result<Reply, AskError>`
+                //     → `actor(Msg) -> Reply` — call-site returns `Result<Reply, AskError>`
                 let reply_ty = if let Some(ret_ann) = return_type.as_ref() {
                     let resolved = self.resolve_type_expr(ret_ann);
                     if matches!(resolved, Ty::Unit) {
@@ -8863,9 +8863,10 @@ impl Checker {
     /// to `synthesize`:
     ///
     /// 1. Unknown field name — an error will be reported separately.
-    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg is
-    ///    `LocalPid<Printer>`, not `Printer`, so checking against the bare name
-    ///    produces a spurious type mismatch.
+    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg
+    ///    carries `Printer`'s own actor-handle type, not the bare `Printer`
+    ///    used for construction, so checking against the bare name produces
+    ///    a spurious type mismatch.
     fn check_spawn_constructor_args(
         &mut self,
         actor_name: &str,
@@ -9063,7 +9064,7 @@ impl Checker {
                                 similar,
                             );
                             // The caller types the spawn as bare `Ty::Error`
-                            // (not `LocalPid<Error>`) so a subsequent
+                            // (not `Error`'s own actor-handle type) so a subsequent
                             // `await handle.method()` is suppressed (method
                             // calls on a `Ty::Error` receiver short-circuit),
                             // keeping a single clear diagnostic.
@@ -9595,7 +9596,7 @@ impl Checker {
         }
 
         // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
-        // or `LocalPid<Foo> is Vec<int>`) — only reported when both sides are
+        // or `<actor handle> is Vec<int>`) — only reported when both sides are
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
         if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
@@ -9719,7 +9720,7 @@ impl Checker {
     /// Returns `true` when `is` is valid on values of this type:
     ///
     /// * Actors and actor handles: `TypeDefKind::Actor` named types and
-    ///   `LocalPid<T>`.
+    ///   their own actor-handle types.
     ///
     /// Returns `false` for value types: scalars, `String`, `bytes`,
     /// `type Foo { ... }` record declarations (`TypeDefKind::Struct`),
@@ -9741,8 +9742,8 @@ impl Checker {
             // Named types: actor handles and any user `TypeDef` whose kind
             // carries heap/reference identity.
             Ty::Named { name, .. } => {
-                // Actor handles (`LocalPid<T>`).
-                if ty.as_actor_handle().is_some() {
+                // Actor handles.
+                if ty.as_local_actor_ref().is_some() {
                     return true;
                 }
                 // Actor declarations are the only identity-bearing user

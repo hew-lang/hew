@@ -421,11 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn lambda_pid_is_seeded_as_resource() {
+    fn anonymous_actor_handle_is_seeded_as_resource() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
-            table.get("LambdaPid"),
+            table.get("ActorFn"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
@@ -587,10 +587,10 @@ mod tests {
                 None,
                 BuiltinTypeShape::Opaque,
                 Some(BuiltinHandleFamily::ActorPid),
-                1,
+                0,
                 &[
                     BuiltinRegistrationRole::ActorDispatchLocal,
-                    BuiltinRegistrationRole::SupervisorLocalPid,
+                    BuiltinRegistrationRole::SupervisorHandle,
                 ][..],
             ),
             (

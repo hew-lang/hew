@@ -2,7 +2,8 @@
 //! supervisor owns.
 //!
 //! A supervisor is a nominal with no value members; values name its incarnation
-//! through `LocalPid<S>` or its declared role through `ChildRef<S>`. Every child
+//! through `S`'s own actor-handle type or its declared role through
+//! `ChildRef<S>`. Every child
 //! is reconstructed from its declaration and the
 //! supervisor's config on each incarnation through a verified spawn callable,
 //! so restart never preserves mutable state.

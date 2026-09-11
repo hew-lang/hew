@@ -1213,11 +1213,14 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             fields: HashMap::from([
                 ("rc".to_string(), Ty::rc(resource.clone())),
                 ("weak".to_string(), Ty::weak(resource.clone())),
-                ("local".to_string(), Ty::local_pid(resource.clone())),
+                (
+                    "local".to_string(),
+                    Ty::actor_handle("ResourceToken", vec![]),
+                ),
                 ("remote".to_string(), Ty::remote_pid(resource.clone())),
                 (
                     "lambda".to_string(),
-                    Ty::lambda_pid(resource.clone(), resource.clone()),
+                    Ty::actor_fn(resource.clone(), resource.clone()),
                 ),
                 (
                     "actor".to_string(),
@@ -1546,7 +1549,7 @@ fn vec_generic_record_methods_keep_semantic_identity() {
 }
 
 #[test]
-fn vec_local_pid_push_keeps_semantic_identity() {
+fn vec_actor_handle_push_keeps_semantic_identity() {
     let output = check_source(
         r"
         actor Worker {
@@ -1554,7 +1557,7 @@ fn vec_local_pid_push_keeps_semantic_identity() {
         }
 
         fn main() {
-            var v: Vec<LocalPid<Worker>> = Vec.new();
+            var v: Vec<Worker> = Vec.new();
             let w = spawn Worker;
             v.push(w);
             let _ = v.len();
@@ -2559,7 +2562,7 @@ fn dyn_trait_function_parameter_still_admitted() {
 }
 
 #[test]
-fn local_pid_actor_dispatch_uses_builtin_discriminator() {
+fn actor_handle_dispatch_uses_builtin_discriminator() {
     let output = check_source(
         r"
         actor Worker {
@@ -2578,7 +2581,7 @@ fn local_pid_actor_dispatch_uses_builtin_discriminator() {
         output.actor_method_dispatch.values().any(
             |dispatch| matches!(dispatch, ActorMethodKind::Ask { method_id, .. } if method_id == "Worker::ping")
         ),
-        "LocalPid<Worker> actor dispatch must be recorded by typed builtin discriminator: {:?}",
+        "Worker actor dispatch must be recorded by typed builtin discriminator: {:?}",
         output.actor_method_dispatch
     );
 }
@@ -3528,7 +3531,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
 }
 
 #[test]
-fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
+fn actor_handle_layout_does_not_recurse_into_actor_rc_state() {
     let parsed = hew_parser::parse(
         r"
         actor Worker {
@@ -3546,13 +3549,9 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
-    let local_pid_ty = Ty::local_pid(Ty::Named {
-        builtin: None,
-        name: "Worker".to_string(),
-        args: vec![],
-    });
+    let actor_handle_ty = Ty::actor_handle("Worker", vec![]);
 
-    let vec_ty = checker.make_vec_type(local_pid_ty, &(0..0));
+    let vec_ty = checker.make_vec_type(actor_handle_ty, &(0..0));
     assert!(matches!(
         vec_ty,
         Ty::Named {
@@ -3564,7 +3563,7 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
         !checker.errors.iter().any(|err| {
             err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("Vec")
         }),
-        "LocalPid<Worker> should not inspect Worker state for Vec layout, got: {:?}",
+        "Worker should not inspect Worker state for Vec layout, got: {:?}",
         checker.errors
     );
 }

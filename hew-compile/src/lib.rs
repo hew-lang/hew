@@ -2114,7 +2114,8 @@ fn build_module_graph_with_diagnostics(
 
     // Reject a single module declaring two actors with one name.  Cross-module
     // duplicates are LEGAL: actor identity is the qualified (defining-module,
-    // name) pair end-to-end — the checker emits `LocalPid<bank.Account>`, MIR
+    // name) pair end-to-end — the checker emits `bank.Account`'s own
+    // actor-handle type, MIR
     // layouts key on the dotted name, and native symbols mangle through
     // `bank$Account` — so `spawn bank.Account(...)` and `spawn
     // store.Account(...)` bind their own handlers/state/drop glue.  Within one

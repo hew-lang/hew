@@ -467,7 +467,7 @@ fn self_completion_is_refused_inside_receive_and_private_method_bodies() {
 fn self_mailbox_submission_and_calls_to_another_instance_remain_valid() {
     let output = check_source(
         "actor Worker { \
-           receive fn run(other: LocalPid<Worker>) { \
+           receive fn run(other: Worker) { \
              let _ = mailbox(self, on_full: .Reject).done(); let _ = other.done(); \
            } \
            receive fn done() {} \

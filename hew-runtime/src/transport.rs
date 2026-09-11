@@ -3472,7 +3472,7 @@ pub unsafe extern "C" fn hew_tcp_attach(
 /// `*mut HewActor` pointer rather than a fully-formed `HewActorRef`.
 ///
 /// This is the entry point the Hew `conn.attach(handler)` surface lowers to:
-/// a Hew `LocalPid<T>` reaches the C ABI as the bare actor pointer (no
+/// a Hew actor handle reaches the C ABI as the bare actor pointer (no
 /// `HewActorRef` wrapper), so codegen cannot hand `hew_tcp_attach` the
 /// `*const HewActorRef` it expects. This wrapper constructs the local
 /// `HewActorRef` on the runtime side (the owner of that layout) and forwards
@@ -3527,7 +3527,7 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
 /// reactor reads the bytes, deposits the result into `read_slot`, and
 /// `enqueue_resume`s the parked continuation.
 ///
-/// `actor` is the raw `*mut HewActor` the Hew `LocalPid` lowers to (same shape
+/// `actor` is the raw `*mut HewActor` the Hew actor handle lowers to (same shape
 /// as `hew_tcp_attach_local`); the runtime constructs the local `HewActorRef`.
 ///
 /// Returns 0 on success, -1 on failure (null args, unknown handle, reactor

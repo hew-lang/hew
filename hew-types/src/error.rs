@@ -630,7 +630,8 @@ pub enum SupervisorErrorKind {
     /// that is not declared in this supervisor.
     WiredToUnknownSibling,
     /// `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`: a `wired_to` key has no matching
-    /// init parameter, or the parameter type is not `LocalPid<sibling>`.
+    /// init parameter, or the parameter type is not the sibling's own
+    /// actor-handle type.
     WiredToTypeMismatch,
     /// `E_SUPERVISOR_WIRED_CYCLE`: the `wired_to` dependency graph has a cycle.
     WiredCycle,
@@ -808,7 +809,7 @@ pub enum TypeErrorKind {
     /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
     /// accident is not available; the discard has to be written down.
     SendResultDropped,
-    /// Actor types form a reference cycle via `LocalPid` fields
+    /// Actor types form a reference cycle via actor-handle fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
     /// through another inline value type, making its layout infinitely sized.
@@ -953,7 +954,7 @@ pub enum TypeErrorKind {
         name: String,
     },
     /// A regular fn-closure attempted to capture a lambda-actor handle
-    /// (`LambdaPid<M, R>`) from an enclosing scope and call it with call syntax.
+    /// (`actor(M) -> R`) from an enclosing scope and call it with call syntax.
     ///
     /// Lambda-actor handles have no materialization protocol through a closure
     /// capture env: the handle's release is owned by its spawning-scope slot,

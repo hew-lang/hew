@@ -82,8 +82,8 @@ impl InstanceService<'_> {
     /// The descriptor for one actor, selected by an exact declaration when the
     /// handle type alone cannot name it.
     ///
-    /// Two lambda actors with the same signature share one `LambdaPid<M, R>`,
-    /// so a spawn — which must start the actor whose body it is — names its
+    /// Two lambda actors with the same signature share one `actor(M) -> R`
+    /// handle, so a spawn — which must start the actor whose body it is — names its
     /// declaration. A call site does not: it reaches whichever lambda the
     /// handle addresses, and every actor answering to that handle carries the
     /// same message and reply glue.
@@ -594,8 +594,8 @@ impl Builder<'_, '_> {
                 .unwrap_or_else(|| self.ty(&receiver.ty));
         let actor = self.service.require_actor(&target_ty)?;
         let descriptor = &self.service.actors[actor.0 as usize];
-        // A lambda actor's call site reaches it through `LambdaPid<M, R>`,
-        // which names no particular lambda, so the dispatch id is the marker
+        // A lambda actor's call site reaches it through its `actor(M) -> R`
+        // handle, which names no particular lambda, so the dispatch id is the marker
         // rather than a declaration path; the actor's one handler is the
         // member. Every other actor selects its member by exact identity.
         let handler = if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID {

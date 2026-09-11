@@ -1850,7 +1850,7 @@ actor Probe {
     receive fn ping() {}
 }
 
-fn same(left: LocalPid<Probe>, right: LocalPid<Probe>) -> bool {
+fn same(left: Probe, right: Probe) -> bool {
     left is right
 }
 

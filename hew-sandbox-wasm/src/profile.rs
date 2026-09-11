@@ -1163,9 +1163,9 @@ impl<'a> ProfileChecker<'a> {
 
         // Actor asks: `await ref.handler(...)` where `handler` is a declared
         // receive function AND the receiver is a handle to an admitted actor.
-        // Type-check the receiver: an actor handle is `LocalPid<ActorName>` or
-        // `ChildRef<ActorName>` where `ActorName` is in the program's declared
-        // actors set.
+        // Type-check the receiver: an actor handle is the actor's own named
+        // type or `ChildRef<ActorName>` where `ActorName` is in the program's
+        // declared actors set.
         // A name-only check without the receiver type would admit spurious method
         // calls on non-actor receivers that happen to share a handler name.
         if self.actor_methods.contains(method) {
@@ -1251,9 +1251,9 @@ impl<'a> ProfileChecker<'a> {
     }
 
     /// True if `ty` is an actor handle type for a declared actor in this program.
-    /// Actor handles are `LocalPid<ActorName>`, `ChildRef<ActorName>`, or
-    /// `Named { name: ActorName }` when the typechecker inlines the actor type
-    /// directly. All are present in practice depending on the call site.
+    /// Actor handles are `Named { name: ActorName, builtin: Some(ActorHandle) }`
+    /// or `ChildRef<ActorName>`. Both are present in practice depending on the
+    /// call site.
     fn ty_is_actor_handle(&self, ty: &Ty) -> bool {
         let materialized = ty.materialize_literal_defaults();
         if let Some(Ty::Named {

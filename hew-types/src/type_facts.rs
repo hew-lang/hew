@@ -1446,13 +1446,13 @@ mod tests {
                 },
             );
             let classed = ValueClass::of_ty(&ty, &context);
-            // RECORDED EXCEPTIONS - `LocalPid`, `HewActor` and `BoxedActor`.
+            // RECORDED EXCEPTIONS - `ActorHandle`, `HewActor` and `BoxedActor`.
             //
             // §1.1 gives both the BitCopy row and the class table above records
             // that verdict. Neither `marker()` can follow in this change:
             // `marker()` is the legacy lowering's input and the legacy route is
-            // the parity oracle. Flipping `LocalPid` routes a
-            // `Vec<LocalPid<_>>` element off its pointer ABI
+            // the parity oracle. Flipping `ActorHandle` routes a
+            // `Vec` of actor handles off its pointer ABI
             // (`hew-cli::run_e2e run_generic_vec_element_methods_roundtrip_ptr_abi`
             // panics "Vec layout-aware operation is not implemented") and moves
             // an elaborated-MIR baseline

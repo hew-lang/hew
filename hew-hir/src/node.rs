@@ -493,13 +493,14 @@ pub struct HirActorDecl {
     /// as fail-closed; the produced `msg_id` is no longer derivable from
     /// source order.
     pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
-    /// `Some(LambdaPid<M, R>)` when this declaration was synthesized from an
+    /// `Some(actor(M) -> R)` when this declaration was synthesized from an
     /// `actor |msg| { .. }` expression rather than written in source.
     ///
     /// A lambda actor is an ordinary actor with one handler and its captures
     /// as state; only its handle spelling differs, because the checker types
-    /// the expression `LambdaPid<M, R>` rather than `LocalPid<A>`. SIR
-    /// resolves a `LambdaPid` target to the declaration answering to it.
+    /// the expression as the `ActorFn` handle `actor(M) -> R` rather than the
+    /// actor's own type. SIR resolves an `ActorFn` target to the declaration
+    /// answering to it.
     pub lambda_handle_ty: Option<Box<ResolvedTy>>,
     pub span: Span,
 }
@@ -1297,8 +1298,8 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
     },
     /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
-    /// the result type (`LocalPid<Actor>`); HIR carries only the structural spawn
-    /// surface and lowered init arguments for MIR/codegen.
+    /// the result type (`Actor`'s own actor-handle type); HIR carries only the
+    /// structural spawn surface and lowered init arguments for MIR/codegen.
     Spawn {
         actor_name: String,
         args: Vec<(String, HirExpr)>,
@@ -1364,8 +1365,8 @@ pub enum HirExprKind {
     },
     /// Bare `self` inside an actor `receive fn` — the actor's own handle.
     ///
-    /// A zero-payload leaf: the `LocalPid<Self>` type recorded by the checker
-    /// at the `self` span rides on the wrapping
+    /// A zero-payload leaf: `Self`, the actor's own type, recorded by the
+    /// checker at the `self` span rides on the wrapping
     /// `HirExpr.ty`, so this variant carries no fields. MIR lowers it via the
     /// `hew_actor_self()` runtime primitive — the same self-handle synthesis
     /// `link`/`monitor`/`unlink` already use implicitly — yielding the borrowed

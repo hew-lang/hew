@@ -296,7 +296,7 @@ mod supervisor_child_slot_tests {
                 pool workers: Worker count: 2
             }
 
-            fn inspect(sup: LocalPid<Pool>) {
+            fn inspect(sup: Pool) {
                 let workers: SupervisorPool<Pool, Worker> = sup.workers;
                 let count: i64 = workers.len();
                 let first: ChildRef<Worker> = workers[0];
@@ -1128,12 +1128,12 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn closure_captures_duplex_handle_function_param_rejected() {
-        // Evasion shape: LambdaPid parameter captured in a nested closure.
-        // (Lambda-actor handles are typed `LambdaPid<M, R>`; call-syntax
+        // Evasion shape: an actor-fn handle parameter captured in a nested closure.
+        // (Lambda-actor handles are typed `actor(M) -> R`; call-syntax
         // `h(n)` is the actor surface, so this routes through the capture gate.)
         let output = check_source(
             r"
-            fn use_handle(h: LambdaPid<i64, ()>) {
+            fn use_handle(h: actor(i64)) {
                 let relay = |n: i64| { h(n); };
                 relay(1);
             }
@@ -1145,15 +1145,15 @@ mod for_loop_iterable_fail_closed {
                 .errors
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "h")),
-            "function-param LambdaPid capture: ClosureCapturesDuplexHandle must fire; got: {:#?}",
+            "function-param actor-fn capture: ClosureCapturesDuplexHandle must fire; got: {:#?}",
             output.errors
         );
     }
 
     #[test]
     fn closure_captures_duplex_handle_does_not_affect_pid_captures() {
-        // Regression guard: the Duplex gate must NOT fire for LocalPid captures.
-        // A closure capturing a declared-actor's pid is accepted; only Duplex
+        // Regression guard: the Duplex gate must NOT fire for actor-handle captures.
+        // A closure capturing a declared actor's handle is accepted; only Duplex
         // (lambda-actor handles) is refused.
         let output = check_source(
             r"
@@ -1173,7 +1173,7 @@ mod for_loop_iterable_fail_closed {
                 .errors
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { .. })),
-            "LocalPid captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
+            "actor-handle captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
             output.errors
         );
     }

@@ -6809,7 +6809,7 @@ mod tests {
             );
         }
     }
-    /// not for the pid handle itself; a `LocalPid<A>`/`RemotePid<A>`
+    /// not for the pid handle itself; an actor handle or `RemotePid<A>`
     /// inside a payload struct is reachable through the payload's
     /// drop glue, which the envelope runs exactly once on the
     /// transition to refcount==0. We model that with a plain

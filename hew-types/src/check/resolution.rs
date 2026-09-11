@@ -83,7 +83,6 @@ impl Checker {
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
             "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
-            "std.builtins.LocalPid" => Some(BuiltinType::ActorHandle),
             "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;
@@ -2434,7 +2433,13 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                let canonical_name = if let Some(kind) = builtin {
+                // An actor is the type of its handle, so the handle's name is
+                // the actor declaration's own identity and takes the ordinary
+                // nominal ladder rather than a builtin presentation name.
+                let canonical_name = if matches!(builtin, Some(crate::BuiltinType::ActorHandle)) {
+                    self.canonical_nominal_name(name)
+                        .unwrap_or_else(|| name.clone())
+                } else if let Some(kind) = builtin {
                     // A builtin discriminator is already closed identity
                     // authority. Do not run a BARE presentation leaf through
                     // the user-declaration ladder: a private imported `Result`
@@ -2624,7 +2629,7 @@ impl Checker {
         // Supervisor declarations register their name in `supervisor_children`
         // (keyed by the supervisor name), not in `known_types` like actors do.
         // A supervisor name is nonetheless a valid type spelling — it appears as
-        // `spawn App` and as the parameter of a `LocalPid<App>` handle — so it
+        // `spawn App` and as `App`'s own actor-handle type — so it
         // must not be reported as an unknown type.
         if self.supervisor_children.contains_key(name) {
             return true;
@@ -2633,9 +2638,9 @@ impl Checker {
         // module_graph module is being checked, that module's own types/traits
         // are seeded into these module-scoped sets (see the body-check loop in
         // `check_program`) rather than the global `known_types` / `trait_defs`,
-        // which carry the root module's declarations. A `LocalPid<ConnectionHandler>`
-        // inside an imported `std::net` therefore resolves against `local_trait_defs`,
-        // not `trait_defs`. Consulting these sets only ever recognises an
+        // which carry the root module's declarations. A bare `ConnectionHandler`
+        // actor-handle type inside an imported `std::net` therefore resolves
+        // against `local_trait_defs`, not `trait_defs`. Consulting these sets only ever recognises an
         // already-declared name, so a genuinely undefined `Bogus` is still caught.
         if self.local_type_defs.contains(name)
             || self.source_type_defs.contains(name)
@@ -2666,8 +2671,8 @@ impl Checker {
         // (collected by `collect_declared_type_param_names`). This covers an
         // imported module's own types/traits while that module's signatures are
         // registered in a pass where the global `trait_defs` / `known_types`
-        // still hold only the root module's declarations (e.g. a
-        // `LocalPid<ConnectionHandler>` inside `std::net`). A genuinely
+        // still hold only the root module's declarations (e.g.
+        // `ConnectionHandler`'s own actor-handle type inside `std::net`). A genuinely
         // undefined name is in neither declared set, so it is still caught.
         if self.declared_nominal_type_names.contains(name) {
             return true;
@@ -3232,6 +3237,12 @@ impl Checker {
                     } else {
                         "write the actor's own type".to_string()
                     };
+                    if !self
+                        .reported_actor_handle_type_spans
+                        .insert(SpanKey::in_module(&te.1, self.current_module_idx))
+                    {
+                        return Ty::Error;
+                    }
                     self.report_error_with_suggestions(
                         TypeErrorKind::ActorHandleTypeNotNameable,
                         &te.1,

@@ -999,10 +999,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: LocalPid<Beta>,\n",
+        "    let beta: Beta,\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: LocalPid<Alpha>,\n",
+        "    let alpha: Alpha,\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1216,7 +1216,7 @@ fn recursive_value_type_allows_pointer_self_reference() {
 }
 
 #[test]
-fn typecheck_closed_local_pid_waits_for_termination() {
+fn typecheck_closed_actor_handle_waits_for_termination() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1308,7 +1308,7 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
 /// `close(actor)` is a plain call that waits for terminal cleanup: it has type
 /// `()`, and `await` on it is refused as it is on any other call (U383).
 #[test]
-fn close_local_pid_is_a_unit_call_and_await_on_it_is_refused() {
+fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
     let output = check_source(
         r"
         actor Greeter {
@@ -4488,7 +4488,7 @@ fn generic_receive_call_instantiates_its_type_parameters() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: LocalPid<Store> = spawn Store();
+    let store: Store = spawn Store();
     let left: Option<i64> = Some(1);
     let right: Option<i64> = Some(1);
     let out = await store.keep(left, right);
@@ -4516,7 +4516,7 @@ fn generic_receive_call_with_ineligible_instantiation_is_refused_by_checker() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: LocalPid<Store> = spawn Store();
+    let store: Store = spawn Store();
     let a: HashMap<string, i64> = HashMap.new();
     let b: HashMap<string, i64> = HashMap.new();
     let left: Option<HashMap<string, i64>> = Some(a);

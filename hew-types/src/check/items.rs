@@ -513,7 +513,7 @@ impl Checker {
 
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
-                // with type `LocalPid<sibling_type>`.
+                // typed as `sibling_type`'s own actor-handle type.
                 let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
@@ -528,7 +528,8 @@ impl Checker {
     }
 
     /// Verify that `dependent_actor`'s init has a parameter `param_key` typed
-    /// `LocalPid<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
+    /// as `sibling_type`'s own actor-handle type. Emits
+    /// `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
     ///
     /// If the actor type is completely unknown (not registered at all), the check
     /// is skipped — a separate undefined-type diagnostic covers that case.
@@ -581,7 +582,7 @@ impl Checker {
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
                      `{expected_sibling_type}`, but `{dependent_actor_type}.init` parameter \
-                     `{param_key}` has type `{}` (expected `LocalPid<{expected_sibling_type}>`)",
+                     `{param_key}` has type `{}` (expected `{expected_sibling_type}`)",
                     param.ty.user_facing()
                 ),
             ));
@@ -886,7 +887,7 @@ impl Checker {
         let actual =
             self.check_body_with_tail_ok_coercion(fd, &resolved_expected_ret, block_expected);
         // A completely empty body on a method whose `Self` is a compiler
-        // builtin (`LocalPid`, `RemotePid`, `Vec`, …) is a fail-closed
+        // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
         // handle or an abstract `T`, a self-call would stack-overflow, and the
         // real value is produced by codegen / the runtime. The placeholder body
@@ -2631,14 +2632,13 @@ impl Checker {
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Named {
+            name,
             args,
             builtin: Some(builtin),
-            ..
-        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle) => {
-            match args.as_slice() {
-                [Ty::Named { name, args, .. }] if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
+        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle)
+            && args.is_empty() =>
+        {
+            Some(name.as_str())
         }
         _ => None,
     }

@@ -221,7 +221,7 @@ pub(crate) struct CheckerClassDeclarations<'a> {
     /// does not carry.
     module_registry: &'a crate::module_registry::ModuleRegistry,
     /// Supervisor declarations. A supervisor is a nominal with no value
-    /// members: only its `LocalPid<S>` handle is ever a value, so the
+    /// members: only its own actor-handle type is ever a value, so the
     /// declaration classes `BitCopy` from an empty member list.
     supervisors: &'a HashMap<String, crate::check::types::SupervisorChildren>,
 }
@@ -1832,7 +1832,7 @@ impl Checker {
         // The descriptor maps each `receive fn` to its stable, hash-derived
         // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
         // map available because the active-mode `conn.attach(this)` coercion
-        // (`LocalPid<Actor>` → `LocalPid<ConnectionHandler>`) consults
+        // (`Actor`'s own actor-handle type → `ConnectionHandler`'s) consults
         // `actor_satisfies_handler_trait`, which reads
         // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
         // structurally satisfy the handler trait. Building it after body

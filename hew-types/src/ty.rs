@@ -25,7 +25,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
-        Some(BuiltinType::ActorHandle) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(
             BuiltinType::Option
@@ -55,6 +54,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
+            | BuiltinType::ActorHandle
             | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction

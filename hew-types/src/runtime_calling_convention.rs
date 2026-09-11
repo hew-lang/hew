@@ -129,7 +129,7 @@ pub enum RuntimeCallingConvention {
     /// [`Ty::Named`] that is a **proven** heap-handle nominal
     /// — that is, a name whose resolved
     /// [`TypeDef::is_indirect`](crate::check::TypeDef) is
-    /// `true` (`Vec`, `HashMap`, `HashSet`, `LocalPid`, opaque
+    /// `true` (`Vec`, `HashMap`, `HashSet`, `ActorHandle`, opaque
     /// handles like `net.Listener`, and any user `type T {}` whose
     /// `is_indirect` is `true`).
     ///

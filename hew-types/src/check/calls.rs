@@ -2250,7 +2250,10 @@ impl Checker {
             // Checked before signature application and without returning, so a
             // refused operand still leaves the call its published rewrite and
             // runtime target.
-            if resolved_fn_name == "Node::register" && args.len() == 2 {
+            if crate::runtime_call::RuntimeCallFamily::from_c_symbol(&resolved_fn_name)
+                == Some(crate::runtime_call::RuntimeCallFamily::NodeRegister)
+                && args.len() == 2
+            {
                 let (handle_expr, handle_span) = args[1].expr();
                 let handle_ty = self.synthesize(handle_expr, handle_span);
                 let resolved = self

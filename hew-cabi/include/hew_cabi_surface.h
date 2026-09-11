@@ -2086,8 +2086,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1660] = {
     {"hew_cron_next",
      "{\"native\": \"fn hew_cron_next( *const HewCronExpr, i64, *mut i64, ) -> "
      "i32\"}",
-     "native", "unclassified-stdlib", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_cron_next_hew",
      "{\"native\": \"fn hew_cron_next_hew( *const HewCronExpr, i64, ) -> "
      "HewCronNextResult\"}",
@@ -4823,7 +4823,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1660] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_quic_stream_last_recv_timed_out",
      "{\"native\": \"fn hew_quic_stream_last_recv_timed_out() -> i32\"}",
-     "native", "unclassified-stdlib", "not-applicable", "not-applicable",
+     "native", "stable-stdlib", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_quic_stream_recv",
      "{\"native\": \"fn hew_quic_stream_recv( *mut HewQuicStream) -> "

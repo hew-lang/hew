@@ -798,33 +798,15 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
     );
 }
 
-/// The P0 this revision closes: a Hew WRAPPER around an ownership-opaque
-/// `extern "C" -> string`, observed on a non-adopting ABI.
+/// A Hew wrapper around an `extern "C" -> string`, observed on the handle the
+/// host actually minted.
 ///
-/// # Why this fixture can observe what the root-extern one above cannot
-///
-/// A ROOT-declared extern `-> string` is classified `ForeignAdopt`, so codegen
-/// copies the foreign pointer into a private header-aware buffer and `free()`s
-/// it. The foreign handle never reaches Hew raw, which is exactly why the
-/// root-extern fixture can only pin "released exactly once".
-///
-/// A `HeaderAware` extern is not copied: the compiler passes the host's pointer
-/// straight through as a runtime string handle. That classification is reached
-/// through an extern declared in a module with stdlib provenance, so this
-/// fixture builds a two-file project whose sibling module is named `std` and
-/// declares the extern. This is a real, reachable configuration of the selected
-/// ABI, and it is the only one on which a non-adopting foreign result is
-/// observable — stated plainly because it is a deliberately narrow hook.
-///
-/// The host therefore asks the linked runtime to mint a genuine registered
-/// handle, biases its pinned `rc` so no release can free it underneath the
-/// probe, and keeps every pointer. Each compiler release is then visible as an
-/// exact decrement.
-///
-/// Measured against the pre-fix compiler this fixture reports `releases=8` over
-/// eight frames: the wrapper laundered the extern's result into an "analyzed
-/// fresh" verdict, `main` minted a synthetic owner over it and dropped it. The
-/// fixed compiler reports zero.
+/// The host asks the linked runtime for a genuine managed handle, biases its
+/// refcount so no release can free it underneath the probe, and keeps every
+/// pointer. The declaration hands the caller an owner, so each compiler
+/// release is visible as an exact decrement and the count must be one per
+/// frame — an extra Hew frame between the mint and the interpolation must not
+/// change that either way.
 const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints managed runtime handles and counts every release of them.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -942,6 +924,10 @@ fn main() -> i64 {
 }
 "#;
 
+/// A Hew frame between the interpolation and the extern changes nothing:
+/// the declaration says `-> string`, so the value is the caller's owner and
+/// each frame releases it exactly once. The host mints the handle, biases its
+/// refcount and never releases, so every release counted is the compiler's.
 #[test]
 fn a_hew_wrapper_around_an_extern_releases_once_per_frame() {
     require_codegen();
@@ -1128,6 +1114,10 @@ pub extern "C" fn spy_release_one_from_host() -> i64 {
 }
 "#;
 
+/// Vec ingress. The extern's declared `-> Holder` is an ordinary owner, so
+/// pushing it moves it into the buffer and the Vec's teardown is its one
+/// release. This is the non-string heap class, observed through the one field
+/// the runtime representation lets the spy count exactly.
 #[test]
 fn a_vec_push_of_a_wrapped_extern_record_releases_once_per_frame() {
     require_codegen();
@@ -1216,6 +1206,9 @@ fn main() -> i64 {
 }
 "#;
 
+/// A temporary built from the extern's declared result is the caller's own
+/// owner: passing it to a borrowing parameter leaves the caller holding it,
+/// and the temporary's release at the end of the call is the only one.
 #[test]
 fn a_wrapped_extern_record_in_a_borrowing_argument_releases_once_per_frame() {
     require_codegen();
@@ -1307,6 +1300,9 @@ fn main() -> i64 {
 }
 "#;
 
+/// A match scrutinee produced through a Hew wrapper over an extern owns its
+/// payload, so the scrutinee's scope-exit drop releases it exactly once per
+/// frame.
 #[test]
 fn a_match_over_a_wrapped_extern_enum_releases_once_per_frame() {
     require_codegen();
@@ -1475,6 +1471,8 @@ fn main() -> i64 {
 }
 "#;
 
+/// A record literal embedding a direct extern call owns the embedded field:
+/// the outer record's recursive release discharges it exactly once per frame.
 #[test]
 fn a_record_literal_embedding_a_direct_extern_releases_once_per_frame() {
     require_codegen();
@@ -1600,7 +1598,7 @@ fn a_record_literal_of_a_domestic_field_keeps_working() {
 /// result into the map, and the map's teardown releases it.
 ///
 /// The declaration says `-> Holder`, so the value the host handed over is an
-/// ordinary owner: moving it into a HashMap is the same transfer as moving a
+/// ordinary owner: moving it into a `HashMap` is the same transfer as moving a
 /// domestic record, and the map's teardown is the one release it gets. The map
 /// leaves scope inside the loop body, so a frame that released twice or not at
 /// all shows up in the count.
@@ -1762,6 +1760,8 @@ fn main() -> i64 {
 }
 "#;
 
+/// A `let` binder over the extern's declared result owns it, so leaving the
+/// loop body releases it exactly once.
 #[test]
 fn a_let_bound_extern_record_releases_once_per_frame() {
     require_codegen();
@@ -1840,6 +1840,8 @@ fn main() -> i64 {
 }
 "#;
 
+/// The owner travels with the binder into a container, and the container's
+/// teardown releases it exactly once per frame.
 #[test]
 fn a_container_over_a_let_bound_extern_record_releases_once_per_frame() {
     require_codegen();
@@ -1887,15 +1889,10 @@ fn a_container_over_a_let_bound_extern_record_releases_once_per_frame() {
 /// producer still compiles, still runs and still leaves the counter with
 /// teeth.
 ///
-/// The release-count COUNTERFACTUAL for this construct lives at the MIR seam
-/// (`extern_wrapper_result_opacity::a_let_bound_domestic_record_still_gets_\
-/// its_scope_exit_drop`, which pins three `RecordInPlace` drops against the
-/// foreign shape's zero). It cannot be taken here: handing a heap field to an
-/// extern already releases the caller's obligation for it — an extern's
-/// argument disposition is unknowable, so the compiler must assume the host
-/// consumed it — which means the spy can never witness a domestic record's own
-/// drop. Every existing domestic control in this file is shaped the same way
-/// for the same reason.
+/// The domestic control for the `let`-bound shape: an ordinary Hew record
+/// whose label the spy retains. Its label handle is handed to a BORROWING
+/// extern, so the caller keeps the obligation and the binder's own scope-exit
+/// drop is what the counter sees.
 const LET_BOUND_DOMESTIC_RECORD: &str = r#"extern "C" {
     fn spy_retained() -> i64;
     fn spy_bad_headers() -> i64;

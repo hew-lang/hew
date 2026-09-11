@@ -5534,7 +5534,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "stable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13081,7 +13081,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "stable-stdlib",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

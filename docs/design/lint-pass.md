@@ -11,7 +11,9 @@ checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `must_use`, `sleep_loop_blocks_mailbox`,
 `text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
-they are now re-levelable and suppressible. M3 and its `clean_counter` follow-on
+they are now re-levelable and suppressible. `var_param_mutation_lost` joined
+them from the checker's own scope-exit bookkeeping: a `var` parameter is the
+callee's own copy, so a write nothing goes on to read reaches nobody. M3 and its `clean_counter` follow-on
 landed on the legacy MIR and were removed with it: retiring the legacy native
 lowering pipeline deleted the liveness and faint-variable passes, and the
 physical MIR computes neither fact, so `dead_store` and `clean_counter` are no

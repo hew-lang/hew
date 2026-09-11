@@ -113,15 +113,9 @@ pub struct Binding {
     /// this binding is part of the mutation (`n = n + 1`, `v.push(x)`), not an
     /// observation of its result, so it does not count here.
     pub observing_reads: u32,
-    /// Whether the variable has been reassigned after initial definition
-    pub is_written: bool,
-    /// Whether an observing read has happened since the most recent mutation.
-    /// Cleared by [`TypeEnv::mark_written`], set by an observing
-    /// [`TypeEnv::lookup`], and set at [`TypeEnv::exit_loop`] when the loop
-    /// body both observed and mutated the binding — the next iteration reads
-    /// what this one wrote. `false` on a mutated by-value parameter means the
-    /// mutation reached nobody.
-    pub mutation_observed: bool,
+    /// Whether the binding has been reassigned, and whether anything read the
+    /// result. See [`MutationState`].
+    pub mutation: MutationState,
     /// Any-path consuming use while checking the current closure body.
     /// This is a body capability fact, independent of the current path's moves.
     pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
@@ -168,6 +162,21 @@ impl ParameterOwnership {
     }
 }
 
+/// How far a binding's mutation has travelled.
+///
+/// Two facts that only make sense together: a binding nothing ever wrote has
+/// no mutation to observe, and a `var` parameter left at
+/// [`MutationState::Unobserved`] at scope exit wrote into a copy nobody reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationState {
+    /// Never reassigned — a `var` that could be a `let`.
+    Unwritten,
+    /// Written, and nothing has read the result since.
+    Unobserved,
+    /// Written, and a later read observed the result.
+    Observed,
+}
+
 /// What produced a [`Binding`].
 ///
 /// Previously inferred from the `def_span` / `shadow_span` combination each
@@ -197,6 +206,12 @@ impl Binding {
         matches!(self.origin, BindingOrigin::DeferredField)
     }
 
+    /// Whether the binding has been reassigned since it was defined.
+    #[must_use]
+    pub fn is_written(&self) -> bool {
+        self.mutation != MutationState::Unwritten
+    }
+
     /// Whether this binding is a function parameter.
     #[must_use]
     pub fn is_param(&self) -> bool {
@@ -216,7 +231,8 @@ impl Binding {
 /// The move, release and parameter-replacement facts tracked per execution path.
 ///
 /// This is the canonical flow-sensitive ownership state. `read_count`
-/// and `is_written` are any-path lint accumulators (unused / never-mutated) and
+/// and `mutation` are any-path lint accumulators (unused / never-mutated /
+/// lost mutation) and
 /// deliberately stay outside the snapshot: restoring them per branch arm would
 /// erase reads and writes that genuinely happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -447,8 +463,10 @@ impl TypeEnv {
         // here rather than leaving the write looking lost.
         for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
             let floor = scope.observing_reads.get(&binding.id).copied();
-            if binding.is_written && floor.is_some_and(|floor| binding.observing_reads > floor) {
-                binding.mutation_observed = true;
+            if binding.mutation == MutationState::Unobserved
+                && floor.is_some_and(|floor| binding.observing_reads > floor)
+            {
+                binding.mutation = MutationState::Observed;
             }
         }
         self.merge_ownership(&scope.entry, &scope.exits)
@@ -493,8 +511,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
                     observing_reads: 0,
-                    is_written: false,
-                    mutation_observed: false,
+                    mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: None,
@@ -547,8 +564,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 0,
                     observing_reads: 0,
-                    is_written: false,
-                    mutation_observed: false,
+                    mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
@@ -628,8 +644,7 @@ impl TypeEnv {
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     observing_reads: 0,
-                    is_written: false,
-                    mutation_observed: false,
+                    mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: Some(span),
@@ -671,7 +686,11 @@ impl TypeEnv {
                 // A closure that reads the binding observes whatever the
                 // enclosing body wrote into it, whenever the closure runs.
                 binding.observing_reads = binding.observing_reads.max(checked.observing_reads);
-                binding.mutation_observed |= checked.mutation_observed;
+                if checked.mutation == MutationState::Observed
+                    && binding.mutation == MutationState::Unobserved
+                {
+                    binding.mutation = MutationState::Observed;
+                }
             }
         }
     }
@@ -942,8 +961,7 @@ impl TypeEnv {
     pub fn mark_written(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
-                binding.is_written = true;
-                binding.mutation_observed = false;
+                binding.mutation = MutationState::Unobserved;
                 return;
             }
         }
@@ -1008,8 +1026,7 @@ impl TypeEnv {
                 if binding.origin == BindingOrigin::Parameter
                     && binding.is_mutable
                     && binding.parameter_ownership == ParameterOwnership::Borrow
-                    && binding.is_written
-                    && !binding.mutation_observed
+                    && binding.mutation == MutationState::Unobserved
                 {
                     if let Some(span) = &binding.shadow_span {
                         warnings.push(ScopeWarning {
@@ -1029,7 +1046,7 @@ impl TypeEnv {
                     kind: ScopeWarningKind::Unused,
                     ty: binding.ty.clone(),
                 });
-            } else if binding.is_mutable && !binding.is_written {
+            } else if binding.is_mutable && !binding.is_written() {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
                     span: span.clone(),
@@ -1062,8 +1079,8 @@ impl TypeEnv {
             return;
         }
         binding.observing_reads += 1;
-        if binding.is_written {
-            binding.mutation_observed = true;
+        if binding.mutation == MutationState::Unobserved {
+            binding.mutation = MutationState::Observed;
         }
     }
 
@@ -1293,7 +1310,7 @@ mod tests {
         // Not yet used
         let b = env.lookup_ref("x").unwrap();
         assert_eq!(b.read_count, 0);
-        assert!(!b.is_written);
+        assert!(!b.is_written());
         assert_eq!(b.def_span, Some(0..5));
 
         // lookup() marks as used
@@ -1341,7 +1358,7 @@ mod tests {
 
         let b = env.lookup_ref("x").unwrap();
         assert_eq!(b.read_count, 1);
-        assert!(b.is_written);
+        assert!(b.is_written());
     }
 
     #[test]
@@ -1476,9 +1493,9 @@ mod tests {
     fn test_mark_written() {
         let mut env = TypeEnv::new();
         env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
-        assert!(!env.lookup_ref("x").unwrap().is_written);
+        assert!(!env.lookup_ref("x").unwrap().is_written());
         env.mark_written("x");
-        assert!(env.lookup_ref("x").unwrap().is_written);
+        assert!(env.lookup_ref("x").unwrap().is_written());
     }
 
     #[test]

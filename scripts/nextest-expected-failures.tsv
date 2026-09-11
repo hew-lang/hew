@@ -253,8 +253,6 @@ macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_re
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_bind_len_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_for_in_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	rvalue_rooted_projection_cursor_still_frees_its_snapshot	#3120 makes Vec iterator cleanup path-sensitive
-linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	loop_backedge_cannot_reread_the_cleared_field	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	whole_tuple_escape_after_projection_transfer_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_actor_shutdown_drop_spine_reaches_close	#3371 fix/collections-final-path: admits an opaque resource whose close is declared
 linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_async_cancel_drop_spine_reaches_close	#3371 gives a declared close(consume self) its checked release contract in SIR
 linux	failure	hew-cli::raii1_record_resource_field_leak_oracle	raii1_record_resource_field_admitted_no_w3_029	#3371 fix/collections-final-path: admits an opaque resource whose close is declared

@@ -1,30 +1,27 @@
-//! Ownership oracle for moving a heap leaf out of a still-live tuple owner.
+//! Ownership oracle for reading a heap leaf out of a still-live tuple owner.
 //!
 //! The authoritative shape is `let p = (v, 1); let items = p.0;
-//! items.len()`. A tuple-field load byte-copies the `Vec` handle. The `let`
-//! makes `items` the new owner, so lowering must clear `p.0` before either
-//! scope-exit release can run: `items` frees the transferred handle, while
-//! `p` keeps structural responsibility for every unmoved sibling.
+//! items.len()`. A tuple-field load on the physical path is a deep clone, not
+//! a destructive move: `items` gets its own independent `Vec` handle, and `p`
+//! keeps its own live copy of field 0 alongside every sibling. Both owners
+//! release their own allocation at scope exit; there is no cleared slot to
+//! order and no second owner of the same allocation to refuse.
 //!
 //! Before this contract was written into MIR, both candidates were excluded
 //! fail-closed: the tuple prover saw an active extracted owner, while the Vec
 //! prover saw an interior projection. A 64-frame probe leaked exactly 128
 //! nodes (the Vec header and backing allocation per frame); the direct Vec
-//! control leaked zero.
-//!
-//! The structural assertions are deliberately independent teeth:
-//! the checked MIR requires the root-relative neutralize and its transferee,
-//! elaborated MIR requires both disjoint drops on normal and cancellation
-//! exits, and LLVM requires the null store to precede both releases.
+//! control leaked zero. That fail-closed history motivates the flat-leak-slope
+//! oracles below; the clone contract is what makes rereading `p.0` after
+//! `items = p.0`, or returning `p` whole after taking `p.0`, ordinary code
+//! rather than a use-after-move.
 
 mod support;
-
-use std::process::Command;
 
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 fn projected_tuple_source(frames: usize) -> String {
     format!(
@@ -127,29 +124,15 @@ fn main() -> i64 {
     v.push(1);
     let p = (v, 7);
     var i: i64 = 0;
-    while i < 2 {
-        let before = p.0.len();
+    var total: i64 = 0;
+    while i < 3 {
         let items = p.0;
-        i = i + before + items.len();
+        total = total + items.len();
+        i = i + 1;
     }
-    i
+    total
 }
 "
-}
-
-fn check_source(source: &str, name: &str) -> std::process::Output {
-    let dir = tempfile::Builder::new()
-        .prefix("projected-tuple-owner-check-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&source_path, source).expect("write Hew source");
-    Command::new(hew_binary())
-        .arg("check")
-        .arg(&source_path)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check")
 }
 
 #[cfg_attr(
@@ -212,36 +195,68 @@ fn projected_owner_paths_are_exactly_once_under_malloc_scribble() {
 // Coverage lost on Linux CI: this was the only always-on pin for the
 // disjoint-release ordering and the cancellation-exit both-drops fact.
 
+/// Was a refusal: `p.0` clones, so `p` is never partially moved and returning
+/// it whole after reading `items = p.0` is ordinary code. `items` and the
+/// returned tuple's field 0 are independent owners of independent
+/// allocations; both must release cleanly and the returned copy must still
+/// report the one element pushed.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
-fn whole_tuple_escape_after_projection_transfer_fails_closed() {
-    let output = check_source(escaping_partial_tuple_source(), "escape");
+fn whole_tuple_escape_after_projection_transfer_runs_clean() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("projected-tuple-owner-escape-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(escaping_partial_tuple_source(), dir.path(), "escape");
+    let output = run_under_malloc_scribble(&bin);
     assert!(
-        !output.status.success(),
-        "a whole tuple whose field slot was cleared must not escape as a \
-         null-bearing value:\n{}",
+        output.status.success(),
+        "the returned tuple must survive the poisoned allocator:\n{}",
         describe_output(&output)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("used after it was consumed")
-            && stderr.contains("only unmoved sibling projections remain readable"),
-        "the refusal must explain the partial-transfer boundary:\n{stderr}"
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the returned tuple's field 0 must still report the one element \
+         pushed before the local `items` clone was taken"
     );
 }
 
+/// Was a refusal: the backedge carries `p` unchanged, so rereading `p.0` on
+/// every iteration is ordinary code, not a use-after-move. The loop bound is
+/// an independent counter so the backedge is genuinely taken (the original
+/// fixture tied its exit to the projected length and only ever ran once).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
-fn loop_backedge_cannot_reread_the_cleared_field() {
-    let output = check_source(loop_reread_after_transfer_source(), "loop_reread");
+fn loop_backedge_rereads_the_cloned_field_every_iteration() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("projected-tuple-owner-loop-reread-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        loop_reread_after_transfer_source(),
+        dir.path(),
+        "loop_reread",
+    );
+    let output = run_under_malloc_scribble(&bin);
     assert!(
-        !output.status.success(),
-        "a loop backedge must carry the partial-move state to the next \
-         iteration:\n{}",
+        output.status.success(),
+        "three backedge-carried rereads of the cloned field must survive the \
+         poisoned allocator:\n{}",
         describe_output(&output)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("used after it was consumed")
-            && stderr.contains("only unmoved sibling projections remain readable"),
-        "the backedge refusal must name the partial-transfer boundary:\n{stderr}"
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "each of the three iterations must clone `p.0` and read one element, \
+         so the running total is exactly three"
     );
 }

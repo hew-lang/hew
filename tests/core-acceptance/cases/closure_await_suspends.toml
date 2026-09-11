@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_await_suspends"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/closure_await_suspends.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n"
+exit = 0

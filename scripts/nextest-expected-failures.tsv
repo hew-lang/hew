@@ -115,7 +115,6 @@ macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_untouched_bin
 macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_wildcard_arm_closes_once	#3070 closes a composite's resource leaf exactly once
 linux	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
-linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 feat/generators-adaptors: lowers a direct call to std.pipeline.run
 linux	failure	hew-cli::actor_resource_opaque_state	builtin_cancellation_token_actor_state_uses_runtime_release	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop	#3370 gives every type the checker admits a SIR value contract

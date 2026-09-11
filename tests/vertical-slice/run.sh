@@ -2875,7 +2875,6 @@ expect_check_fail_contains \
 # Accept: a closure whose body suspends lowers to a coroutine ramp and the
 # caller reads its declared result, not the ramp's continuation handle. The
 # fixture asks an actor from inside a closure and prints the reply.
-run_accept_expect_stdout "closure_await_suspends"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The

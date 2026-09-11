@@ -211,7 +211,6 @@ linux	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_onc
 linux	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
 linux	failure	hew-cli::run_e2e	suspended_actor_fresh_state_handoff_closes_each_child_once	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::run_e2e	suspending_remote_ask_flip_in_execution_context	#3373 lowers a remote actor ask
-linux	failure	hew-cli::run_e2e	vec_pipeline_map_filter_reduce_runs	#3375 fix/collections-final-path: roots a captured-closure Vec pipeline in a mutable place
 linux	failure	hew-cli::sort_complexity_e2e	sort_merge_authority_runs_under_wasmtime	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::supervisor_init_args_e2e	supervisor_missing_field_diagnostic_points_at_child_declaration	#3393 makes hew check and hew compile agree on a supervisor child
 linux	failure	hew-cli::unicode_punctuation_wasi_e2e	hew_wasi_unicode_is_punct_matches_all_unicode_17_punctuation_scalars	#3368 implements sandbox emission on the physical path

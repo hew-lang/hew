@@ -11,7 +11,7 @@ fn get_max(v: Vec<i64>) -> i64 {
     max_val
 }
 
-fn count_sort_by_exp(var v: Vec<i64>, exp: i64) {
+fn count_sort_by_exp(var v: Vec<i64>, exp: i64) -> Vec<i64> {
     let n = v.len();
     var output: Vec<i64> = Vec.new();
     var count: Vec<i64> = Vec.new();
@@ -49,9 +49,10 @@ fn count_sort_by_exp(var v: Vec<i64>, exp: i64) {
         v.set(i, output[i]);
         i = i + 1;
     }
+    v
 }
 
-fn radix_sort(v: Vec<i64>) -> Vec<i64> {
+fn radix_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n == 0 {
         return v;
@@ -59,7 +60,7 @@ fn radix_sort(v: Vec<i64>) -> Vec<i64> {
     let max_val = get_max(v);
     var exp = 1;
     while max_val / exp > 0 {
-        count_sort_by_exp(v, exp);
+        v = count_sort_by_exp(v, exp);
         exp = exp * 10;
     }
     v

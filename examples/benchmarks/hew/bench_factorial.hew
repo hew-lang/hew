@@ -9,9 +9,12 @@ fn factorial(n: i64) -> i64 {
 const ITERS: i64 = 1000000;
 
 fn main() {
+    // factorial(20) is ~2.4e18; summing it ITERS times would overflow i64
+    // almost immediately, so fold each result into the checksum modulo a
+    // large prime instead of accumulating the raw value.
     var sum = 0;
     for i in 0 .. ITERS {
-        sum = sum + factorial(20);
+        sum = (sum + factorial(20)) % 1000000007;
     }
     println(ITERS);
     println(sum);

@@ -1,4 +1,4 @@
-fn find(var parent: Vec<i64>, x: i64) -> i64 {
+fn find(var parent: Vec<i64>, x: i64) -> (Vec<i64>, i64) {
     var r = x;
     while parent[r] != r {
         r = parent[r];
@@ -9,14 +9,16 @@ fn find(var parent: Vec<i64>, x: i64) -> i64 {
         parent.set(c, r);
         c = next;
     }
-    r
+    (parent, r)
 }
 
-fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> i64 {
-    let ra = find(parent, a);
-    let rb = find(parent, b);
+fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> (Vec<i64>, Vec<i64>, i64) {
+    let (parent_a, ra) = find(parent, a);
+    parent = parent_a;
+    let (parent_b, rb) = find(parent, b);
+    parent = parent_b;
     if ra == rb {
-        return 0;
+        return (parent, rank, 0);
     }
     if rank[ra] < rank[rb] {
         parent.set(ra, rb);
@@ -28,7 +30,7 @@ fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> i64 {
             rank.set(ra, rank[ra] + 1);
         }
     }
-    return 1;
+    return (parent, rank, 1);
 }
 
 fn kruskal(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, sorted_idx: Vec<i64>, num_edges: i64, n: i64) -> i64 {
@@ -49,7 +51,9 @@ fn kruskal(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, sorted_idx
             let u = edge_src[idx];
             let v = edge_dst[idx];
             let w = edge_wt[idx];
-            let merged = union(parent, rank, u, v);
+            let (new_parent, new_rank, merged) = union(parent, rank, u, v);
+            parent = new_parent;
+            rank = new_rank;
             if merged == 1 {
                 mst_weight = mst_weight + w;
                 edges_added = edges_added + 1;
@@ -60,7 +64,7 @@ fn kruskal(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, sorted_idx
     return mst_weight;
 }
 
-fn sort_edges_by_weight(edge_wt: Vec<i64>, var sorted_idx: Vec<i64>, num_edges: i64) -> i64 {
+fn sort_edges_by_weight(edge_wt: Vec<i64>, var sorted_idx: Vec<i64>, num_edges: i64) -> Vec<i64> {
     for i in 0 .. num_edges {
         sorted_idx.push(i);
     }
@@ -77,7 +81,7 @@ fn sort_edges_by_weight(edge_wt: Vec<i64>, var sorted_idx: Vec<i64>, num_edges: 
             j = j + 1;
         }
     }
-    return 0;
+    sorted_idx
 }
 
 const ITERS: i64 = 100000;
@@ -99,8 +103,8 @@ fn main() {
         }
     }
     let num_edges = edge_src.len();
-    let sorted_idx: Vec<i64> = Vec.new();
-    let _ = sort_edges_by_weight(edge_wt, sorted_idx, num_edges);
+    var sorted_idx: Vec<i64> = Vec.new();
+    sorted_idx = sort_edges_by_weight(edge_wt, sorted_idx, num_edges);
     var checksum = 0;
     for i in 0 .. ITERS {
         checksum = checksum + kruskal(edge_src, edge_dst, edge_wt, sorted_idx, num_edges, n);

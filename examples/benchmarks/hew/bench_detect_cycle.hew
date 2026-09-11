@@ -1,4 +1,4 @@
-fn build_directed_graph(var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>, n: i64) -> i64 {
+fn build_directed_graph(var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>, n: i64) -> (Vec<i64>, Vec<i64>) {
     for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
@@ -15,7 +15,7 @@ fn build_directed_graph(var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>, n: i
         count = count + 1;
         adj_offsets.set(src + 1, start + count);
     }
-    return 0;
+    (adj_nodes, adj_offsets)
 }
 
 fn detect_cycle(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, n: i64) -> i64 {
@@ -30,7 +30,7 @@ fn detect_cycle(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, n: i64) -> i64 {
         if colour[start] == 0 {
             stack.push(start);
             stack_phase.push(0);
-            while stack.len() > 0 {
+            while !stack.is_empty() {
                 let top = stack.len() - 1;
                 let node = stack[top];
                 let phase = stack_phase[top];
@@ -64,9 +64,9 @@ const ITERS: i64 = 200000;
 
 fn main() {
     let n = 50;
-    let adj_nodes: Vec<i64> = Vec.new();
-    let adj_offsets: Vec<i64> = Vec.new();
-    let _ = build_directed_graph(adj_nodes, adj_offsets, n);
+    let empty_nodes: Vec<i64> = Vec.new();
+    let empty_offsets: Vec<i64> = Vec.new();
+    let (adj_nodes, adj_offsets) = build_directed_graph(empty_nodes, empty_offsets, n);
     var checksum = 0;
     for i in 0 .. ITERS {
         checksum = checksum + detect_cycle(adj_nodes, adj_offsets, n);

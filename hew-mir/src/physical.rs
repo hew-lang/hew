@@ -6477,6 +6477,10 @@ fn apply_edge(
     Ok((edge.target, state))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call boundary threading its argument, result and both edges"
+)]
 fn call_successors(
     function: &PhysicalFunction,
     borrows: &BorrowDependents,

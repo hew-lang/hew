@@ -1,0 +1,11 @@
+PASS: new array size=0 cap=4
+PASS: push within cap
+PASS: get returns values
+PASS: growth doubles cap
+PASS: values after growth
+PASS: set modifies value
+PASS: pop returns last
+PASS: multi growth pattern
+PASS: cap 1->2->4 growth
+9/9 tests passed
+ALL PASS

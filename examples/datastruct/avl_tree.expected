@@ -1,0 +1,9 @@
+=== AVL Tree ===
+PASS: AVL basic insert + inorder sorted
+PASS: AVL LL rotation
+PASS: AVL RR rotation
+PASS: AVL LR rotation
+PASS: AVL 20 sequential inserts balanced
+
+5/5 tests passed
+PASS

@@ -1,0 +1,9 @@
+=== Max-Heap ===
+PASS: max-heap peek returns maximum
+PASS: extract_max returns descending order
+PASS: build_heap maintains max-heap property
+PASS: heap property after mixed ops
+PASS: heapsort produces sorted output
+
+5/5 tests passed
+PASS

@@ -1,0 +1,12 @@
+PASS: insert and lookup
+PASS: lookup missing
+PASS: size
+PASS: duplicate insert
+PASS: remove
+PASS: displacement chains
+PASS: remove and re-insert
+PASS: multiple elements
+---
+Passed: 8
+Failed: 0
+ALL PASS

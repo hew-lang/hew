@@ -1,0 +1,9 @@
+=== Binary Tree ===
+PASS: inorder traversal
+PASS: preorder traversal
+PASS: postorder traversal
+PASS: height = 3
+PASS: single node
+
+5/5 tests passed
+PASS

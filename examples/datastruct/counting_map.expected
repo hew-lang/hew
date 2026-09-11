@@ -1,0 +1,12 @@
+PASS: count single key
+PASS: count multiple keys
+PASS: non-existent key count
+PASS: most frequent
+PASS: frequency simulation
+PASS: most frequent after simulation
+PASS: increment further
+PASS: most frequent updated
+---
+Passed: 8
+Failed: 0
+ALL PASS

@@ -1,0 +1,12 @@
+PASS: insert and get
+PASS: get missing key
+PASS: contains_key
+PASS: update existing
+PASS: remove
+PASS: get after remove
+PASS: collision handling
+PASS: final size
+---
+Passed: 8
+Failed: 0
+ALL PASS

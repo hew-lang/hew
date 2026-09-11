@@ -1,0 +1,10 @@
+=== Singly Linked List Tests ===
+PASS: prepend
+PASS: append
+PASS: delete middle
+PASS: delete head
+PASS: find
+PASS: length
+
+Passed: 6/6
+OVERALL: PASS

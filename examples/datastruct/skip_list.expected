@@ -1,0 +1,10 @@
+=== Skip List Tests ===
+PASS: sorted insert
+PASS: skip search found
+PASS: skip search not found
+PASS: fewer comparisons
+PASS: rebuild top level
+PASS: empty search
+
+Passed: 6/6
+OVERALL: PASS

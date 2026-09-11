@@ -1,0 +1,9 @@
+PASS: new stack is empty
+PASS: push and size
+PASS: peek returns top
+PASS: pop LIFO order
+PASS: empty after pop all
+PASS: push after empty
+PASS: 100 elements
+7/7 tests passed
+ALL PASS

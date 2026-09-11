@@ -1,0 +1,10 @@
+=== Circular List Tests ===
+PASS: insert and traverse
+PASS: circular property
+PASS: delete middle
+PASS: delete head
+PASS: single element
+PASS: length
+
+Passed: 6/6
+OVERALL: PASS

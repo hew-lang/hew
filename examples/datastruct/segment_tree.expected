@@ -1,0 +1,9 @@
+=== Segment Tree ===
+PASS: segment tree full range sum
+PASS: segment tree partial queries
+PASS: segment tree point update
+PASS: segment tree single element
+PASS: segment tree multiple updates
+
+5/5 tests passed
+PASS

@@ -1,0 +1,11 @@
+PASS: out-degree(0) = 2
+PASS: out-degree(5) = 0 (sink)
+PASS: in-degree(3) = 2
+PASS: in-degree(0) = 0 (source)
+PASS: path 0->5 exists
+PASS: no path 5->0
+PASS: transpose path 5->0 exists
+PASS: no transpose path 0->5
+---
+Passed: 8/8
+ALL PASS

@@ -1,0 +1,9 @@
+=== Treap ===
+PASS: treap BST + heap properties
+PASS: treap inorder is sorted
+PASS: highest priority at root
+PASS: sequential inserts maintain properties
+PASS: single node treap
+
+5/5 tests passed
+PASS

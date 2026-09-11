@@ -1,0 +1,11 @@
+PASS: single element max
+PASS: push larger updates max
+PASS: push smaller keeps max
+PASS: push even larger
+PASS: pop reverts max to 8
+PASS: pop again max still 8
+PASS: pop 8 max becomes 5
+PASS: many elements max=90
+PASS: pop 2 max becomes 50
+9/9 tests passed
+ALL PASS

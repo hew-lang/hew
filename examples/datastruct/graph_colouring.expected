@@ -1,0 +1,11 @@
+PASS: graph1 valid colouring
+PASS: graph1 uses <= 4 colours
+PASS: bipartite valid colouring
+PASS: bipartite uses 2 colours
+PASS: triangle valid colouring
+PASS: triangle uses 3 colours
+PASS: star valid colouring
+PASS: star uses 2 colours
+---
+Passed: 8/8
+ALL PASS

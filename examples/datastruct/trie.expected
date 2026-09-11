@@ -1,0 +1,9 @@
+=== Trie ===
+PASS: trie insert and search
+PASS: trie starts_with
+PASS: trie handles zero
+PASS: trie overlapping prefixes
+PASS: trie many numbers
+
+5/5 tests passed
+PASS

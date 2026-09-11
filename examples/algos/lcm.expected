@@ -1,0 +1,7 @@
+PASS: lcm(4,6)=12
+PASS: lcm(3,7)=21
+PASS: lcm(12,18)=36
+PASS: lcm(5,10)=10
+---
+Passed: 4 / 4
+ALL PASS

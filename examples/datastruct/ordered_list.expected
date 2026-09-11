@@ -1,0 +1,10 @@
+=== Ordered List Tests ===
+PASS: sorted insert
+PASS: duplicates
+PASS: search
+PASS: delete
+PASS: invariant after many inserts
+PASS: delete nonexistent
+
+Passed: 6/6
+OVERALL: PASS

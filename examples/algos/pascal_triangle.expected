@@ -1,0 +1,12 @@
+PASS: C(0,0)=1
+PASS: C(5,0)=1
+PASS: C(5,1)=5
+PASS: C(5,2)=10
+PASS: C(10,3)=120
+PASS: C(10,5)=252
+PASS: C(20,10)=184756
+Row 5:
+1 5 10 10 5 1 
+---
+Passed: 7 / 7
+ALL PASS

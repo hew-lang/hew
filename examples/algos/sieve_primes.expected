@@ -1,0 +1,11 @@
+PASS: count primes<=100 = 25
+PASS: 2 is prime
+PASS: 3 is prime
+PASS: 5 is prime
+PASS: 97 is prime
+PASS: 4 is not prime
+PASS: 9 is not prime
+PASS: 100 is not prime
+---
+Passed: 8 / 8
+ALL PASS

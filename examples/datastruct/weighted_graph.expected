@@ -1,0 +1,11 @@
+PASS: weight(0,1) = 4
+PASS: weight(1,3) = 10
+PASS: weight(2,0) = 2 symmetric
+PASS: no edge (0,4) returns -1
+PASS: min weight from node 2 = 2
+PASS: max weight from node 2 = 8
+PASS: degree(2) = 4
+PASS: total entries = 14
+---
+Passed: 8/8
+ALL PASS

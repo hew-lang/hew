@@ -1,0 +1,8 @@
+Test reverse ... PASS
+Test sorted ... PASS
+Test duplicates ... PASS
+Test single ... PASS
+Test empty ... PASS
+Test ten_elements ... PASS
+6/6 tests passed
+ALL PASS

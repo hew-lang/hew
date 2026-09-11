@@ -1,0 +1,10 @@
+=== LRU Cache Tests ===
+PASS: put and get
+PASS: eviction
+PASS: access updates order
+PASS: update value
+PASS: order after operations
+PASS: cache miss
+
+Passed: 6/6
+OVERALL: PASS

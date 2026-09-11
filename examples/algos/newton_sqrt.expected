@@ -1,0 +1,10 @@
+PASS: sqrt(0)=0
+PASS: sqrt(1)=1
+PASS: sqrt(4)=2
+PASS: sqrt(100)=10
+PASS: sqrt(144)=12
+PASS: sqrt(10000)=100
+PASS: sqrt(2)=1 (floor)
+---
+Passed: 7 / 7
+ALL PASS

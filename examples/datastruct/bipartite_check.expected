@@ -1,0 +1,11 @@
+PASS: 4-cycle is bipartite
+PASS: triangle is not bipartite
+PASS: tree is bipartite
+PASS: 5-cycle is not bipartite
+PASS: single node is bipartite
+PASS: K(2,3) is bipartite
+PASS: 6-cycle is bipartite
+PASS: cycle+chord not bipartite
+---
+Passed: 8/8
+ALL PASS

@@ -1,0 +1,14 @@
+PASS: initial all zeros
+PASS: set bit 0
+PASS: set bit 31
+PASS: set bit 32
+PASS: unset bit is 0
+PASS: count ones = 3
+PASS: clear bit 31
+PASS: count after clear = 2
+PASS: set multiple, count = 6
+PASS: set idempotent
+---
+Passed: 10
+Failed: 0
+ALL PASS

@@ -1393,7 +1393,7 @@ ux-examples-expect: hew-native
 # Artifacts only: the expectations self-test belongs to the gate.
 
 # Run every offline v0.5-surface example against its paired .expected file.
-# Two lanes:
+# Three lanes:
 #   1. examples/v05/surfaces/*.hew — idiomatic single-file demos for the landed
 #      v0.5 surfaces (typed streams, regex captures, template, unicode). Pure,
 #      deterministic, no I/O.
@@ -1401,6 +1401,10 @@ ux-examples-expect: hew-native
 #      LOOPBACK-only (127.0.0.1) so it needs no external network and is offline;
 #      its output is deterministic and was verified stable across repeated runs,
 #      so it is gated here too.
+#   3. examples/algos/*.hew and examples/datastruct/*.hew — the one-file
+#      algorithm and data-structure demos. Each is self-checking, prints a
+#      PASS/FAIL transcript, and is pure and offline, so its output is its
+#      contract. Together they add about forty seconds to this gate.
 # The TLS client (examples/net/tls_client.hew) is intentionally NOT gated: it
 # dials a real public host (example.com:443) — a genuine outbound network
 # dependency that cannot run offline — and additionally exercises a known TLS
@@ -1419,8 +1423,14 @@ ux-examples-expect: hew-native
 # expectations, process failures, timeouts, and output drift all fail the gate.
 # `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
+# examples/benchmarks/hew is deliberately absent: those programs exist to be
+# timed, and the slowest runs for minutes, well past the runner's per-source
+# deadline.
+#
 SURFACE_EXAMPLE_INVENTORY = --label "surface" \
 	  --source-root examples/v05/surfaces \
+	  --source-root examples/algos \
+	  --source-root examples/datastruct \
 	  --source examples/net/http_await_service.hew
 
 test-surface-examples: hew-native test-example-expectations-selftest

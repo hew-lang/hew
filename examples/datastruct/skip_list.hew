@@ -3,6 +3,10 @@
 // Top level: every other element (express lane)
 // Bottom node: [value, next_bottom] at i*2, i*2+1
 // Top node stored in separate vec: [bottom_idx, next_top] at i*2, i*2+1
+//
+// A parameter is the callee's own copy, so every helper that writes into a
+// level returns that level and the caller reassigns. Helpers that also report
+// an index or a comparison count return a tuple.
 fn bot_val(bot: Vec<i64>, i: i64) -> i64 {
     bot[i * 2]
 }
@@ -11,8 +15,9 @@ fn bot_next(bot: Vec<i64>, i: i64) -> i64 {
     bot[i * 2 + 1]
 }
 
-fn set_bot_next(var bot: Vec<i64>, i: i64, nx: i64) {
+fn set_bot_next(var bot: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     bot.set(i * 2 + 1, nx);
+    bot
 }
 
 fn top_bidx(top: Vec<i64>, i: i64) -> i64 {
@@ -23,33 +28,35 @@ fn top_next(top: Vec<i64>, i: i64) -> i64 {
     top[i * 2 + 1]
 }
 
-fn set_top_next(var top: Vec<i64>, i: i64, nx: i64) {
+fn set_top_next(var top: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     top.set(i * 2 + 1, nx);
+    top
 }
 
-fn alloc_bot(var bot: Vec<i64>, val: i64) -> i64 {
+fn alloc_bot(var bot: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = bot.len() / 2;
     bot.push(val);
     bot.push(-1);
-    idx
+    (bot, idx)
 }
 
-fn alloc_top(var top: Vec<i64>, bot_idx: i64) -> i64 {
+fn alloc_top(var top: Vec<i64>, bot_idx: i64) -> (Vec<i64>, i64) {
     let idx = top.len() / 2;
     top.push(bot_idx);
     top.push(-1);
-    idx
+    (top, idx)
 }
 
-// Insert val into sorted bottom list, returns new head
-fn insert_bottom(bot: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_bot(bot, val);
+// Insert val into the sorted bottom list; returns the level and the new head.
+fn insert_bottom(var bot: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, nd) = alloc_bot(bot, val);
+    bot = grown;
     if head == -1 {
-        return nd;
+        return (bot, nd);
     }
     if val <= bot_val(bot, head) {
-        set_bot_next(bot, nd, head);
-        return nd;
+        bot = set_bot_next(bot, nd, head);
+        return (bot, nd);
     }
     var prev = head;
     var curr = bot_next(bot, head);
@@ -57,8 +64,8 @@ fn insert_bottom(bot: Vec<i64>, head: i64, val: i64) -> i64 {
     while curr != -1 {
         if val <= bot_val(bot, curr) {
             if inserted == 0 {
-                set_bot_next(bot, prev, nd);
-                set_bot_next(bot, nd, curr);
+                bot = set_bot_next(bot, prev, nd);
+                bot = set_bot_next(bot, nd, curr);
                 inserted = 1;
             }
         }
@@ -70,39 +77,38 @@ fn insert_bottom(bot: Vec<i64>, head: i64, val: i64) -> i64 {
         }
     }
     if inserted == 0 {
-        set_bot_next(bot, prev, nd);
+        bot = set_bot_next(bot, prev, nd);
     }
-    head
+    (bot, head)
 }
 
-// Rebuild top level: every other element from bottom
-fn rebuild_top(bot: Vec<i64>, top: Vec<i64>, bot_head: i64) -> i64 {
-    // Clear top by creating fresh - but we can't clear Vec in Hew
-    // We'll just track top_head as return value; old top entries are orphaned
+// Rebuild the top level: every other element from the bottom. Old top entries
+// are orphaned; the returned head is the only way into the new express lane.
+fn rebuild_top(bot: Vec<i64>, var top: Vec<i64>, bot_head: i64) -> (Vec<i64>, i64) {
     var top_head = -1;
     var top_tail = -1;
     var curr = bot_head;
     var count = 0;
     while curr != -1 {
         if count % 2 == 0 {
-            let t = alloc_top(top, curr);
+            let (grown, t) = alloc_top(top, curr);
+            top = grown;
             if top_head == -1 {
                 top_head = t;
                 top_tail = t;
             } else {
-                set_top_next(top, top_tail, t);
+                top = set_top_next(top, top_tail, t);
                 top_tail = t;
             }
         }
         count = count + 1;
         curr = bot_next(bot, curr);
     }
-    top_head
+    (top, top_head)
 }
 
-// Search using skip list. Stores comparison count in out_comps[0].
-// Returns found node index or -1.
-fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, var out_comps: Vec<i64>) -> i64 {
+// Search using the skip list. Returns (found node index or -1, comparisons).
+fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64) -> (i64, i64) {
     var comps = 0;
     var top_curr = top_head;
     var drop_bot = -1;
@@ -113,8 +119,7 @@ fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, var out_co
         let bi = top_bidx(top, top_curr);
         comps = comps + 1;
         if bot_val(bot, bi) == val {
-            out_comps.push(comps);
-            return bi;
+            return (bi, comps);
         }
         let top_nx = top_next(top, top_curr);
         if top_nx != -1 {
@@ -135,33 +140,28 @@ fn search_skip(bot: Vec<i64>, top: Vec<i64>, top_head: i64, val: i64, var out_co
     while curr != -1 {
         comps = comps + 1;
         if bot_val(bot, curr) == val {
-            out_comps.push(comps);
-            return curr;
+            return (curr, comps);
         }
         if bot_val(bot, curr) > val {
-            out_comps.push(comps);
-            return -1;
+            return (-1, comps);
         }
         curr = bot_next(bot, curr);
     }
-    out_comps.push(comps);
-    -1
+    (-1, comps)
 }
 
-// Linear search. Stores comparison count in out_comps[0].
-fn search_linear(bot: Vec<i64>, head: i64, val: i64, var out_comps: Vec<i64>) -> i64 {
+// Linear search. Returns (found node index or -1, comparisons).
+fn search_linear(bot: Vec<i64>, head: i64, val: i64) -> (i64, i64) {
     var comps = 0;
     var curr = head;
     while curr != -1 {
         comps = comps + 1;
         if bot_val(bot, curr) == val {
-            out_comps.push(comps);
-            return curr;
+            return (curr, comps);
         }
         curr = bot_next(bot, curr);
     }
-    out_comps.push(comps);
-    -1
+    (-1, comps)
 }
 
 fn bot_list_len(bot: Vec<i64>, head: i64) -> i64 {
@@ -176,13 +176,14 @@ fn bot_list_len(bot: Vec<i64>, head: i64) -> i64 {
 
 // --- Tests ---
 fn test_sorted_insert() -> i64 {
-    let bot: Vec<i64> = Vec.new();
+    var bot: Vec<i64> = Vec.new();
     var head = -1;
-    head = insert_bottom(bot, head, 30);
-    head = insert_bottom(bot, head, 10);
-    head = insert_bottom(bot, head, 50);
-    head = insert_bottom(bot, head, 20);
-    head = insert_bottom(bot, head, 40);
+    let values: Vec<i64> = [30, 10, 50, 20, 40];
+    for value in values {
+        let (grown, new_head) = insert_bottom(bot, head, value);
+        bot = grown;
+        head = new_head;
+    }
     // Should be 10,20,30,40,50
     var curr = head;
     var prev_val = -1;
@@ -205,18 +206,23 @@ fn test_sorted_insert() -> i64 {
     0
 }
 
-fn test_skip_search() -> i64 {
-    let bot: Vec<i64> = Vec.new();
-    let top: Vec<i64> = Vec.new();
+// Build a bottom level holding 10, 20, ... count*10 and return it with its head.
+fn build_decades(count: i64) -> (Vec<i64>, i64) {
+    var bot: Vec<i64> = Vec.new();
     var head = -1;
-    var i = 1;
-    while i <= 10 {
-        head = insert_bottom(bot, head, i * 10);
-        i = i + 1;
+    for i in 1 .. count + 1 {
+        let (grown, new_head) = insert_bottom(bot, head, i * 10);
+        bot = grown;
+        head = new_head;
     }
-    let top_head = rebuild_top(bot, top, head);
-    let comps: Vec<i64> = Vec.new();
-    let idx = search_skip(bot, top, top_head, 70, comps);
+    (bot, head)
+}
+
+fn test_skip_search() -> i64 {
+    let (bot, head) = build_decades(10);
+    let empty_top: Vec<i64> = Vec.new();
+    let (top, top_head) = rebuild_top(bot, empty_top, head);
+    let (idx, _comps) = search_skip(bot, top, top_head, 70);
     if idx >= 0 {
         if bot_val(bot, idx) == 70 {
             println("PASS: skip search found");
@@ -228,17 +234,10 @@ fn test_skip_search() -> i64 {
 }
 
 fn test_skip_not_found() -> i64 {
-    let bot: Vec<i64> = Vec.new();
-    let top: Vec<i64> = Vec.new();
-    var head = -1;
-    var i = 1;
-    while i <= 5 {
-        head = insert_bottom(bot, head, i * 10);
-        i = i + 1;
-    }
-    let top_head = rebuild_top(bot, top, head);
-    let comps: Vec<i64> = Vec.new();
-    let idx = search_skip(bot, top, top_head, 35, comps);
+    let (bot, head) = build_decades(5);
+    let empty_top: Vec<i64> = Vec.new();
+    let (top, top_head) = rebuild_top(bot, empty_top, head);
+    let (idx, _comps) = search_skip(bot, top, top_head, 35);
     if idx == -1 {
         println("PASS: skip search not found");
         return 1;
@@ -248,42 +247,24 @@ fn test_skip_not_found() -> i64 {
 }
 
 fn test_fewer_comparisons() -> i64 {
-    let bot: Vec<i64> = Vec.new();
-    let top: Vec<i64> = Vec.new();
-    var head = -1;
-    var i = 1;
-    while i <= 20 {
-        head = insert_bottom(bot, head, i * 10);
-        i = i + 1;
-    }
-    let top_head = rebuild_top(bot, top, head);
-    let skip_c: Vec<i64> = Vec.new();
-    let _skip_idx = search_skip(bot, top, top_head, 190, skip_c);
-    let lin_c: Vec<i64> = Vec.new();
-    let _lin_idx = search_linear(bot, head, 190, lin_c);
-    let skip_comps = skip_c[0];
-    let lin_comps = lin_c[0];
+    let (bot, head) = build_decades(20);
+    let empty_top: Vec<i64> = Vec.new();
+    let (top, top_head) = rebuild_top(bot, empty_top, head);
+    let (_skip_idx, skip_comps) = search_skip(bot, top, top_head, 190);
+    let (_lin_idx, lin_comps) = search_linear(bot, head, 190);
     if skip_comps <= lin_comps {
         println("PASS: fewer comparisons");
         return 1;
     }
-    print("  skip_comps=");
-    print(skip_comps);
-    print(" lin_comps=");
-    println(lin_comps);
+    println(f"  skip_comps={skip_comps} lin_comps={lin_comps}");
     println("FAIL: fewer comparisons");
     0
 }
 
 fn test_rebuild_top() -> i64 {
-    let bot: Vec<i64> = Vec.new();
-    let top: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_bottom(bot, head, 10);
-    head = insert_bottom(bot, head, 20);
-    head = insert_bottom(bot, head, 30);
-    head = insert_bottom(bot, head, 40);
-    let top_head = rebuild_top(bot, top, head);
+    let (bot, head) = build_decades(4);
+    let empty_top: Vec<i64> = Vec.new();
+    let (top, top_head) = rebuild_top(bot, empty_top, head);
     // Top should have 2 nodes (indices 0 and 2 of bottom -> values 10, 30)
     var count = 0;
     var tc = top_head;
@@ -302,8 +283,7 @@ fn test_rebuild_top() -> i64 {
 fn test_empty_search() -> i64 {
     let bot: Vec<i64> = Vec.new();
     let top: Vec<i64> = Vec.new();
-    let comps: Vec<i64> = Vec.new();
-    let idx = search_skip(bot, top, -1, 42, comps);
+    let (idx, _comps) = search_skip(bot, top, -1, 42);
     if idx == -1 {
         println("PASS: empty search");
         return 1;
@@ -323,9 +303,7 @@ fn main() {
     passed = passed + test_rebuild_top();
     passed = passed + test_empty_search();
     println("");
-    print("Passed: ");
-    print(passed);
-    println(f"/{total}");
+    println(f"Passed: {passed}/{total}");
     if passed == total {
         println("OVERALL: PASS");
     } else {

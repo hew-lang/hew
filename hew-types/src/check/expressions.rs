@@ -1873,7 +1873,43 @@ impl Checker {
             self.report_invalid_actor_send(&ty, error_span);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {
-            self.mark_expr_moved(expr, move_span);
+            self.mark_affine_transfer_moved(expr, move_span);
+        }
+    }
+
+    /// Mark the source of one affine boundary transfer moved.
+    ///
+    /// A handle sent directly names a place and marks straight through. A
+    /// handle packed into a tuple or array literal at the call site names no
+    /// place of its own, so the literal is transparent here: the mailbox takes
+    /// the aggregate and with it each element, and the element binding is
+    /// exactly what a later use must be refused against.
+    fn mark_affine_transfer_moved(&mut self, expr: &Expr, move_span: &Span) {
+        match expr {
+            Expr::Tuple(elements) => {
+                for (element, span) in elements {
+                    self.mark_affine_transfer_element(element, span);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let (element, span) = element.expr();
+                    self.mark_affine_transfer_element(element, span);
+                }
+            }
+            _ => self.mark_expr_moved(expr, move_span),
+        }
+    }
+
+    /// One element of an aggregate literal crossing the boundary: descend only
+    /// where the element's own checked type carries a transferring owner.
+    fn mark_affine_transfer_element(&mut self, expr: &Expr, span: &Span) {
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
+            return;
+        };
+        if self.ty_contains_affine_actor_transfer(&ty) {
+            self.mark_affine_transfer_moved(expr, span);
         }
     }
 

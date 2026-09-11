@@ -3694,7 +3694,7 @@ fn check_closure_double_vec_push_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_double_vec_push.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
         "expected use-after-move diagnostic; got: {combined}"
     );
 }
@@ -3706,7 +3706,7 @@ fn check_closure_vec_push_then_record_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_vec_push_then_record.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
         "expected use-after-move diagnostic; got: {combined}"
     );
 }

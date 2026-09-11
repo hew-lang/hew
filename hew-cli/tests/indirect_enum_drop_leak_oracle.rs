@@ -657,10 +657,10 @@ fn assert_actor_request_payload_slope_matches_scalar() {
 /// path uses, so a pointer-backed reply frees the subtree through the recursive
 /// `__hew_indirect_enum_free_<E>` thunk.
 ///
-/// The ask is a PLAIN `await` inside an actor handler (a suspending context):
-/// that is the `SuspendingAsk` lowering that wires the reply destructor
-/// (`wire_reply_drop_fn`). A blocking `await` in `main` uses the direct
-/// `hew_actor_ask` path and wires no destructor.
+/// The ask is a plain handler-to-actor call inside an actor handler (a
+/// suspending context): that is the `SuspendingAsk` lowering that wires the
+/// reply destructor (`wire_reply_drop_fn`). The same call from `main` uses the
+/// direct `hew_actor_ask` path and wires no destructor.
 const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
 indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }\n\

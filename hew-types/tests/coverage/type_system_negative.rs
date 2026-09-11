@@ -2567,31 +2567,50 @@ fn vec_clone_owning_tuple_element_is_permitted() {
     );
 }
 
+/// `append` copies every source element into the receiver, so a
+/// descriptor-backed record element is fine (the copy runs its clone thunk)
+/// and a function-valued element is refused (its closure environment has no
+/// copy, and a shallow buffer copy would leave two owners of one environment).
 #[test]
-fn vec_append_record_element_is_layout_fail_closed() {
-    let output = typecheck(
+fn vec_append_admits_record_elements_and_refuses_callable_elements() {
+    let admitted = typecheck(
         r"
         type Point {
             x: i32,
             y: i32,
         }
         fn main() {
-            let v: Vec<Point> = Vec.new();
+            var v: Vec<Point> = Vec.new();
             let other: Vec<Point> = Vec.new();
             v.append(other);
         }
         ",
     );
     assert!(
-        output
+        admitted.errors.is_empty(),
+        "Vec<Point>::append copies each element through its clone thunk, got: {:?}",
+        admitted.errors
+    );
+
+    let refused = typecheck(
+        r"
+        fn double(x: i64) -> i64 { x * 2 }
+        fn main() {
+            var v: Vec<fn(i64) -> i64> = Vec.new();
+            let other: Vec<fn(i64) -> i64> = Vec.new();
+            v.append(other);
+        }
+        ",
+    );
+    assert!(
+        refused
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("`Vec.append`")
-                && e.message.contains("not runtime-backed yet")
-                && e.message.contains("hew_vec_append_layout")),
-        "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
-        output.errors
+                && e.message.contains("function-valued elements")),
+        "Expected the shared-copy refusal for Vec<fn>::append, got: {:?}",
+        refused.errors
     );
 }
 

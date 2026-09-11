@@ -6087,6 +6087,10 @@ impl Checker {
                 }
             }
             self.check_against(expr, arg_span, expected);
+            // A value with no copy operation enters the collection by
+            // transfer: the slot becomes its only owner, so a later use of the
+            // source binding is a use after the move.
+            self.record_callable_value_transfer(expr, arg_span);
         }
 
         let elem_ty = type_args

@@ -803,7 +803,7 @@ fn vec_machine_element_stores_and_releases_each_value() {
 
 /// A channel handle nested inside a tuple `(Receiver<i64>, i64)` is still a
 /// single-owner resource. Sending the tuple to an actor transfers the handle;
-/// the caller binding `rx` must be `UseAfterConsume` after the send.
+/// a later use of the caller binding `rx` is a use after that move.
 ///
 /// Before the fix, `checked_span_is_channel_handle` only matched the top-level
 /// type — a tuple arg was lowered as `Read` (`CowShare` in MIR), the caller
@@ -845,8 +845,8 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("used after it was consumed") && stderr.contains("`rx`"),
-        "expected UseAfterConsume on rx; got:\n{stderr}",
+        stderr.contains("use of moved value `rx`") && stderr.contains("value was consumed here"),
+        "expected the use-after-move refusal on rx; got:\n{stderr}",
     );
 }
 

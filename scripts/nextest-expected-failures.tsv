@@ -203,7 +203,6 @@ linux	failure	hew-cli::run_e2e	check_carrier_conditional_consume_shared_exit_fai
 linux	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
-linux	failure	hew-cli::run_e2e	check_generator_iter_map_owned_handle_aggregate_fails_closed	#3370 feat/generators-adaptors: lowers the std.iter.Map generic adaptor callee
 linux	failure	hew-cli::run_e2e	cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux	failure	hew-cli::run_e2e	for_range_mixed_width_bounds_runs_and_returns_correct_value	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member

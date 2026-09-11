@@ -20,12 +20,12 @@ replaced the legacy lowerer. Its rows describe `main`: 85 of the 106 select
 macOS alone, and 20 rows selected Linux for tests that recovered on the final
 path.
 
-The ledger now carries 225 rows: every remaining Linux failure in the triage
+The ledger now carries 224 rows: every remaining Linux failure in the triage
 half has one naming the issue that will remove it, and the 20 stale Linux
 selectors are gone. 15 of those 20 are outside the triage half and were dropped
-because the tests pass at this head. `make test` is still red here on the 101
-failures of the mechanical half; once that half lands its rows, `make test` and
-`make test-strict` differ only by this ledger.
+because the tests pass at this head. `make test` is still red here on the 45
+failures the mechanical half has left to row; once those rows land, `make test`
+and `make test-strict` differ only by this ledger.
 
 ## Dispositions
 
@@ -45,8 +45,8 @@ failures of the mechanical half; once that half lands its rows, `make test` and
   ledger row until a lane writes it. This is a work order, not a parking space.
 - **Deferred**: scheduled work with a named owner: sandbox emission (#3368)
   and native debug metadata (#3369).
-- **Fixed upstream**: recovered between the handoff baseline and this head;
-  nothing in this lane touched it.
+- **Fixed upstream**: recovered or deleted between the handoff baseline and
+  this head by another lane; nothing here touched it.
 
 The diagnostic column is what the test saw at the baseline before this lane
 touched it, so a Fixed or Rewritten row records the failure that was repaired,
@@ -193,7 +193,6 @@ not anything a rerun will print.
 | `hew-cli::run_e2e check_cross_module_generic_fn_value_ambiguous_rejected`                                                | error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "\_\_h           | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377                                                                                                                                                                                                                |
 | `hew-cli::run_e2e check_gen_fn_capturing_closure_arg_fails_closed`                                                       | error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "\_\_h           | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377                                                                                                                                                                                                                |
 | `hew-cli::run_e2e check_gen_fn_capturing_closure_rebind_fails_closed`                                                    | error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "\_\_h           | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377                                                                                                                                                                                                                |
-| `hew-cli::run_e2e check_generator_iter_map_owned_handle_aggregate_fails_closed`                                          | E_SIR_UNSUPPORTED: generic direct callee `std.builtins.Generator::<impl std.builtins.Iter | Defect (lane feat/generators-adaptors)   | SIR value contracts refuse types the checker admits #3370                                                                                                                                                                                                                      |
 | `hew-cli::run_e2e cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented`                         | error: E_SIR_VERIFY: SIR verification failed: [SirDiagnostic { function: "\_\_h           | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377                                                                                                                                                                                                                |
 | `hew-cli::run_e2e for_range_mixed_width_bounds_runs_and_returns_correct_value`                                           | E_SIR_UNSUPPORTED: value coercion from I32 to I64 refused: `i32` has no callable value co | Defect                                   | SIR value contracts refuse types the checker admits #3370                                                                                                                                                                                                                      |
 | `hew-cli::run_e2e run_file_imported_actor_closure_and_range_body_runs`                                                   | E_SIR_UNSUPPORTED: ask has no exact receive protocol member                               | Defect (lane fix/collections-final-path) | an imported declaration's identity is not exact in SIR #3374                                                                                                                                                                                                                   |
@@ -262,3 +261,4 @@ not anything a rerun will print.
 | `hew-cli::wasi_run_e2e wasm_hashmap_hashset_layout_run_pass`                                                             | E_NOT_YET_IMPLEMENTED: sandbox emission                                                   | Deferred                                 | sandbox emission is not implemented on the physical path #3368                                                                                                                                                                                                                 |
 | `hew-cli::wasi_run_e2e yaml_bytes_ffi_return_runs_natively_and_under_wasi`                                               | error: no method `to_string` on `bytes`                                                   | Deferred                                 | the native half is repaired to decode through std.encoding.utf8; the wasm half is blocked on the C byte-triple result ABI for wasm32-wasip1 #3368                                                                                                                              |
 | `hew-cli::native_actor_e2e native_ask_deadline_abandons_reply_and_actor_finishes_owned_cleanup`                          | passes at this head                                                                       | Fixed upstream                           | recovered in the commits after the handoff baseline; it is a wall-clock ask deadline and fails under a loaded concurrent run, tracked as #3165                                                                                                                                 |
+| `hew-cli::run_e2e check_generator_iter_map_owned_handle_aggregate_fails_closed`                                          | E_SIR_UNSUPPORTED: generic direct callee `std.builtins.Generator::<impl std.builtins.Iter | Fixed upstream                           | deleted upstream by feat/generators-adaptors, which lowers the std.iter.Map generic adaptor callee the test was blocked on                                                                                                                                                     |

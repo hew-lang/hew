@@ -4,7 +4,7 @@ fn identity(x: i64) -> i64 {
 }
 
 fn shared_families() {
-    let left: Vec<i64> = Vec.new();
+    var left: Vec<i64> = Vec.new();
     let right: Vec<i64> = Vec.new();
     left.append(right);
     var copy = left.clone();

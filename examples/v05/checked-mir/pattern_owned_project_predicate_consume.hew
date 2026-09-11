@@ -4,7 +4,7 @@ type Token {
 }
 
 impl Token {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 type Packet {

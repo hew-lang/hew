@@ -983,7 +983,6 @@ stable-stdlib = [
   "hew_cron_free",
   "hew_cron_is_valid",
   "hew_cron_last_error",
-  "hew_cron_next",
   "hew_cron_next_hew",
   "hew_cron_parse",
   "hew_cron_to_string",
@@ -3279,7 +3278,7 @@ result-retention = "transferred"
 [[ownership.contracts]]
 symbol = "hew_stream_lines"
 result = "fresh"
-params = ["consume", "borrow"]
+params = ["consume"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4807,15 +4806,6 @@ result-retention = "transferred"
 symbol = "hew_cron_next_hew"
 result = "none"
 params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# The out-parameter form: the expression handle and the caller's timestamp slot
-# are both borrowed, and the i32 result is a status code.
-[[ownership.contracts]]
-symbol = "hew_cron_next"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

@@ -1,26 +1,74 @@
 //! Status: runnable
-//! Description: Actor Net Reader example.
+//! Description: Actor Net Reader — one reader actor per accepted connection.
 
-import std.net.{Connection};
+// Every actor call is an ask, so asking a reader to pump a connection would
+// hold the accept loop for that connection's whole life. The reader owns the
+// read half of its own connection and its pump runs as a forked task owned by
+// the accept loop's scope, which never exits — so the loop returns to `accept`
+// immediately and several peers are read at once.
+import std.encoding.utf8;
+
+import std.net;
+
+import std.os;
+
+import std.stream.{Sink, Stream};
+
+extern "C" {
+    fn hew_actor_self_stop();
+    fn hew_sink_shutdown(sink: Sink<bytes>);
+}
 
 actor ServerReader {
-    let conn: Connection,
-
-    receive fn start(unused: i32) {
-        let msg = conn.read_string() handle error {
-            println(f"invalid UTF-8: {error}");
-            return;
+    let input: Stream<bytes>,
+    let sink: Sink<bytes>,
+    let name: string,
+    receive fn start() {
+        var reading = true;
+        while reading {
+            match input.recv() {
+                .Some(chunk) => {
+                    let msg = utf8.decode(chunk) handle error {
+                        println(f"[{name}] invalid UTF-8: {error}");
+                        break;
+                    };
+                    println(f"[{name}] {msg}");
+                },
+                .None => {
+                    reading = false;
+                },
+            }
+        }
+        println(f"[{name}] closed");
+        unsafe {
+            hew_sink_shutdown(sink)
         };
-        println(msg);
+        unsafe {
+            hew_actor_self_stop()
+        };
     }
 }
 
 fn main() {
-    let listener = match net.listen(":9001") {
+    var port: string = "9001";
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        if let .Some(value) = arguments.get(1) {
+            port = value;
+        }
+    }
+    let addr = f"0.0.0.0:{port}";
+    let listener = match net.listen(addr) {
         .Ok(listener) => listener,
-        .Err(_) => panic(f"network setup failed"),
+        .Err(_) => panic(f"[reader] listen on {addr} failed"),
     };
-    let conn = listener.accept();
-    let reader = spawn ServerReader(conn: conn);
-    let _ = reader.start(0);
+    println(f"[reader] listening on {addr}");
+    var next_id: i32 = 1;
+    loop {
+        let conn = listener.accept();
+        let (input, sink) = conn.into_stream_sink();
+        let reader = spawn ServerReader(input: input, sink: sink, name: f"peer-{next_id}");
+        fork reader.start();
+        next_id = next_id + 1;
+    }
 }

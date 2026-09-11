@@ -97,9 +97,6 @@ fn main() {
     // Two API workers sharing the same limiter
     let w1 = spawn ApiWorker(id: 1, limiter: limiter, accepted: 0, rejected: 0);
     let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
-    // Start a refill timer: refill every 200ms, 3 cycles
-    let timer = spawn RefillTimer(limiter: limiter, interval: 200ms, cycles: 3);
-    let _ = timer.start();
     // Burst: send 8 requests through 2 workers (only 5 tokens available)
     println("--- Burst: 8 requests, 5 tokens ---");
     let _ = w1.handle_request(0);
@@ -120,8 +117,13 @@ fn main() {
     }
     println("");
 
-    // Wait for refill, then send more
+    // Start refilling: every 200ms, 3 cycles. A handler call is an ask, so
+    // asking the timer would hold main until every cycle had run. Forking it
+    // as a bare statement lets main carry on; the task joins at main's scope
+    // exit, so the remaining cycles still run to completion.
     println("--- After refill ---");
+    let timer = spawn RefillTimer(limiter: limiter, interval: 200ms, cycles: 3);
+    fork timer.start();
     sleep(250ms);
     let after_refill_r = limiter.available();
     match after_refill_r {

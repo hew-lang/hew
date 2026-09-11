@@ -4,17 +4,31 @@
 // TCP Chat Server — idiomatic Hew actor-based design.
 //
 // Architecture:
-//   main          — accepts TCP connections, spawns a ClientHandler per client
-//   ChatRoom      — holds Vec<ClientHandler>, broadcasts via actor dispatch
-//   ClientHandler — reads from one TCP connection, forwards messages to ChatRoom
+//   main          — accept loop; spawns a ClientHandler and a ClientReader per
+//                   connection and forks the reader's pump, so the loop never
+//                   waits on a connection
+//   ChatRoom      — holds Vec<ClientHandler>, fans out via mailbox submission
+//   ClientHandler — owns the write half of one connection
+//   ClientReader  — owns the read half and forwards frames to its handler
 //
-// All inter-component communication uses actor messages (receive fn calls).
-// TCP I/O is confined to ClientHandler; ChatRoom never touches sockets directly.
-// The ChatRoom broadcasts by calling h.deliver(msg) on each handler actor —
-// pure actor-to-actor communication with no raw socket I/O leaking out.
-import std.net.{Connection};
+// Every actor call is an ask: it waits for the handler's turn. A connection is
+// therefore consumed into independently owned Stream<bytes> and Sink<bytes>
+// halves, so an idle reader never occupies the handler that has to deliver a
+// broadcast to it. The room fans out through `mailbox(..., on_full: .Wait)`
+// because the target handler may itself be inside `on_data`, waiting on the
+// broadcast it triggered.
+import std.encoding.utf8;
+
+import std.net;
 
 import std.os;
+
+import std.stream.{Sink, Stream};
+
+extern "C" {
+    fn hew_actor_self_stop();
+    fn hew_sink_shutdown(sink: Sink<bytes>);
+}
 
 actor ChatRoom {
     var handlers: Vec<ClientHandler>,
@@ -40,57 +54,89 @@ actor ChatRoom {
     receive fn broadcast(sender_name: string, msg: string) {
         for i in 0 .. names.len() {
             if names[i] != sender_name {
-                let _ = handlers[i].deliver(msg);
+                // Submit without waiting: the target is usually inside
+                // `on_data`, waiting on the broadcast it just triggered.
+                let outbox = mailbox(handlers[i], on_full: .Wait);
+                let _ = outbox.deliver(msg);
             }
         }
     }
 }
 
+// ClientHandler owns the write half. It never blocks on the socket read, so a
+// broadcast reaches it while its own peer is idle.
 actor ClientHandler {
-    let conn: Connection,
+    let sink: Sink<bytes>,
     let name: string,
     let room: ChatRoom,
-    receive fn start(unused: i32) {
-        match conn.write_string(f"[server] welcome {name}") {
-            .Ok(_) => {},
-            .Err(_) => println("[server] welcome write failed"),
+    var registered: bool,
+    receive fn welcome() {
+        sink.send(f"[server] welcome {name}".to_bytes());
+    }
+    receive fn on_data(chunk: bytes) -> bool {
+        let data = utf8.decode(chunk) handle error {
+            println(f"[server] invalid UTF-8 from {name}: {error}");
+            self_close();
+            return false;
+        };
+        if data.is_empty() {
+            self_close();
+            return false;
         }
-        var running = true;
-        while running {
-            match conn.try_read_string() {
-                .Ok(data) => {
-                    if data.is_empty() {
-                        let _ = room.unregister(name);
-                        running = false;
-                    } else if data.contains("__HEW_TCP_DISCONNECT__") {
-                        let _ = room.unregister(name);
-                        match conn.write_string("__HEW_TCP_DISCONNECT__") {
-                            .Ok(_) => {},
-                            .Err(_) => println("[server] disconnect write failed"),
-                        }
-                        running = false;
-                    } else {
-                        let line = f"{name}: {data}";
-                        println(line);
-                        // The void handler call waits for completion and returns a Result.
-                        let _ = room.broadcast(name, line);
-                    }
+        if data.contains("__HEW_TCP_DISCONNECT__") {
+            sink.send("__HEW_TCP_DISCONNECT__".to_bytes());
+            self_close();
+            return false;
+        }
+        let line = f"{name}: {data}";
+        println(line);
+        let _ = room.broadcast(name, line);
+        true
+    }
+    receive fn on_close() {
+        self_close();
+    }
+    receive fn deliver(msg: string) {
+        sink.send(msg.to_bytes());
+    }
+    fn self_close() {
+        if registered {
+            let _ = room.unregister(name);
+            registered = false;
+        }
+        unsafe {
+            hew_sink_shutdown(sink)
+        };
+        unsafe {
+            hew_actor_self_stop()
+        };
+    }
+}
+
+// ClientReader is the sole owner of the readable half. Dropping this actor
+// closes the stream half exactly once.
+actor ClientReader {
+    let input: Stream<bytes>,
+    let client: ClientHandler,
+    receive fn start() {
+        var reading = true;
+        while reading {
+            match input.recv() {
+                .Some(chunk) => {
+                    reading = match client.on_data(chunk) {
+                        .Ok(keep_reading) => keep_reading,
+                        .Err(_) => false,
+                    };
                 },
-                .Err(_) => {
-                    println("[server] client read failed");
-                    let _ = room.unregister(name);
-                    running = false;
+                .None => {
+                    let _ = client.on_close();
+                    reading = false;
                 },
             }
         }
-    }
-    receive fn deliver(msg: string) {
-        // A slow or disconnected client surfaces as Err here; this demo drops
-        // the message rather than applying per-client flow control.
-        match conn.write_string(msg) {
-            .Ok(_) => {},
-            .Err(_) => println("[server] client write failed"),
-        }
+        unsafe {
+            hew_actor_self_stop()
+        };
     }
 }
 
@@ -116,10 +162,15 @@ fn main() {
     var next_id: i32 = 1;
     loop {
         let conn = listener.accept();
-        let handler = spawn ClientHandler(conn: conn, name: f"client-{next_id}", room: room);
-        // The default unbounded mailbox makes this a lossless unit send.
-        let _ = room.register(handler, f"client-{next_id}");
-        let _ = handler.start(0);
+        let name = f"client-{next_id}";
+        let (input, sink) = conn.into_stream_sink();
+        let handler = spawn ClientHandler(sink: sink, name: name.clone(), room: room, registered: true);
+        let _ = room.register(handler, name);
+        let _ = handler.welcome();
+        // The pump runs as a forked task owned by this accept loop's scope,
+        // which never exits, so the loop returns to `accept`.
+        let reader = spawn ClientReader(input: input, client: handler);
+        fork reader.start();
         next_id = next_id + 1;
     }
 }

@@ -4697,6 +4697,10 @@ fn verify_variant_switch_arm(
     clippy::too_many_lines,
     reason = "the verifier keeps the closed terminator dispatch visibly exhaustive"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one exhaustive terminator match reading the body's shared verification context"
+)]
 fn verify_terminator_shape(
     function: &SemFunction,
     block: &crate::SemBlock,

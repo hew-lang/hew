@@ -205,6 +205,10 @@ impl Dominators {
     }
 }
 
+/// A block the immediate-dominator fixed point has not yet decided. The entry
+/// is its own immediate dominator, which anchors every `intersect` walk.
+const UNDECIDED: usize = usize::MAX;
+
 /// Build the dominance relation for one semantic function.
 ///
 /// This is the Cooper-Harvey-Kennedy immediate-dominator fixed point over the
@@ -236,9 +240,6 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
         .map(|(position, block)| (*block, position))
         .collect::<BTreeMap<_, _>>();
 
-    // `UNDECIDED` marks a block the fixed point has not yet given an immediate
-    // dominator. The entry is its own, which anchors every `intersect` walk.
-    const UNDECIDED: usize = usize::MAX;
     let mut idom = vec![UNDECIDED; rpo.len()];
     idom[0] = 0;
     let mut changed = true;
@@ -277,10 +278,9 @@ pub fn compute_dominators(function: &SemFunction) -> Dominators {
     let mut stack = vec![(0_usize, 0_usize)];
     while let Some(&(node, next_child)) = stack.last() {
         if let Some(&child) = children[node].get(next_child) {
-            stack
-                .last_mut()
-                .expect("the stack holds the node just read")
-                .1 = next_child + 1;
+            if let Some(top) = stack.last_mut() {
+                top.1 = next_child + 1;
+            }
             entered[child] = clock;
             clock += 1;
             stack.push((child, 0));

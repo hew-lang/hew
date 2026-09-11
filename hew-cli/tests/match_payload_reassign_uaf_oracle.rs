@@ -35,7 +35,7 @@ mod support;
 use std::process::Command;
 
 use support::leak_slope::{assert_frame_slope_below_tolerance, compile_to_native};
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 /// `Vec<i64>` producer shared by every fixture — a fresh, solely-owned heap
 /// buffer of length 3 per call.
@@ -47,45 +47,6 @@ fn seed() -> Vec<i64> {\n\
 \x20   v.push(3);\n\
 \x20   v\n\
 }\n";
-
-/// Compile a source and assert it is REJECTED with `expected` in the
-/// diagnostic stream (the fail-closed use-after-move surface).
-fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("payload-reassign-fail-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{shape_name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        !output.status.success(),
-        "{shape_name}: expected a fail-closed use-after-move rejection, but compile \
-         succeeded — the projected-payload move-out did not consume the scrutinee:\n{}",
-        describe_output(&output)
-    );
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains(expected),
-        "{shape_name}: compile failed but did not mention `{expected}`:\n{combined}"
-    );
-}
 
 /// Compile a source and run it under the poisoned-allocator triple (no
 /// `leaks` dependency — works on any unix). Asserts a clean exit with

@@ -528,10 +528,16 @@ impl Parser<'_> {
         // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
         let reenter = self.eat_machine_kw("reenter");
 
-        // Optional guard: `when <expr>`.
+        // Optional guard: `when <expr>`. A guard shares the `if`/`while`
+        // condition's no-struct-literal context: a bare identifier directly
+        // followed by `{` is the transition's body opener (a field-list or
+        // block body), never a struct literal starting the guard expression
+        // — `when active { n: state.n + 1 }` is the guard `active` with body
+        // `{ n: state.n + 1 }`, not a guard `active { n: ... }` with an
+        // elided implicit body.
         let guard = if self.peek() == Some(&Token::When) {
             self.advance();
-            Some(self.parse_expr()?)
+            Some(self.parse_cond_expr()?)
         } else {
             None
         };

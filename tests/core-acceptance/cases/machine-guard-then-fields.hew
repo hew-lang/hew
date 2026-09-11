@@ -1,0 +1,26 @@
+// A guard ending in a bare identifier (`threshold`) directly followed by the
+// transition's fielded body must not swallow that field list as the
+// identifier's own struct literal — the guard is `state.n >= threshold`, the
+// body is `{ n: state.n + 1 }`, and `Active` at the arrow stays the target.
+const threshold: i64 = 0;
+
+machine Counter {
+    events {
+        Inc,
+    }
+
+    state Active { n: i64, },
+
+    on Inc: Active => Active when state.n >= threshold { n: state.n + 1 }
+
+    default { state }
+}
+
+fn main() {
+    var counter: Counter = .Active { n: 0 };
+    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc);
+    match counter {
+        .Active { n } => println(f"n={n}"),
+    }
+}

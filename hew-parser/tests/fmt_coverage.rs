@@ -2055,6 +2055,18 @@ fn fmt_machine_transition_with_guard_and_body_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_guard_ending_in_bare_identifier_then_fields_roundtrip() {
+    // A guard ending in a bare identifier (`flag`) directly followed by the
+    // transition's fielded body must parse as guard `flag` / body
+    // `{ n: state.n + 1 }`, not an elided-body struct literal `flag { ... }`
+    // that leaves the transition with an implicit body the re-parse then
+    // rejects (`exact_roundtrip` re-parses the formatted output).
+    exact_roundtrip(
+        "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active when flag { n: state.n + 1 }\n}\n",
+    );
+}
+
+#[test]
 fn fmt_machine_transition_with_reenter_roundtrip() {
     exact_roundtrip(
         "machine Counter {\n    events {\n        Inc,\n    }\n\n    state Active { n: Int, },\n\n    on Inc: Active => Active reenter { n: state.n + 1 }\n}\n",

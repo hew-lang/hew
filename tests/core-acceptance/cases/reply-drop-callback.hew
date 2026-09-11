@@ -27,7 +27,7 @@ actor Builder {
 }
 
 actor Caller {
-    var builder: LocalPid<Builder>,
+    var builder: Builder,
     receive fn walk(depth: i64) -> i64 {
         match builder.build(depth) {
             .Ok(tree) => { total(tree) }

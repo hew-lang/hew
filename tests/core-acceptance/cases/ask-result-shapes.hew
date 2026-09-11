@@ -5,7 +5,7 @@ actor Adder {
 }
 
 actor Caller {
-    var peer: LocalPid<Adder>,
+    var peer: Adder,
     receive fn run() -> i64 {
         match peer.add(1, 2) {
             .Ok(v) => { v }

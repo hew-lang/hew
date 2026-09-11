@@ -20,15 +20,21 @@ replaced the legacy lowerer. Its rows describe `main`: 85 of the 106 select
 macOS alone, and 20 rows selected Linux for tests that recovered on the final
 path.
 
-The ledger now carries 262 rows: every remaining Linux failure in the triage
+The ledger now carries 252 rows: every remaining Linux failure in the triage
 half has one naming the issue that will remove it, and the 20 stale Linux
 selectors are gone. 15 of those 20 are outside the triage half and were dropped
 because the tests pass at this head. The mechanical half's 45 still-failing ids
 each gained a row too, naming the same defect groups or a new issue where none
 existed yet (#3396, #3397, #3398). Seven of the 26 "rewrite specified" #3394
-ids landed as Rewritten in the same pass, deleting their rows. `make test` is
-green on this head; `make test` and `make test-strict` differ only by this
-ledger.
+ids landed as Rewritten in the same pass, deleting their rows. Rebasing onto
+fix/collections-final-path's landing recovered nine more of those rows (the
+tuple/aggregate PlaceLifetime group, the generic-Vec OwnershipLifetime group,
+and the reply-drop destructor); their tests pass at this head, disposition
+Fixed upstream. `make test` and `make test-strict` (diffed against
+`strict-436386605.txt`) are both green: zero new failures, seventeen ids
+absent from that baseline (six renamed by the #3394 rewrites, nine fixed
+upstream, one row already deleted by the fixing lane, one recovered by the
+same lane before this branch based on it).
 
 ## Dispositions
 
@@ -275,14 +281,14 @@ each naming the issue or lane that owns its defect group.
 | `hew-cli::dwarf_debugger_locals_e2e` (5 tests: `debugger_hits_await_body_before_and_after_suspend_with_live_local`, `debugger_names_suspended_actor_handler_frame_at_runtime_boundary`, `debugger_never_reads_reassigned_reference_local_as_interior_null`, `debugger_reports_unstored_post_suspend_local_unavailable_not_wrong`, `debugger_reports_untaken_conditional_reassignment_unavailable_not_wrong`) | E_NOT_YET_IMPLEMENTED: physical native debug metadata is not implemented | Deferred | native debug metadata is not implemented on the physical path #3369 |
 | `hew-cli::eval_e2e eval_unsupervised_actor_crash_reports_dotted_handler_label` | expected the dotted `Boom.detonate` handler label; got the generic `Actor` fallback | Defect | `hew-std` links `hew-runtime` with the `profiler` feature disabled, so the crash reporter's pointer-to-name registry is always the stub; the label needs its own non-profiler-gated registry #3396 |
 | `hew-cli::explain_cow_e2e explain_cow_renders_mir_authored_send_modes` | E_NOT_YET_IMPLEMENTED: semantic copy-on-write explanations are not implemented | Defect | an advertised `--explain-cow` flag always exits non-zero #3383 |
-| `hew-cli::indirect_enum_drop_leak_oracle indirect_enum_ask_reply_drop_routes_through_recursive_free` | expected the SuspendingAsk lowering to register a reply destructor (`hew_reply_channel_set_reply_drop_fn`) for the pointer-backed indirect-enum reply; found none | Defect (lane fix/collections-final-path) | a never-consumed ask reply leaks its heap node unconditionally; the destructor call site is unwired |
-| `hew-cli::machine_transition_watch_e2e nested_channel_handle_in_tuple_use_after_send_refused` | expected UseAfterConsume; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377 |
+| `hew-cli::indirect_enum_drop_leak_oracle indirect_enum_ask_reply_drop_routes_through_recursive_free` | expected the SuspendingAsk lowering to register a reply destructor (`hew_reply_channel_set_reply_drop_fn`) for the pointer-backed indirect-enum reply; found none | Fixed upstream | fix/collections-final-path wired the destructor call site; passes at this head |
+| `hew-cli::machine_transition_watch_e2e nested_channel_handle_in_tuple_use_after_send_refused` | expected UseAfterConsume; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Fixed upstream | fix/collections-final-path initializes the aggregate slot on every incoming path; passes at this head |
 | `hew-cli::machine_transition_watch_e2e suspending_select_wake_gate_ir_shape_holds` | assertion failed: "the -1 edge must consult the arbiter status" | Rewrite specified | the pinned `suspending_select*_`/`hew*await_cancel_status`shape is retired;`select`now lowers through`hew_checked_task_select*_`with`select.inspect`/`outcome`/`completed`/`cancelled`blocks #3398 |
 |`hew-cli::raii1_record_resource_field_leak_oracle raii1_async_cancel_drop_spine_reaches_close`| internal compiler error: E_SIR_VERIFY: InvalidResourceType`Dq`has no checked release contract | Defect (lane fix/collections-final-path) | SIR verification refuses an opaque resource whose close is declared #3371 |
 |`hew-cli::raii1_record_resource_field_leak_oracle raii1_record_resource_field_closes_once_in_forked_task`| internal compiler error: E_SIR_VERIFY: InvalidResourceType`Dq`has no checked release contract | Defect (lane fix/collections-final-path) | SIR verification refuses an opaque resource whose close is declared #3371 |
 |`hew-cli::run_e2e check_closure_borrowed_element_store_fails_closed`| expected borrowed-store diagnostic; got compiler limitation: E_SIR_UNSUPPORTED: E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value | Defect (lane fix/collections-final-path) | a borrowed Vec-element closure store's ownership refusal surfaces through an internal limitation channel, not a source diagnostic #3377 |
-|`hew-cli::run_e2e check_closure_double_vec_push_fails_closed`| expected use-after-move diagnostic; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377 |
-|`hew-cli::run_e2e check_closure_vec_push_then_record_fails_closed`| expected use-after-move diagnostic; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377 |
-|`hew-cli::run_e2e`(5 generic-Vec tests:`run_generic_display_fstring_and_vec_iteration`, `run_generic_vec_element_methods_roundtrip_ptr_abi`, `run_generic_vec_element_methods_roundtrip_scalar_abis`, `run_generic_vec_get_copy_record_then_trait_dispatch`, `run_generic_vec_get_owned_record_under_type_param`) | internal compiler error: E_SIR_VERIFY: OwnershipLifetime "guaranteed input requires an explicit owned copy at this boundary" | Defect (lane fix/collections-final-path) | an ownership refusal surfaces as SIR verification failure #3377 |
+| `hew-cli::run_e2e check_closure_double_vec_push_fails_closed`| expected use-after-move diagnostic; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Fixed upstream | fix/collections-final-path initializes the aggregate slot on every incoming path; passes at this head |
+|`hew-cli::run_e2e check_closure_vec_push_then_record_fails_closed`| expected use-after-move diagnostic; got internal compiler error: E_SIR_VERIFY: PlaceLifetime "aggregate field is not initialized on every incoming path" | Fixed upstream | fix/collections-final-path initializes the aggregate slot on every incoming path; passes at this head |
+|`hew-cli::run_e2e`(5 generic-Vec tests:`run_generic_display_fstring_and_vec_iteration`, `run_generic_vec_element_methods_roundtrip_ptr_abi`, `run_generic_vec_element_methods_roundtrip_scalar_abis`, `run_generic_vec_get_copy_record_then_trait_dispatch`, `run_generic_vec_get_owned_record_under_type_param`) | internal compiler error: E_SIR_VERIFY: OwnershipLifetime "guaranteed input requires an explicit owned copy at this boundary" | Fixed upstream | fix/collections-final-path gives the generic function's guaranteed Vec<T> input an owned copy; all five pass at this head |
 | `hew-cli::shutdown_drain_e2e tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero`| assertion failed: drained fixture response was empty, expected`response:request`| Defect | a race between the runtime closing the connection at shutdown and the handler's write can drop an already-written in-budget response #3397 |
 |`hew-cli::wasi_run_e2e actor_panic_is_module_fatal_on_production_wasi` | E_NOT_YET_IMPLEMENTED: sandbox emission from verified semantics is not implemented | Deferred | sandbox emission is not implemented on the physical path #3368 |

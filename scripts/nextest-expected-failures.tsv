@@ -224,7 +224,6 @@ macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_closure_env_clo
 linux	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_is_not_released_twice	#3105 releases imported machine records on every exit
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_release_slope_stays_flat	#3105 releases imported machine records on every exit
-linux	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_ask_reply_drop_routes_through_recursive_free	fix/collections-final-path wires hew_reply_channel_set_reply_drop_fn into the SuspendingAsk lowering
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_deep_tree_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
@@ -242,7 +241,6 @@ linux	failure	hew-cli::machine_e2e	machine_commands_succeed_on_every_compiling_m
 linux	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_reenter_carrying_resource_is_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_state_resource_release_paths_are_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
-linux	failure	hew-cli::machine_transition_watch_e2e	nested_channel_handle_in_tuple_use_after_send_refused	#3377 fix/collections-final-path: initializes a tuple-held channel handle's field on every incoming path before SIR verification
 linux	failure	hew-cli::machine_transition_watch_e2e	select_on_transition_example_runs_clean	#3392 waits out a select's after arm inside an actor handler
 linux	failure	hew-cli::machine_transition_watch_e2e	supervisor_child_with_machine_state_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::machine_transition_watch_e2e	suspending_select_wake_gate_ir_shape_holds	#3398 rewrites the select IR-shape pin onto the current checked-task-select lowering
@@ -287,8 +285,6 @@ linux	failure	hew-cli::run_e2e	blocking_remote_ask_in_main_keeps_blocking_termin
 linux	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
 linux	failure	hew-cli::run_e2e	check_carrier_conditional_consume_shared_exit_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::run_e2e	check_closure_borrowed_element_store_fails_closed	#3377 fix/collections-final-path: renders a borrowed Vec-element closure store's ownership refusal as a source diagnostic
-linux	failure	hew-cli::run_e2e	check_closure_double_vec_push_fails_closed	#3377 fix/collections-final-path: initializes an aggregate slot holding a moved closure handle on every incoming path before SIR verification
-linux	failure	hew-cli::run_e2e	check_closure_vec_push_then_record_fails_closed	#3377 fix/collections-final-path: initializes an aggregate slot holding a moved closure handle on every incoming path before SIR verification
 linux	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
@@ -296,11 +292,6 @@ linux	failure	hew-cli::run_e2e	cross_module_generic_fn_value_context_determined_
 linux	failure	hew-cli::run_e2e	for_range_mixed_width_bounds_runs_and_returns_correct_value	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 linux	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
-linux	failure	hew-cli::run_e2e	run_generic_display_fstring_and_vec_iteration	#3377 fix/collections-final-path: gives a generic function's guaranteed Vec<T> input an owned copy
-linux	failure	hew-cli::run_e2e	run_generic_vec_element_methods_roundtrip_ptr_abi	#3377 fix/collections-final-path: gives a generic function's guaranteed Vec<T> input an owned copy
-linux	failure	hew-cli::run_e2e	run_generic_vec_element_methods_roundtrip_scalar_abis	#3377 fix/collections-final-path: gives a generic function's guaranteed Vec<T> input an owned copy
-linux	failure	hew-cli::run_e2e	run_generic_vec_get_copy_record_then_trait_dispatch	#3377 fix/collections-final-path: gives a generic function's guaranteed Vec<T> input an owned copy
-linux	failure	hew-cli::run_e2e	run_generic_vec_get_owned_record_under_type_param	#3377 fix/collections-final-path: gives a generic function's guaranteed Vec<T> input an owned copy
 macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3113 closes every returned owned-handle field exactly once
 linux	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
 linux	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity

@@ -129,7 +129,7 @@ fn main() {
     for i in 0 .. 8 {
         let v = vals[i];
         data2.push(v);
-        if mins2.len() == 0 {
+        if mins2.is_empty() {
             mins2.push(v);
         } else {
             let cm = mins2[mins2.len() - 1];

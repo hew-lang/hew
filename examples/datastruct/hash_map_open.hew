@@ -1,5 +1,9 @@
 // Hash Map with Open Addressing
 // Two parallel Vecs: keys and values. EMPTY key = -1.
+//
+// A parameter is the callee's own copy, so insert and remove return both
+// levels in parameter order followed by their result, and the caller
+// reassigns each one.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
@@ -26,7 +30,7 @@ fn make_vals(capacity: i64) -> Vec<i64> {
     v
 }
 
-fn map_insert(var keys: Vec<i64>, var vals: Vec<i64>, key: i64, value: i64) -> bool {
+fn map_insert(var keys: Vec<i64>, var vals: Vec<i64>, key: i64, value: i64) -> (Vec<i64>, Vec<i64>, bool) {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -35,17 +39,30 @@ fn map_insert(var keys: Vec<i64>, var vals: Vec<i64>, key: i64, value: i64) -> b
         let k = keys[idx];
         if k == key {
             vals.set(idx, value);
-            return true;
+            return (keys, vals, true);
         }
         if k == EMPTY {
             keys.set(idx, key);
             vals.set(idx, value);
-            return true;
+            return (keys, vals, true);
         }
         idx = (idx + 1) % capacity;
         i = i + 1;
     }
-    false
+    (keys, vals, false)
+}
+
+// Insert a run of entries laid out as [key, value, key, value, ...] so a loop
+// replaces the repeated reassignment of both levels.
+fn map_insert_pairs(var keys: Vec<i64>, var vals: Vec<i64>, pairs: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    var i = 0;
+    while i < pairs.len() {
+        let (grown_keys, grown_vals, _ok) = map_insert(keys, vals, pairs[i], pairs[i + 1]);
+        keys = grown_keys;
+        vals = grown_vals;
+        i = i + 2;
+    }
+    (keys, vals)
 }
 
 fn map_get(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
@@ -87,7 +104,7 @@ fn map_contains_key(keys: Vec<i64>, key: i64) -> bool {
     false
 }
 
-fn map_remove(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) -> bool {
+fn map_remove(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) -> (Vec<i64>, Vec<i64>, bool) {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -98,15 +115,15 @@ fn map_remove(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) -> bool {
         if k == key {
             keys.set(idx, DELETED);
             vals.set(idx, 0);
-            return true;
+            return (keys, vals, true);
         }
         if k == EMPTY {
-            return false;
+            return (keys, vals, false);
         }
         idx = (idx + 1) % capacity;
         i = i + 1;
     }
-    false
+    (keys, vals, false)
 }
 
 fn map_size(keys: Vec<i64>) -> i64 {
@@ -129,13 +146,13 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let cap = 16;
-    let keys = make_keys(cap);
-    let vals = make_vals(cap);
+    var keys = make_keys(cap);
+    var vals = make_vals(cap);
     let NOT_FOUND = 0 - 999;
     // Test 1: Insert and get
-    let _ = map_insert(keys, vals, 1, 100);
-    let _ = map_insert(keys, vals, 2, 200);
-    let _ = map_insert(keys, vals, 3, 300);
+    let (keys_seeded, vals_seeded) = map_insert_pairs(keys, vals, [1, 100, 2, 200, 3, 300]);
+    keys = keys_seeded;
+    vals = vals_seeded;
     let v1 = map_get(keys, vals, 1);
     let v2 = map_get(keys, vals, 2);
     let v3 = map_get(keys, vals, 3);
@@ -179,7 +196,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Update existing key
-    let _ = map_insert(keys, vals, 2, 250);
+    let (keys_updated, vals_updated, _updated) = map_insert(keys, vals, 2, 250);
+    keys = keys_updated;
+    vals = vals_updated;
     let v2b = map_get(keys, vals, 2);
     if v2b == 250 {
         let sz = map_size(keys);
@@ -195,7 +214,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Remove
-    let _ = map_remove(keys, vals, 2);
+    let (keys_removed, vals_removed, _removed) = map_remove(keys, vals, 2);
+    keys = keys_removed;
+    vals = vals_removed;
     if map_contains_key(keys, 2) {
         println("FAIL: remove");
         failed = failed + 1;
@@ -219,9 +240,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Collision handling (keys that hash to same slot)
-    let _ = map_insert(keys, vals, 0, 10);
-    let _ = map_insert(keys, vals, 16, 20);
-    let _ = map_insert(keys, vals, 32, 30);
+    let (keys_collided, vals_collided) = map_insert_pairs(keys, vals, [0, 10, 16, 20, 32, 30]);
+    keys = keys_collided;
+    vals = vals_collided;
     let c1 = map_get(keys, vals, 0);
     let c2 = map_get(keys, vals, 16);
     let c3 = map_get(keys, vals, 32);

@@ -1,6 +1,10 @@
 // Ordered (Sorted) Linked List using Vec<i64> with index-based pointers
 // Node layout: [value, next] pairs at i*2, i*2+1
 // Maintains sorted order on insert
+//
+// A parameter is the callee's own copy, so every helper that writes the node
+// pool returns it and the caller reassigns. Helpers that also move the head
+// return a tuple.
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
     n[i * 2]
 }
@@ -9,26 +13,28 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 2 + 1]
 }
 
-fn set_next(var n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     n.set(i * 2 + 1, nx);
+    n
 }
 
-fn alloc_node(var n: Vec<i64>, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = n.len() / 2;
     n.push(val);
     n.push(-1);
-    idx
+    (n, idx)
 }
 
-// Insert in sorted order, returns new head
-fn insert_sorted(n: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_node(n, val);
+// Insert in sorted order; returns the pool and the new head
+fn insert_sorted(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, nd) = alloc_node(n, val);
+    n = grown;
     if head == -1 {
-        return nd;
+        return (n, nd);
     }
     if val <= node_val(n, head) {
-        set_next(n, nd, head);
-        return nd;
+        n = set_next(n, nd, head);
+        return (n, nd);
     }
     var prev = head;
     var curr = node_next(n, head);
@@ -36,8 +42,8 @@ fn insert_sorted(n: Vec<i64>, head: i64, val: i64) -> i64 {
     while curr != -1 {
         if done == 0 {
             if val <= node_val(n, curr) {
-                set_next(n, prev, nd);
-                set_next(n, nd, curr);
+                n = set_next(n, prev, nd);
+                n = set_next(n, nd, curr);
                 done = 1;
             }
         }
@@ -49,9 +55,20 @@ fn insert_sorted(n: Vec<i64>, head: i64, val: i64) -> i64 {
         }
     }
     if done == 0 {
-        set_next(n, prev, nd);
+        n = set_next(n, prev, nd);
     }
-    head
+    (n, head)
+}
+
+// Insert every value in order; returns the pool and the head.
+fn insert_all(var n: Vec<i64>, head: i64, values: Vec<i64>) -> (Vec<i64>, i64) {
+    var curr_head = head;
+    for value in values {
+        let (grown, new_head) = insert_sorted(n, curr_head, value);
+        n = grown;
+        curr_head = new_head;
+    }
+    (n, curr_head)
 }
 
 // Search for value, returns node index or -1
@@ -69,36 +86,38 @@ fn search(n: Vec<i64>, head: i64, val: i64) -> i64 {
     -1
 }
 
-// Delete first occurrence, returns new head
-fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
+// Delete first occurrence; returns the pool and the new head
+fn delete_val(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
     if head == -1 {
-        return -1;
+        return (n, -1);
     }
     if node_val(n, head) == val {
-        return node_next(n, head);
+        return (n, node_next(n, head));
     }
     var prev = head;
     var curr = node_next(n, head);
     while curr != -1 {
         if node_val(n, curr) == val {
-            set_next(n, prev, node_next(n, curr));
-            return head;
+            n = set_next(n, prev, node_next(n, curr));
+            return (n, head);
         }
         if node_val(n, curr) > val {
-            return head;
+            return (n, head);
         }
         prev = curr;
         curr = node_next(n, curr);
     }
-    head
+    (n, head)
 }
 
-fn traverse(n: Vec<i64>, head: i64, var result: Vec<i64>) {
+fn traverse(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr != -1 {
         result.push(node_val(n, curr));
         curr = node_next(n, curr);
     }
+    result
 }
 
 fn list_len(n: Vec<i64>, head: i64) -> i64 {
@@ -141,15 +160,10 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_sorted_insert() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_sorted(n, head, 50);
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 30);
-    head = insert_sorted(n, head, 20);
-    head = insert_sorted(n, head, 40);
-    let r: Vec<i64> = Vec.new();
-    traverse(n, head, r);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [50, 10, 30, 20, 40];
+    let (n, head) = insert_all(pool, -1, values);
+    let r = traverse(n, head);
     var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
@@ -165,12 +179,9 @@ fn test_sorted_insert() -> i64 {
 }
 
 fn test_duplicates() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_sorted(n, head, 20);
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 20);
-    head = insert_sorted(n, head, 10);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [20, 10, 20, 10];
+    let (n, head) = insert_all(pool, -1, values);
     if is_sorted(n, head) == 1 {
         if list_len(n, head) == 4 {
             println("PASS: duplicates");
@@ -182,11 +193,9 @@ fn test_duplicates() -> i64 {
 }
 
 fn test_search() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 30);
-    head = insert_sorted(n, head, 50);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 30, 50];
+    let (n, head) = insert_all(pool, -1, values);
     let found = search(n, head, 30);
     let not_found = search(n, head, 25);
     if found != -1 {
@@ -202,15 +211,11 @@ fn test_search() -> i64 {
 }
 
 fn test_delete() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 20);
-    head = insert_sorted(n, head, 30);
-    head = insert_sorted(n, head, 40);
-    head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec.new();
-    traverse(n, head, r);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20, 30, 40];
+    let (inserted, first_head) = insert_all(pool, -1, values);
+    let (n, head) = delete_val(inserted, first_head, 20);
+    let r = traverse(n, head);
     var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(30);
@@ -226,19 +231,10 @@ fn test_delete() -> i64 {
 }
 
 fn test_invariant_after_many() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
+    let pool: Vec<i64> = Vec.new();
     // Insert in scrambled order
-    head = insert_sorted(n, head, 70);
-    head = insert_sorted(n, head, 20);
-    head = insert_sorted(n, head, 90);
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 50);
-    head = insert_sorted(n, head, 80);
-    head = insert_sorted(n, head, 30);
-    head = insert_sorted(n, head, 60);
-    head = insert_sorted(n, head, 40);
-    head = insert_sorted(n, head, 100);
+    let values: Vec<i64> = [70, 20, 90, 10, 50, 80, 30, 60, 40, 100];
+    let (n, head) = insert_all(pool, -1, values);
     if is_sorted(n, head) == 1 {
         if list_len(n, head) == 10 {
             println("PASS: invariant after many inserts");
@@ -250,11 +246,10 @@ fn test_invariant_after_many() -> i64 {
 }
 
 fn test_delete_nonexistent() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_sorted(n, head, 10);
-    head = insert_sorted(n, head, 30);
-    head = delete_val(n, head, 20);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 30];
+    let (inserted, first_head) = insert_all(pool, -1, values);
+    let (n, head) = delete_val(inserted, first_head, 20);
     if list_len(n, head) == 2 {
         if is_sorted(n, head) == 1 {
             println("PASS: delete nonexistent");

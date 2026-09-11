@@ -1,7 +1,10 @@
 // Strongly Connected Components - Kosaraju's Algorithm (2 DFS passes)
 // Pass 1: DFS on original graph, record finish order
 // Pass 2: DFS on transpose graph in reverse finish order
-fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>) {
+//
+// A parameter is the callee's own copy, so each pass builds its own vectors and
+// returns them rather than writing into the caller's.
+fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
     let num_edges = esrc.len();
     var degree: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
@@ -11,11 +14,13 @@ fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_nodes:
         let s = esrc[i];
         degree.set(s, degree[s] + 1);
     }
+    var adj_offsets: Vec<i64> = Vec.new();
     adj_offsets.push(0);
     for i in 0 .. num_nodes {
         adj_offsets.push(adj_offsets[i] + degree[i]);
     }
     let total = adj_offsets[num_nodes];
+    var adj_nodes: Vec<i64> = Vec.new();
     for i in 0 .. total {
         adj_nodes.push(0);
     }
@@ -29,10 +34,12 @@ fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_nodes:
         adj_nodes.set(pos[s], d);
         pos.set(s, pos[s] + 1);
     }
+    (adj_nodes, adj_offsets)
 }
 
-fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, var order: Vec<i64>) {
+fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) -> Vec<i64> {
     // Iterative DFS recording finish order
+    var order: Vec<i64> = Vec.new();
     var visited: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         visited.push(0);
@@ -42,7 +49,7 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, 
     for start in 0 .. num_nodes {
         if visited[start] == 0 {
             stack.push(start * 2);
-            while stack.len() > 0 {
+            while !stack.is_empty() {
                 let entry = stack.pop();
                 let node = entry / 2;
                 let is_exit = entry % 2;
@@ -67,10 +74,12 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, 
             }
         }
     }
+    order
 }
 
-fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, order: Vec<i64>, var comp: Vec<i64>) {
+fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, order: Vec<i64>) -> Vec<i64> {
     // DFS on transpose in reverse finish order
+    var comp: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
         comp.push(0 - 1);
     }
@@ -85,7 +94,7 @@ fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64,
             var stack: Vec<i64> = Vec.new();
             stack.push(node);
             comp.set(node, comp_id);
-            while stack.len() > 0 {
+            while !stack.is_empty() {
                 let cur = stack.pop();
                 let s = adj_offsets[cur];
                 let e = adj_offsets[cur + 1];
@@ -103,6 +112,7 @@ fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64,
         }
         idx = idx - 1;
     }
+    comp
 }
 
 fn count_components(comp: Vec<i64>, num_nodes: i64) -> i64 {
@@ -157,10 +167,7 @@ fn main() {
     edst.push(5);
     let num_edges = esrc.len();
     // Build forward graph
-    let fwd_nodes: Vec<i64> = Vec.new();
-    let fwd_offsets: Vec<i64> = Vec.new();
-    build_directed(num_nodes, esrc, edst, fwd_nodes, fwd_offsets);
-
+    let (fwd_nodes, fwd_offsets) = build_directed(num_nodes, esrc, edst);
     // Build transpose graph
     var tsrc: Vec<i64> = Vec.new();
     var tdst: Vec<i64> = Vec.new();
@@ -168,18 +175,11 @@ fn main() {
         tsrc.push(edst[i]);
         tdst.push(esrc[i]);
     }
-    let rev_nodes: Vec<i64> = Vec.new();
-    let rev_offsets: Vec<i64> = Vec.new();
-    build_directed(num_nodes, tsrc, tdst, rev_nodes, rev_offsets);
-
+    let (rev_nodes, rev_offsets) = build_directed(num_nodes, tsrc, tdst);
     // Pass 1: DFS on forward graph, get finish order
-    let order: Vec<i64> = Vec.new();
-    dfs_finish_order(fwd_nodes, fwd_offsets, num_nodes, order);
-
+    let order = dfs_finish_order(fwd_nodes, fwd_offsets, num_nodes);
     // Pass 2: Assign components using transpose in reverse finish order
-    let comp: Vec<i64> = Vec.new();
-    assign_components(rev_nodes, rev_offsets, num_nodes, order, comp);
-
+    let comp = assign_components(rev_nodes, rev_offsets, num_nodes, order);
     // Test 1: Exactly 3 SCCs
     let nc = count_components(comp, num_nodes);
     if nc == 3 {

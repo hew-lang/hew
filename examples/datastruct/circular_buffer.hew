@@ -1,6 +1,9 @@
 // Circular Buffer - Fixed-size ring buffer using Vec<i64>
 // Layout: [capacity, head, tail, count, data...]
 // Data starts at index 4
+//
+// A parameter is the callee's own copy, so push and pop return the buffer
+// alongside their result and the caller reassigns.
 fn cb_new(capacity: i64) -> Vec<i64> {
     var buf: Vec<i64> = Vec.new();
     buf.push(capacity); // index 0: capacity
@@ -38,22 +41,32 @@ fn cb_is_full(buf: Vec<i64>) -> i64 {
     }
 }
 
-fn cb_push(var buf: Vec<i64>, val: i64) -> i64 {
+// Returns the buffer and 1 on success, 0 when the buffer is already full.
+fn cb_push(var buf: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let cap = buf[0];
     let count = buf[3];
     if count == cap {
-        0 // full, return failure
-    } else {
-        let tail = buf[2];
-        buf.set(4 + tail, val);
-        let new_tail = (tail + 1) % cap;
-        buf.set(2, new_tail);
-        buf.set(3, count + 1);
-        1 // success
+        return (buf, 0);
     }
+    let tail = buf[2];
+    buf.set(4 + tail, val);
+    let new_tail = (tail + 1) % cap;
+    buf.set(2, new_tail);
+    buf.set(3, count + 1);
+    (buf, 1)
 }
 
-fn cb_pop(var buf: Vec<i64>) -> i64 {
+// Push each value in turn; the per-push result is checked on its own in the
+// full-buffer test below.
+fn cb_push_all(var buf: Vec<i64>, vals: Vec<i64>) -> Vec<i64> {
+    for val in vals {
+        let (grown, _ok) = cb_push(buf, val);
+        buf = grown;
+    }
+    buf
+}
+
+fn cb_pop(var buf: Vec<i64>) -> (Vec<i64>, i64) {
     let head = buf[1];
     let cap = buf[0];
     let count = buf[3];
@@ -61,7 +74,7 @@ fn cb_pop(var buf: Vec<i64>) -> i64 {
     let new_head = (head + 1) % cap;
     buf.set(1, new_head);
     buf.set(3, count - 1);
-    val
+    (buf, val)
 }
 
 fn cb_peek(buf: Vec<i64>) -> i64 {
@@ -83,7 +96,7 @@ fn main() {
     var passed = 0;
     // Test 1: new buffer is empty
     total = total + 1;
-    let buf = cb_new(5);
+    var buf = cb_new(5);
     var r1 = 0;
     if cb_is_empty(buf) == 1 {
         if cb_capacity(buf) == 5 {
@@ -94,9 +107,7 @@ fn main() {
 
     // Test 2: push and count
     total = total + 1;
-    cb_push(buf, 10);
-    cb_push(buf, 20);
-    cb_push(buf, 30);
+    buf = cb_push_all(buf, [10, 20, 30]);
     let r2 = if cb_count(buf) == 3 {
         1
     } else {
@@ -115,8 +126,9 @@ fn main() {
 
     // Test 4: pop FIFO
     total = total + 1;
-    let v1 = cb_pop(buf);
-    let v2 = cb_pop(buf);
+    let (after_v1, v1) = cb_pop(buf);
+    let (after_v2, v2) = cb_pop(after_v1);
+    buf = after_v2;
     var r4 = 0;
     if v1 == 10 {
         if v2 == 20 {
@@ -128,10 +140,7 @@ fn main() {
     // Test 5: fill to capacity
     total = total + 1;
     // count is now 1 (30 remains), fill 4 more
-    cb_push(buf, 40);
-    cb_push(buf, 50);
-    cb_push(buf, 60);
-    cb_push(buf, 70);
+    buf = cb_push_all(buf, [40, 50, 60, 70]);
     let r5 = if cb_is_full(buf) == 1 {
         1
     } else {
@@ -141,7 +150,8 @@ fn main() {
 
     // Test 6: push when full returns 0
     total = total + 1;
-    let ok = cb_push(buf, 99);
+    let (after_full, ok) = cb_push(buf, 99);
+    buf = after_full;
     let r6 = if ok == 0 {
         1
     } else {
@@ -152,19 +162,18 @@ fn main() {
     // Test 7: wraparound - pop all then refill
     total = total + 1;
     // Pop all 5
-    let w1 = cb_pop(buf);
-    let w2 = cb_pop(buf);
-    let w3 = cb_pop(buf);
-    let w4 = cb_pop(buf);
-    let w5 = cb_pop(buf);
+    let (after_w1, w1) = cb_pop(buf);
+    let (after_w2, w2) = cb_pop(after_w1);
+    let (after_w3, w3) = cb_pop(after_w2);
+    let (after_w4, w4) = cb_pop(after_w3);
+    let (after_w5, w5) = cb_pop(after_w4);
+    buf = after_w5;
     // Now head and tail have wrapped
     // Fill again
-    cb_push(buf, 100);
-    cb_push(buf, 200);
-    cb_push(buf, 300);
-    let wr1 = cb_pop(buf);
-    let wr2 = cb_pop(buf);
-    let wr3 = cb_pop(buf);
+    buf = cb_push_all(buf, [100, 200, 300]);
+    let (after_wr1, wr1) = cb_pop(buf);
+    let (after_wr2, wr2) = cb_pop(after_wr1);
+    let (_after_wr3, wr3) = cb_pop(after_wr2);
     var r7 = 0;
     if wr1 == 100 {
         if wr2 == 200 {

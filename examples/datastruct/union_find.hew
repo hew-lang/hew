@@ -1,24 +1,35 @@
 // Union-Find (Disjoint Set) with path compression and union by rank
-fn find(var parent: Vec<i64>, x: i64) -> i64 {
+//
+// A parameter is the callee's own copy, so path compression and union hand the
+// parent and rank vectors back and the caller reassigns. Lookups that only read
+// stay pure.
+fn find_root(parent: Vec<i64>, x: i64) -> i64 {
     var r = x;
     while parent[r] != r {
         r = parent[r];
     }
-    // Path compression
-    var c = x;
-    while c != r {
-        let next = parent[c];
-        parent.set(c, r);
-        c = next;
-    }
     r
 }
 
-fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> bool {
-    let ra = find(parent, a);
-    let rb = find(parent, b);
+// Path compression: point every node on the path from x straight at the root.
+fn compress(var parent: Vec<i64>, x: i64, root: i64) -> Vec<i64> {
+    var c = x;
+    while c != root {
+        let next = parent[c];
+        parent.set(c, root);
+        c = next;
+    }
+    parent
+}
+
+// Join the sets holding a and b; the bool reports whether they were separate.
+fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> (Vec<i64>, Vec<i64>, bool) {
+    let ra = find_root(parent, a);
+    let rb = find_root(parent, b);
+    parent = compress(parent, a, ra);
+    parent = compress(parent, b, rb);
     if ra == rb {
-        return false;
+        return (parent, rank, false);
     }
     let rka = rank[ra];
     let rkb = rank[rb];
@@ -30,18 +41,29 @@ fn union(var parent: Vec<i64>, var rank: Vec<i64>, a: i64, b: i64) -> bool {
         parent.set(rb, ra);
         rank.set(ra, rka + 1);
     }
-    true
+    (parent, rank, true)
+}
+
+// Union every (a, b) pair; the pairs vector holds a, b at i*2, i*2+1.
+fn union_pairs(var parent: Vec<i64>, var rank: Vec<i64>, pairs: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    let count = pairs.len() / 2;
+    for i in 0 .. count {
+        let (joined, ranked, _changed) = union(parent, rank, pairs[i * 2], pairs[i * 2 + 1]);
+        parent = joined;
+        rank = ranked;
+    }
+    (parent, rank)
 }
 
 fn connected(parent: Vec<i64>, a: i64, b: i64) -> bool {
-    find(parent, a) == find(parent, b)
+    find_root(parent, a) == find_root(parent, b)
 }
 
 fn count_components(parent: Vec<i64>) -> i64 {
     let n = parent.len();
     var count = 0;
     for i in 0 .. n {
-        if find(parent, i) == i {
+        if find_root(parent, i) == i {
             count = count + 1;
         }
     }
@@ -68,10 +90,10 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Union 0-1, 2-3, 4-5, 6-7 -> 4 components
-    let _ = union(parent, rank, 0, 1);
-    let _ = union(parent, rank, 2, 3);
-    let _ = union(parent, rank, 4, 5);
-    let _ = union(parent, rank, 6, 7);
+    let first_pairs: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7];
+    let (after_pairs, rank_pairs) = union_pairs(parent, rank, first_pairs);
+    parent = after_pairs;
+    rank = rank_pairs;
     if count_components(parent) == 4 {
         println("PASS: 4 components after pairs");
         passed = passed + 1;
@@ -96,7 +118,10 @@ fn main() {
         passed = passed + 1;
     }
     // Test 5: Union {0,1} with {2,3} -> 3 components
-    let _ = union(parent, rank, 1, 3);
+    let merge_pair: Vec<i64> = [1, 3];
+    let (after_merge, rank_merge) = union_pairs(parent, rank, merge_pair);
+    parent = after_merge;
+    rank = rank_merge;
     if count_components(parent) == 3 {
         println("PASS: 3 components after merge");
         passed = passed + 1;
@@ -113,7 +138,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Redundant union returns false
-    let dup = union(parent, rank, 0, 3);
+    let (after_dup, rank_dup, dup) = union(parent, rank, 0, 3);
+    parent = after_dup;
+    rank = rank_dup;
     if dup {
         println("FAIL: redundant union should return false");
         failed = failed + 1;
@@ -122,8 +149,10 @@ fn main() {
         passed = passed + 1;
     }
     // Test 8: Merge all into 1 component
-    let _ = union(parent, rank, 0, 4);
-    let _ = union(parent, rank, 4, 6);
+    let last_pairs: Vec<i64> = [0, 4, 4, 6];
+    let (after_last, rank_last) = union_pairs(parent, rank, last_pairs);
+    parent = after_last;
+    rank = rank_last;
     if count_components(parent) == 1 {
         if connected(parent, 0, 7) {
             println("PASS: all in one component");

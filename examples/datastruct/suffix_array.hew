@@ -90,7 +90,6 @@ fn build_lcp_array(text: Vec<i64>, sa: Vec<i64>) -> Vec<i64> {
 // Returns index in text where pattern starts, or -1 if not found
 fn sa_search(text: Vec<i64>, sa: Vec<i64>, pattern: Vec<i64>) -> i64 {
     let n = sa.len();
-    let plen = pattern.len();
     var lo = 0;
     var hi = n - 1;
     while lo <= hi {

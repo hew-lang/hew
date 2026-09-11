@@ -1,18 +1,22 @@
 // Binary Search Tree using Vec<i64> with index-based pointers
 // Each node: [value, left, right] = 3 slots
 // NIL = -1 means no child
-fn add_node(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
+//
+// A parameter is the callee's own copy, so every helper that grows the node
+// pool returns it and the caller reassigns; allocation also reports the new
+// index, so it returns a tuple.
+fn add_node(var nodes: Vec<i64>, val: i64, NIL: i64) -> (Vec<i64>, i64) {
     let idx = nodes.len() / 3;
     nodes.push(val);
     nodes.push(NIL);
     nodes.push(NIL);
-    idx
+    (nodes, idx)
 }
 
-fn bst_insert(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
-    if nodes.len() == 0 {
-        let _ = add_node(nodes, val, NIL);
-        return 0;
+fn bst_insert(var nodes: Vec<i64>, val: i64, NIL: i64) -> Vec<i64> {
+    if nodes.is_empty() {
+        let (rooted, _root) = add_node(nodes, val, NIL);
+        return rooted;
     }
     var cur = 0;
     var placed = false;
@@ -21,7 +25,8 @@ fn bst_insert(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
         if val < cur_val {
             let left = nodes[cur * 3 + 1];
             if left == NIL {
-                let new_idx = add_node(nodes, val, NIL);
+                let (grown, new_idx) = add_node(nodes, val, NIL);
+                nodes = grown;
                 nodes.set(cur * 3 + 1, new_idx);
                 placed = true;
             } else {
@@ -30,7 +35,8 @@ fn bst_insert(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
         } else {
             let right = nodes[cur * 3 + 2];
             if right == NIL {
-                let new_idx = add_node(nodes, val, NIL);
+                let (grown, new_idx) = add_node(nodes, val, NIL);
+                nodes = grown;
                 nodes.set(cur * 3 + 2, new_idx);
                 placed = true;
             } else {
@@ -38,11 +44,20 @@ fn bst_insert(var nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
             }
         }
     }
-    0
+    nodes
+}
+
+// Build a tree holding vals in insertion order.
+fn build_bst(vals: Vec<i64>, NIL: i64) -> Vec<i64> {
+    var nodes: Vec<i64> = Vec.new();
+    for val in vals {
+        nodes = bst_insert(nodes, val, NIL);
+    }
+    nodes
 }
 
 fn bst_search(nodes: Vec<i64>, val: i64, NIL: i64) -> bool {
-    if nodes.len() == 0 {
+    if nodes.is_empty() {
         return false;
     }
     var cur = 0;
@@ -80,9 +95,10 @@ fn bst_max(nodes: Vec<i64>, NIL: i64) -> i64 {
 }
 
 // Iterative inorder traversal
-fn inorder(nodes: Vec<i64>, var result: Vec<i64>, NIL: i64) -> i64 {
-    if nodes.len() == 0 {
-        return 0;
+fn inorder(nodes: Vec<i64>, NIL: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
+    if nodes.is_empty() {
+        return result;
     }
     var stack: Vec<i64> = Vec.new();
     var cur = 0;
@@ -92,7 +108,7 @@ fn inorder(nodes: Vec<i64>, var result: Vec<i64>, NIL: i64) -> i64 {
             stack.push(cur);
             cur = nodes[cur * 3 + 1];
         }
-        if stack.len() == 0 {
+        if stack.is_empty() {
             running = false;
         } else {
             cur = stack.pop();
@@ -100,7 +116,7 @@ fn inorder(nodes: Vec<i64>, var result: Vec<i64>, NIL: i64) -> i64 {
             cur = nodes[cur * 3 + 2];
         }
     }
-    0
+    result
 }
 
 fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> bool {
@@ -128,17 +144,8 @@ fn print_vec(v: Vec<i64>) -> i64 {
 
 fn test_insert_and_inorder() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    // Insert [5, 3, 7, 1, 4, 6, 8]
-    let _ = bst_insert(nodes, 5, NIL);
-    let _ = bst_insert(nodes, 3, NIL);
-    let _ = bst_insert(nodes, 7, NIL);
-    let _ = bst_insert(nodes, 1, NIL);
-    let _ = bst_insert(nodes, 4, NIL);
-    let _ = bst_insert(nodes, 6, NIL);
-    let _ = bst_insert(nodes, 8, NIL);
-    let result: Vec<i64> = Vec.new();
-    let _ = inorder(nodes, result, NIL);
+    let nodes = build_bst([5, 3, 7, 1, 4, 6, 8], NIL);
+    let result = inorder(nodes, NIL);
     // Inorder of BST should be sorted: 1 3 4 5 6 7 8
     var expected: Vec<i64> = Vec.new();
     expected.push(1);
@@ -160,14 +167,7 @@ fn test_insert_and_inorder() -> i64 {
 
 fn test_search() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    let _ = bst_insert(nodes, 5, NIL);
-    let _ = bst_insert(nodes, 3, NIL);
-    let _ = bst_insert(nodes, 7, NIL);
-    let _ = bst_insert(nodes, 1, NIL);
-    let _ = bst_insert(nodes, 4, NIL);
-    let _ = bst_insert(nodes, 6, NIL);
-    let _ = bst_insert(nodes, 8, NIL);
+    let nodes = build_bst([5, 3, 7, 1, 4, 6, 8], NIL);
     let f5 = bst_search(nodes, 5, NIL);
     let f1 = bst_search(nodes, 1, NIL);
     let f8 = bst_search(nodes, 8, NIL);
@@ -197,14 +197,7 @@ fn test_search() -> i64 {
 
 fn test_min_max() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    let _ = bst_insert(nodes, 5, NIL);
-    let _ = bst_insert(nodes, 3, NIL);
-    let _ = bst_insert(nodes, 7, NIL);
-    let _ = bst_insert(nodes, 1, NIL);
-    let _ = bst_insert(nodes, 4, NIL);
-    let _ = bst_insert(nodes, 6, NIL);
-    let _ = bst_insert(nodes, 8, NIL);
+    let nodes = build_bst([5, 3, 7, 1, 4, 6, 8], NIL);
     let mn = bst_min(nodes, NIL);
     let mx = bst_max(nodes, NIL);
     if mn == 1 {
@@ -222,13 +215,12 @@ fn test_min_max() -> i64 {
 
 fn test_sorted_insert() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
     // Insert in sorted order (worst case for BST)
+    var nodes: Vec<i64> = Vec.new();
     for i in 1 .. 11 {
-        let _ = bst_insert(nodes, i, NIL);
+        nodes = bst_insert(nodes, i, NIL);
     }
-    let result: Vec<i64> = Vec.new();
-    let _ = inorder(nodes, result, NIL);
+    let result = inorder(nodes, NIL);
     var ok = true;
     if result.len() != 10 {
         ok = false;
@@ -250,8 +242,7 @@ fn test_sorted_insert() -> i64 {
 
 fn test_single_element() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    let _ = bst_insert(nodes, 42, NIL);
+    let nodes = build_bst([42], NIL);
     let found = bst_search(nodes, 42, NIL);
     let not_found = bst_search(nodes, 99, NIL);
     let mn = bst_min(nodes, NIL);

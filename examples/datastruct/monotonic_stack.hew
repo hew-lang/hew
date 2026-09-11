@@ -1,18 +1,22 @@
 // Monotonic Decreasing Stack
 // Maintains elements in decreasing order from bottom to top.
 // Used to find next-greater-element for each position in an array.
+//
+// A parameter is the callee's own copy, so every helper that grows or shrinks
+// the stack hands it back and the caller reassigns.
 fn stack_new() -> Vec<i64> {
     let v: Vec<i64> = Vec.new();
     v
 }
 
-fn stack_push(var s: Vec<i64>, val: i64) -> i64 {
+fn stack_push(var s: Vec<i64>, val: i64) -> Vec<i64> {
     s.push(val);
-    0
+    s
 }
 
-fn stack_pop(var s: Vec<i64>) -> i64 {
-    s.pop()
+fn stack_pop(var s: Vec<i64>) -> (Vec<i64>, i64) {
+    let val = s.pop();
+    (s, val)
 }
 
 fn stack_peek(s: Vec<i64>) -> i64 {
@@ -20,7 +24,7 @@ fn stack_peek(s: Vec<i64>) -> i64 {
 }
 
 fn stack_is_empty(s: Vec<i64>) -> bool {
-    s.len() == 0
+    s.is_empty()
 }
 
 fn stack_size(s: Vec<i64>) -> i64 {
@@ -36,47 +40,52 @@ fn next_greater_element(arr: Vec<i64>) -> Vec<i64> {
     for i in 0 .. n {
         result.push(0 - 1);
     }
-    let stk = stack_new();
+    var stk = stack_new();
     for i in 0 .. n {
         let val = arr[i];
         // Pop all indices whose values are less than current
         while !stack_is_empty(stk) {
             let top_idx = stack_peek(stk);
             if arr[top_idx] < val {
-                stack_pop(stk);
+                let (shrunk, _popped) = stack_pop(stk);
+                stk = shrunk;
                 result.set(top_idx, val);
             } else {
                 break;
             }
         }
-        stack_push(stk, i);
+        stk = stack_push(stk, i);
     }
     result
 }
 
-// Push onto monotonic decreasing stack, return number of elements popped
-fn mono_push(stk: Vec<i64>, val: i64) -> i64 {
+// Push onto monotonic decreasing stack, returning the stack and the number
+// of elements popped to keep it decreasing.
+fn mono_push(var stk: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     var popped = 0;
     while !stack_is_empty(stk) {
         if stack_peek(stk) < val {
-            stack_pop(stk);
+            let (shrunk, _top) = stack_pop(stk);
+            stk = shrunk;
             popped = popped + 1;
         } else {
             break;
         }
     }
-    stack_push(stk, val);
-    popped
+    stk = stack_push(stk, val);
+    (stk, popped)
 }
 
 fn main() {
     var passed = 0;
     var failed = 0;
     // Test 1: Basic monotonic stack property
-    let stk = stack_new();
-    mono_push(stk, 5);
-    mono_push(stk, 3);
-    mono_push(stk, 1);
+    var stk = stack_new();
+    let seeds: Vec<i64> = [5, 3, 1];
+    for seed in seeds {
+        let (grown, _popped) = mono_push(stk, seed);
+        stk = grown;
+    }
     // Stack should be [5, 3, 1] (decreasing)
     if stack_size(stk) == 3 {
         if stack_peek(stk) == 1 {
@@ -91,7 +100,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Push larger element pops smaller ones
-    let popped = mono_push(stk, 4);
+    let (after_four, popped) = mono_push(stk, 4);
+    stk = after_four;
     // 4 > 1, 4 > 3, but 4 < 5, so stack becomes [5, 4], popped = 2
     if popped == 2 {
         if stack_size(stk) == 2 {
@@ -111,7 +121,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Push equal doesn't pop
-    mono_push(stk, 4);
+    let (after_equal, _equal_popped) = mono_push(stk, 4);
+    stk = after_equal;
     // 4 is not < 4, so stack = [5, 4, 4]
     if stack_size(stk) == 3 {
         println("PASS: equal no pop");
@@ -256,10 +267,12 @@ fn main() {
         failed = failed + 1;
     }
     // Test 10: Push all then pop all from monotonic stack
-    let stk2 = stack_new();
-    let p = mono_push(stk2, 10);
+    var stk2 = stack_new();
+    let (after_ten, p) = mono_push(stk2, 10);
+    stk2 = after_ten;
     // Push 20 > 10, so 10 is popped
-    let p2 = mono_push(stk2, 20);
+    let (after_twenty, p2) = mono_push(stk2, 20);
+    stk2 = after_twenty;
     if p == 0 {
         if p2 == 1 {
             if stack_peek(stk2) == 20 {

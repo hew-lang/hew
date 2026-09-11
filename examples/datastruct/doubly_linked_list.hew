@@ -1,6 +1,10 @@
 // Doubly Linked List using Vec<i64> with index-based pointers
 // Node layout: nodes[i*3] = value, nodes[i*3+1] = prev, nodes[i*3+2] = next
 // NIL = -1
+//
+// A parameter is the callee's own copy, so every helper that writes into the
+// node pool returns it and the caller reassigns. Helpers that also report a
+// head or a new node index return a tuple.
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3]
 }
@@ -13,49 +17,53 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3 + 2]
 }
 
-fn set_prev(var n: Vec<i64>, i: i64, p: i64) {
+fn set_prev(var n: Vec<i64>, i: i64, p: i64) -> Vec<i64> {
     n.set(i * 3 + 1, p);
+    n
 }
 
-fn set_next(var n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     n.set(i * 3 + 2, nx);
+    n
 }
 
-fn alloc_node(var n: Vec<i64>, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = n.len() / 3;
     n.push(val);
     n.push(-1);
     n.push(-1);
-    idx
+    (n, idx)
 }
 
-// Insert at front, returns new head
-fn insert_front(n: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_node(n, val);
+// Insert at front, returns the pool and the new head
+fn insert_front(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, nd) = alloc_node(n, val);
+    n = grown;
     if head != -1 {
-        set_next(n, nd, head);
-        set_prev(n, head, nd);
+        n = set_next(n, nd, head);
+        n = set_prev(n, head, nd);
     }
-    nd
+    (n, nd)
 }
 
-// Insert at back, returns new head
-fn insert_back(n: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_node(n, val);
+// Insert at back, returns the pool and the new head
+fn insert_back(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, nd) = alloc_node(n, val);
+    n = grown;
     if head == -1 {
-        return nd;
+        return (n, nd);
     }
     var curr = head;
     while node_next(n, curr) != -1 {
         curr = node_next(n, curr);
     }
-    set_next(n, curr, nd);
-    set_prev(n, nd, curr);
-    head
+    n = set_next(n, curr, nd);
+    n = set_prev(n, nd, curr);
+    (n, head)
 }
 
-// Delete node with given value, returns new head
-fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
+// Delete node with given value, returns the pool and the new head
+fn delete_val(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
     var curr = head;
     var new_head = head;
     var found = 0;
@@ -66,31 +74,34 @@ fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
                 let p = node_prev(n, curr);
                 let nx = node_next(n, curr);
                 if p != -1 {
-                    set_next(n, p, nx);
+                    n = set_next(n, p, nx);
                 } else {
                     new_head = nx;
                 }
                 if nx != -1 {
-                    set_prev(n, nx, p);
+                    n = set_prev(n, nx, p);
                 }
             }
         }
         curr = node_next(n, curr);
     }
-    new_head
+    (n, new_head)
 }
 
-fn traverse_forward(n: Vec<i64>, head: i64, var result: Vec<i64>) {
+fn traverse_forward(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr != -1 {
         result.push(node_val(n, curr));
         curr = node_next(n, curr);
     }
+    result
 }
 
-fn traverse_backward(n: Vec<i64>, head: i64, var result: Vec<i64>) {
+fn traverse_backward(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     if head == -1 {
-        return;
+        return result;
     }
     var curr = head;
     while node_next(n, curr) != -1 {
@@ -100,6 +111,7 @@ fn traverse_backward(n: Vec<i64>, head: i64, var result: Vec<i64>) {
         result.push(node_val(n, curr));
         curr = node_prev(n, curr);
     }
+    result
 }
 
 fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -114,14 +126,33 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     1
 }
 
-fn test_insert_front() -> i64 {
-    let n: Vec<i64> = Vec.new();
+// Build a list by inserting each value at the front; returns pool and head.
+fn build_front(vals: Vec<i64>) -> (Vec<i64>, i64) {
+    var n: Vec<i64> = Vec.new();
     var head = -1;
-    head = insert_front(n, head, 30);
-    head = insert_front(n, head, 20);
-    head = insert_front(n, head, 10);
-    let r: Vec<i64> = Vec.new();
-    traverse_forward(n, head, r);
+    for val in vals {
+        let (grown, new_head) = insert_front(n, head, val);
+        n = grown;
+        head = new_head;
+    }
+    (n, head)
+}
+
+// Build a list by appending each value; returns pool and head.
+fn build_back(vals: Vec<i64>) -> (Vec<i64>, i64) {
+    var n: Vec<i64> = Vec.new();
+    var head = -1;
+    for val in vals {
+        let (grown, new_head) = insert_back(n, head, val);
+        n = grown;
+        head = new_head;
+    }
+    (n, head)
+}
+
+fn test_insert_front() -> i64 {
+    let (n, head) = build_front([30, 20, 10]);
+    let r = traverse_forward(n, head);
     var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
@@ -135,13 +166,8 @@ fn test_insert_front() -> i64 {
 }
 
 fn test_insert_back() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_back(n, head, 10);
-    head = insert_back(n, head, 20);
-    head = insert_back(n, head, 30);
-    let r: Vec<i64> = Vec.new();
-    traverse_forward(n, head, r);
+    let (n, head) = build_back([10, 20, 30]);
+    let r = traverse_forward(n, head);
     var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
@@ -155,13 +181,8 @@ fn test_insert_back() -> i64 {
 }
 
 fn test_backward_traverse() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_back(n, head, 10);
-    head = insert_back(n, head, 20);
-    head = insert_back(n, head, 30);
-    let r: Vec<i64> = Vec.new();
-    traverse_backward(n, head, r);
+    let (n, head) = build_back([10, 20, 30]);
+    let r = traverse_backward(n, head);
     var e: Vec<i64> = Vec.new();
     e.push(30);
     e.push(20);
@@ -175,19 +196,13 @@ fn test_backward_traverse() -> i64 {
 }
 
 fn test_delete() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_back(n, head, 10);
-    head = insert_back(n, head, 20);
-    head = insert_back(n, head, 30);
-    head = delete_val(n, head, 20);
-    let fwd: Vec<i64> = Vec.new();
-    traverse_forward(n, head, fwd);
+    let (built, built_head) = build_back([10, 20, 30]);
+    let (n, head) = delete_val(built, built_head, 20);
+    let fwd = traverse_forward(n, head);
     var ef: Vec<i64> = Vec.new();
     ef.push(10);
     ef.push(30);
-    let bwd: Vec<i64> = Vec.new();
-    traverse_backward(n, head, bwd);
+    let bwd = traverse_backward(n, head);
     var eb: Vec<i64> = Vec.new();
     eb.push(30);
     eb.push(10);
@@ -202,11 +217,8 @@ fn test_delete() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_back(n, head, 10);
-    head = insert_back(n, head, 20);
-    head = delete_val(n, head, 10);
+    let (built, built_head) = build_back([10, 20]);
+    let (n, head) = delete_val(built, built_head, 10);
     if node_val(n, head) == 20 {
         if node_prev(n, head) == -1 {
             println("PASS: delete head");
@@ -218,13 +230,9 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_delete_tail() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_back(n, head, 10);
-    head = insert_back(n, head, 20);
-    head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec.new();
-    traverse_forward(n, head, r);
+    let (built, built_head) = build_back([10, 20]);
+    let (n, head) = delete_val(built, built_head, 20);
+    let r = traverse_forward(n, head);
     if r.len() == 1 {
         if r[0] == 10 {
             println("PASS: delete tail");

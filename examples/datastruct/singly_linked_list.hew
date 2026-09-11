@@ -1,6 +1,10 @@
 // Singly Linked List using Vec<i64> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // NIL sentinel = -1
+//
+// A parameter is the callee's own copy, so every helper that writes the node
+// pool returns it and the caller reassigns. Helpers that also move the head
+// return a tuple.
 fn node_val(nodes: Vec<i64>, idx: i64) -> i64 {
     nodes[idx * 2]
 }
@@ -9,57 +13,81 @@ fn node_next(nodes: Vec<i64>, idx: i64) -> i64 {
     nodes[idx * 2 + 1]
 }
 
-fn set_next(var nodes: Vec<i64>, idx: i64, nxt: i64) {
+fn set_next(var nodes: Vec<i64>, idx: i64, nxt: i64) -> Vec<i64> {
     nodes.set(idx * 2 + 1, nxt);
+    nodes
 }
 
-fn alloc_node(var nodes: Vec<i64>, val: i64) -> i64 {
+fn alloc_node(var nodes: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = nodes.len() / 2;
     nodes.push(val);
     nodes.push(-1);
-    idx
+    (nodes, idx)
 }
 
-// Prepend: returns new head
-fn prepend(nodes: Vec<i64>, head: i64, val: i64) -> i64 {
-    let n = alloc_node(nodes, val);
-    set_next(nodes, n, head);
-    n
+// Prepend: returns the pool and the new head
+fn prepend(var nodes: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, n) = alloc_node(nodes, val);
+    nodes = set_next(grown, n, head);
+    (nodes, n)
 }
 
-// Append: returns head (may change if list was empty)
-fn append(nodes: Vec<i64>, head: i64, val: i64) -> i64 {
-    let n = alloc_node(nodes, val);
+// Append: returns the pool and the head (which changes if the list was empty)
+fn append(var nodes: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, n) = alloc_node(nodes, val);
+    nodes = grown;
     if head == -1 {
-        return n;
+        return (nodes, n);
     }
     var curr = head;
     while node_next(nodes, curr) != -1 {
         curr = node_next(nodes, curr);
     }
-    set_next(nodes, curr, n);
-    head
+    nodes = set_next(nodes, curr, n);
+    (nodes, head)
 }
 
-// Delete first occurrence of val, returns new head
-fn delete_val(nodes: Vec<i64>, head: i64, val: i64) -> i64 {
+// Append every value in order; returns the pool and the head.
+fn append_all(var nodes: Vec<i64>, head: i64, values: Vec<i64>) -> (Vec<i64>, i64) {
+    var curr_head = head;
+    for value in values {
+        let (grown, new_head) = append(nodes, curr_head, value);
+        nodes = grown;
+        curr_head = new_head;
+    }
+    (nodes, curr_head)
+}
+
+// Prepend every value in order; returns the pool and the head.
+fn prepend_all(var nodes: Vec<i64>, head: i64, values: Vec<i64>) -> (Vec<i64>, i64) {
+    var curr_head = head;
+    for value in values {
+        let (grown, new_head) = prepend(nodes, curr_head, value);
+        nodes = grown;
+        curr_head = new_head;
+    }
+    (nodes, curr_head)
+}
+
+// Delete first occurrence of val; returns the pool and the new head
+fn delete_val(var nodes: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
     if head == -1 {
-        return -1;
+        return (nodes, -1);
     }
     if node_val(nodes, head) == val {
-        return node_next(nodes, head);
+        return (nodes, node_next(nodes, head));
     }
     var prev = head;
     var curr = node_next(nodes, head);
     while curr != -1 {
         if node_val(nodes, curr) == val {
-            set_next(nodes, prev, node_next(nodes, curr));
-            return head;
+            nodes = set_next(nodes, prev, node_next(nodes, curr));
+            return (nodes, head);
         }
         prev = curr;
         curr = node_next(nodes, curr);
     }
-    head
+    (nodes, head)
 }
 
 // Find: returns index of first node with val, or -1
@@ -85,13 +113,15 @@ fn list_len(nodes: Vec<i64>, head: i64) -> i64 {
     count
 }
 
-// Collect values into result vec for verification
-fn traverse(nodes: Vec<i64>, head: i64, var result: Vec<i64>) {
+// Collect values for verification
+fn traverse(nodes: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr != -1 {
         result.push(node_val(nodes, curr));
         curr = node_next(nodes, curr);
     }
+    result
 }
 
 fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -108,13 +138,10 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_prepend() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    head = prepend(nodes, head, 30);
-    head = prepend(nodes, head, 20);
-    head = prepend(nodes, head, 10);
-    let result: Vec<i64> = Vec.new();
-    traverse(nodes, head, result);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [30, 20, 10];
+    let (nodes, head) = prepend_all(pool, -1, values);
+    let result = traverse(nodes, head);
     var expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(20);
@@ -128,13 +155,10 @@ fn test_prepend() -> i64 {
 }
 
 fn test_append() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    head = append(nodes, head, 10);
-    head = append(nodes, head, 20);
-    head = append(nodes, head, 30);
-    let result: Vec<i64> = Vec.new();
-    traverse(nodes, head, result);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20, 30];
+    let (nodes, head) = append_all(pool, -1, values);
+    let result = traverse(nodes, head);
     var expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(20);
@@ -148,14 +172,11 @@ fn test_append() -> i64 {
 }
 
 fn test_delete_middle() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    head = append(nodes, head, 10);
-    head = append(nodes, head, 20);
-    head = append(nodes, head, 30);
-    head = delete_val(nodes, head, 20);
-    let result: Vec<i64> = Vec.new();
-    traverse(nodes, head, result);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20, 30];
+    let (appended, first_head) = append_all(pool, -1, values);
+    let (nodes, head) = delete_val(appended, first_head, 20);
+    let result = traverse(nodes, head);
     var expected: Vec<i64> = Vec.new();
     expected.push(10);
     expected.push(30);
@@ -168,13 +189,11 @@ fn test_delete_middle() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    head = append(nodes, head, 10);
-    head = append(nodes, head, 20);
-    head = delete_val(nodes, head, 10);
-    let result: Vec<i64> = Vec.new();
-    traverse(nodes, head, result);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20];
+    let (appended, first_head) = append_all(pool, -1, values);
+    let (nodes, head) = delete_val(appended, first_head, 10);
+    let result = traverse(nodes, head);
     if result.len() == 1 {
         if result[0] == 20 {
             println("PASS: delete head");
@@ -186,11 +205,9 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_find() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    head = append(nodes, head, 10);
-    head = append(nodes, head, 20);
-    head = append(nodes, head, 30);
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20, 30];
+    let (nodes, head) = append_all(pool, -1, values);
     let found = find(nodes, head, 20);
     let not_found = find(nodes, head, 99);
     if found != -1 {
@@ -206,15 +223,13 @@ fn test_find() -> i64 {
 }
 
 fn test_length() -> i64 {
-    let nodes: Vec<i64> = Vec.new();
-    var head = -1;
-    if list_len(nodes, head) != 0 {
+    let pool: Vec<i64> = Vec.new();
+    if list_len(pool, -1) != 0 {
         println("FAIL: length");
         return 0;
     }
-    head = append(nodes, head, 1);
-    head = append(nodes, head, 2);
-    head = append(nodes, head, 3);
+    let values: Vec<i64> = [1, 2, 3];
+    let (nodes, head) = append_all(pool, -1, values);
     if list_len(nodes, head) == 3 {
         println("PASS: length");
         return 1;

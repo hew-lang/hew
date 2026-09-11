@@ -1,5 +1,8 @@
 // Bipartite Check - 2-colouring BFS
 // Colour 0 = unvisited, 1 = colour A, 2 = colour B
+//
+// A parameter is the callee's own copy, so the adjacency builder returns the
+// levels it fills instead of writing through an out-parameter.
 fn is_bipartite(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) -> bool {
     var colour: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
@@ -41,7 +44,7 @@ fn is_bipartite(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64) -> b
     true
 }
 
-fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_nodes: Vec<i64>, var adj_offsets: Vec<i64>) {
+fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
     let num_edges = esrc.len();
     var degree: Vec<i64> = Vec.new();
     for i in 0 .. num_nodes {
@@ -53,11 +56,13 @@ fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_node
         degree.set(s, degree[s] + 1);
         degree.set(d, degree[d] + 1);
     }
+    var adj_offsets: Vec<i64> = Vec.new();
     adj_offsets.push(0);
     for i in 0 .. num_nodes {
         adj_offsets.push(adj_offsets[i] + degree[i]);
     }
     let total = adj_offsets[num_nodes];
+    var adj_nodes: Vec<i64> = Vec.new();
     for i in 0 .. total {
         adj_nodes.push(0);
     }
@@ -73,6 +78,7 @@ fn build_undirected(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, var adj_node
         adj_nodes.set(pos[d], s);
         pos.set(d, pos[d] + 1);
     }
+    (adj_nodes, adj_offsets)
 }
 
 fn main() {
@@ -91,10 +97,7 @@ fn main() {
     d1.push(3);
     s1.push(3);
     d1.push(0);
-    let an1: Vec<i64> = Vec.new();
-    let ao1: Vec<i64> = Vec.new();
-    build_undirected(n1, s1, d1, an1, ao1);
-
+    let (an1, ao1) = build_undirected(n1, s1, d1);
     // Test 1: 4-cycle is bipartite
     if is_bipartite(an1, ao1, n1) {
         println("PASS: 4-cycle is bipartite");
@@ -113,10 +116,7 @@ fn main() {
     d2.push(2);
     s2.push(2);
     d2.push(0);
-    let an2: Vec<i64> = Vec.new();
-    let ao2: Vec<i64> = Vec.new();
-    build_undirected(n2, s2, d2, an2, ao2);
-
+    let (an2, ao2) = build_undirected(n2, s2, d2);
     // Test 2: Triangle is not bipartite
     if is_bipartite(an2, ao2, n2) {
         println("FAIL: triangle should not be bipartite");
@@ -137,10 +137,7 @@ fn main() {
     d3.push(3);
     s3.push(1);
     d3.push(4);
-    let an3: Vec<i64> = Vec.new();
-    let ao3: Vec<i64> = Vec.new();
-    build_undirected(n3, s3, d3, an3, ao3);
-
+    let (an3, ao3) = build_undirected(n3, s3, d3);
     // Test 3: Tree is always bipartite
     if is_bipartite(an3, ao3, n3) {
         println("PASS: tree is bipartite");
@@ -163,10 +160,7 @@ fn main() {
     d4.push(4);
     s4.push(4);
     d4.push(0);
-    let an4: Vec<i64> = Vec.new();
-    let ao4: Vec<i64> = Vec.new();
-    build_undirected(n4, s4, d4, an4, ao4);
-
+    let (an4, ao4) = build_undirected(n4, s4, d4);
     // Test 4: 5-cycle is not bipartite
     if is_bipartite(an4, ao4, n4) {
         println("FAIL: 5-cycle should not be bipartite");
@@ -179,10 +173,7 @@ fn main() {
     let n5 = 1;
     let s5: Vec<i64> = Vec.new();
     let d5: Vec<i64> = Vec.new();
-    let an5: Vec<i64> = Vec.new();
-    let ao5: Vec<i64> = Vec.new();
-    build_undirected(n5, s5, d5, an5, ao5);
-
+    let (an5, ao5) = build_undirected(n5, s5, d5);
     // Test 5: Single node
     if is_bipartite(an5, ao5, n5) {
         println("PASS: single node is bipartite");
@@ -207,10 +198,7 @@ fn main() {
     d6.push(3);
     s6.push(1);
     d6.push(4);
-    let an6: Vec<i64> = Vec.new();
-    let ao6: Vec<i64> = Vec.new();
-    build_undirected(n6, s6, d6, an6, ao6);
-
+    let (an6, ao6) = build_undirected(n6, s6, d6);
     // Test 6: K(2,3) is bipartite
     if is_bipartite(an6, ao6, n6) {
         println("PASS: K(2,3) is bipartite");
@@ -235,10 +223,7 @@ fn main() {
     d7.push(5);
     s7.push(5);
     d7.push(0);
-    let an7: Vec<i64> = Vec.new();
-    let ao7: Vec<i64> = Vec.new();
-    build_undirected(n7, s7, d7, an7, ao7);
-
+    let (an7, ao7) = build_undirected(n7, s7, d7);
     // Test 7: 6-cycle is bipartite
     if is_bipartite(an7, ao7, n7) {
         println("PASS: 6-cycle is bipartite");
@@ -266,10 +251,7 @@ fn main() {
     d8.push(0);
     s8.push(0);
     d8.push(2);
-    let an8: Vec<i64> = Vec.new();
-    let ao8: Vec<i64> = Vec.new();
-    build_undirected(n8, s8, d8, an8, ao8);
-
+    let (an8, ao8) = build_undirected(n8, s8, d8);
     // Test 8: 6-cycle+chord has odd cycle, not bipartite
     if is_bipartite(an8, ao8, n8) {
         println("FAIL: cycle+chord should not be bipartite");

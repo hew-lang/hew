@@ -1,5 +1,8 @@
 // Counting Map - Frequency counter using hash map
 // Counts occurrences of integer keys
+//
+// A parameter is the callee's own copy, so an increment returns both levels
+// in parameter order and the caller reassigns each one.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
@@ -45,7 +48,7 @@ fn cm_find_slot(keys: Vec<i64>, key: i64) -> i64 {
     0 - 1
 }
 
-fn cm_increment(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) {
+fn cm_increment(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) -> (Vec<i64>, Vec<i64>) {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
@@ -58,10 +61,21 @@ fn cm_increment(var keys: Vec<i64>, var vals: Vec<i64>, key: i64) {
             vals.set(slot, cur + 1);
         }
     }
+    (keys, vals)
+}
+
+// Count a run of tokens so a loop replaces the repeated reassignment of both
+// levels at every call site.
+fn cm_count_all(var keys: Vec<i64>, var vals: Vec<i64>, tokens: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    for token in tokens {
+        let (counted_keys, counted_vals) = cm_increment(keys, vals, token);
+        keys = counted_keys;
+        vals = counted_vals;
+    }
+    (keys, vals)
 }
 
 fn cm_get_count(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
-    let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
         let k = keys[slot];
@@ -94,12 +108,12 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let cap = 32;
-    let keys = make_keys(cap);
-    let vals = make_vals(cap);
+    var keys = make_keys(cap);
+    var vals = make_vals(cap);
     // Test 1: Count single key
-    cm_increment(keys, vals, 5);
-    cm_increment(keys, vals, 5);
-    cm_increment(keys, vals, 5);
+    let (keys_a, vals_a) = cm_count_all(keys, vals, [5, 5, 5]);
+    keys = keys_a;
+    vals = vals_a;
     let c5 = cm_get_count(keys, vals, 5);
     if c5 == 3 {
         println("PASS: count single key");
@@ -109,9 +123,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Count multiple keys
-    cm_increment(keys, vals, 10);
-    cm_increment(keys, vals, 10);
-    cm_increment(keys, vals, 15);
+    let (keys_b, vals_b) = cm_count_all(keys, vals, [10, 10, 15]);
+    keys = keys_b;
+    vals = vals_b;
     let c10 = cm_get_count(keys, vals, 10);
     let c15 = cm_get_count(keys, vals, 15);
     if c10 == 2 {
@@ -146,18 +160,12 @@ fn main() {
     }
     // Test 5: Frequency counting simulation (like word counting)
     // Simulate: tokens = [1, 2, 1, 3, 2, 1, 4, 2, 1]
-    let keys2 = make_keys(cap);
-    let vals2 = make_vals(cap);
+    var keys2 = make_keys(cap);
+    var vals2 = make_vals(cap);
     // token 1 appears 4 times
-    cm_increment(keys2, vals2, 1);
-    cm_increment(keys2, vals2, 2);
-    cm_increment(keys2, vals2, 1);
-    cm_increment(keys2, vals2, 3);
-    cm_increment(keys2, vals2, 2);
-    cm_increment(keys2, vals2, 1);
-    cm_increment(keys2, vals2, 4);
-    cm_increment(keys2, vals2, 2);
-    cm_increment(keys2, vals2, 1);
+    let (keys2_a, vals2_a) = cm_count_all(keys2, vals2, [1, 2, 1, 3, 2, 1, 4, 2, 1]);
+    keys2 = keys2_a;
+    vals2 = vals2_a;
     let f1 = cm_get_count(keys2, vals2, 1);
     let f2 = cm_get_count(keys2, vals2, 2);
     let f3 = cm_get_count(keys2, vals2, 3);
@@ -194,8 +202,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Increment existing further
-    cm_increment(keys2, vals2, 2);
-    cm_increment(keys2, vals2, 2);
+    let (keys2_b, vals2_b) = cm_count_all(keys2, vals2, [2, 2]);
+    keys2 = keys2_b;
+    vals2 = vals2_b;
     let f2b = cm_get_count(keys2, vals2, 2);
     if f2b == 5 {
         println("PASS: increment further");

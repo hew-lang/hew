@@ -1,6 +1,9 @@
 // Deque - Double-ended queue using Vec<i64>
 // Uses a Vec where index 0 = head pointer, rest is data
 // push_front shifts elements, push_back appends
+//
+// A parameter is the callee's own copy, so every operation that changes the
+// deque hands it back through the return value and the caller reassigns.
 fn deque_new() -> Vec<i64> {
     var d: Vec<i64> = Vec.new();
     d.push(0); // head pointer
@@ -20,11 +23,12 @@ fn deque_is_empty(d: Vec<i64>) -> i64 {
     }
 }
 
-fn deque_push_back(var d: Vec<i64>, val: i64) {
+fn deque_push_back(var d: Vec<i64>, val: i64) -> Vec<i64> {
     d.push(val);
+    d
 }
 
-fn deque_push_front(var d: Vec<i64>, val: i64) {
+fn deque_push_front(var d: Vec<i64>, val: i64) -> Vec<i64> {
     // If there's space before head, use it
     let head = d[0];
     if head > 0 {
@@ -43,17 +47,19 @@ fn deque_push_front(var d: Vec<i64>, val: i64) {
         }
         d.set(1, val);
     }
+    d
 }
 
-fn deque_pop_back(var d: Vec<i64>) -> i64 {
-    d.pop()
+fn deque_pop_back(var d: Vec<i64>) -> (Vec<i64>, i64) {
+    let val = d.pop();
+    (d, val)
 }
 
-fn deque_pop_front(var d: Vec<i64>) -> i64 {
+fn deque_pop_front(var d: Vec<i64>) -> (Vec<i64>, i64) {
     let head = d[0];
     let val = d[head + 1];
     d.set(0, head + 1);
-    val
+    (d, val)
 }
 
 fn deque_peek_front(d: Vec<i64>) -> i64 {
@@ -79,7 +85,7 @@ fn main() {
     var passed = 0;
     // Test 1: new deque is empty
     total = total + 1;
-    let d = deque_new();
+    var d = deque_new();
     let r1 = if deque_is_empty(d) == 1 {
         1
     } else {
@@ -89,9 +95,9 @@ fn main() {
 
     // Test 2: push_back and size
     total = total + 1;
-    deque_push_back(d, 10);
-    deque_push_back(d, 20);
-    deque_push_back(d, 30);
+    d = deque_push_back(d, 10);
+    d = deque_push_back(d, 20);
+    d = deque_push_back(d, 30);
     let r2 = if deque_size(d) == 3 {
         1
     } else {
@@ -111,7 +117,8 @@ fn main() {
 
     // Test 4: pop_front FIFO
     total = total + 1;
-    let f1 = deque_pop_front(d);
+    let (after_f1, f1) = deque_pop_front(d);
+    d = after_f1;
     let r4 = if f1 == 10 {
         1
     } else {
@@ -121,7 +128,8 @@ fn main() {
 
     // Test 5: pop_back LIFO
     total = total + 1;
-    let b1 = deque_pop_back(d);
+    let (after_b1, b1) = deque_pop_back(d);
+    d = after_b1;
     let r5 = if b1 == 30 {
         1
     } else {
@@ -141,7 +149,7 @@ fn main() {
 
     // Test 7: push_front
     total = total + 1;
-    deque_push_front(d, 5);
+    d = deque_push_front(d, 5);
     var r7 = 0;
     if deque_peek_front(d) == 5 {
         if deque_size(d) == 2 {
@@ -152,12 +160,14 @@ fn main() {
 
     // Test 8: mixed operations
     total = total + 1;
-    let d2 = deque_new();
-    deque_push_back(d2, 1);
-    deque_push_back(d2, 2);
-    deque_push_back(d2, 3);
-    let front = deque_pop_front(d2);
-    let back = deque_pop_back(d2);
+    var d2 = deque_new();
+    d2 = deque_push_back(d2, 1);
+    d2 = deque_push_back(d2, 2);
+    d2 = deque_push_back(d2, 3);
+    let (after_front, front) = deque_pop_front(d2);
+    d2 = after_front;
+    let (after_back, back) = deque_pop_back(d2);
+    d2 = after_back;
     var r8 = 0;
     if front == 1 {
         if back == 3 {

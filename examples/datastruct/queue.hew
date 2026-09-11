@@ -1,13 +1,18 @@
 // Queue - FIFO data structure using Vec<i64> with head index
 // Index 0 = head pointer, rest is data starting at index 1
+//
+// A parameter is the callee's own copy, so every operation that grows or
+// advances the queue hands it back through the return value and the caller
+// reassigns.
 fn queue_new() -> Vec<i64> {
     var q: Vec<i64> = Vec.new();
     q.push(0); // head index (relative to data start at 1)
     q
 }
 
-fn queue_enqueue(var q: Vec<i64>, val: i64) {
+fn queue_enqueue(var q: Vec<i64>, val: i64) -> Vec<i64> {
     q.push(val);
+    q
 }
 
 fn queue_size(q: Vec<i64>) -> i64 {
@@ -28,11 +33,11 @@ fn queue_peek(q: Vec<i64>) -> i64 {
     q[head + 1]
 }
 
-fn queue_dequeue(var q: Vec<i64>) -> i64 {
+fn queue_dequeue(var q: Vec<i64>) -> (Vec<i64>, i64) {
     let head = q[0];
     let val = q[head + 1];
     q.set(0, head + 1);
-    val
+    (q, val)
 }
 
 fn run_test(name: string, passed: i64) -> i64 {
@@ -49,7 +54,7 @@ fn main() {
     var passed = 0;
     // Test 1: new queue is empty
     total = total + 1;
-    let q = queue_new();
+    var q = queue_new();
     let r1 = if queue_is_empty(q) == 1 {
         1
     } else {
@@ -59,9 +64,10 @@ fn main() {
 
     // Test 2: enqueue and size
     total = total + 1;
-    queue_enqueue(q, 10);
-    queue_enqueue(q, 20);
-    queue_enqueue(q, 30);
+    let seeds: Vec<i64> = [10, 20, 30];
+    for seed in seeds {
+        q = queue_enqueue(q, seed);
+    }
     let r2 = if queue_size(q) == 3 {
         1
     } else {
@@ -80,9 +86,10 @@ fn main() {
 
     // Test 4: dequeue returns FIFO order
     total = total + 1;
-    let d1 = queue_dequeue(q);
-    let d2 = queue_dequeue(q);
-    let d3 = queue_dequeue(q);
+    let (after_d1, d1) = queue_dequeue(q);
+    let (after_d2, d2) = queue_dequeue(after_d1);
+    let (after_d3, d3) = queue_dequeue(after_d2);
+    q = after_d3;
     var r4 = 0;
     if d1 == 10 {
         if d2 == 20 {
@@ -104,7 +111,7 @@ fn main() {
 
     // Test 6: enqueue after empty
     total = total + 1;
-    queue_enqueue(q, 99);
+    q = queue_enqueue(q, 99);
     var r6 = 0;
     if queue_size(q) == 1 {
         if queue_peek(q) == 99 {
@@ -115,13 +122,14 @@ fn main() {
 
     // Test 7: many elements FIFO
     total = total + 1;
-    let q2 = queue_new();
+    var q2 = queue_new();
     for i in 0 .. 50 {
-        queue_enqueue(q2, i);
+        q2 = queue_enqueue(q2, i);
     }
     var r7 = 1;
     for i in 0 .. 50 {
-        let val = queue_dequeue(q2);
+        let (drained, val) = queue_dequeue(q2);
+        q2 = drained;
         if val != i {
             r7 = 0;
         }

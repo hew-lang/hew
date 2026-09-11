@@ -1,5 +1,9 @@
 // Cuckoo Hashing with 2 hash functions and 2 tables
 // Insert displaces existing elements on collision
+//
+// A parameter is the callee's own copy, so insert and remove return both
+// tables in parameter order followed by their result, and the caller
+// reassigns each one.
 fn hash1(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
@@ -29,18 +33,18 @@ fn make_table(capacity: i64) -> Vec<i64> {
     v
 }
 
-fn cuckoo_insert(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> bool {
+fn cuckoo_insert(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> (Vec<i64>, Vec<i64>, bool) {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     let max_loops = capacity * 2;
     // Check if already present
     let idx1 = hash1(key, capacity);
     if t1[idx1] == key {
-        return true;
+        return (t1, t2, true);
     }
     let idx2 = hash2(key, capacity);
     if t2[idx2] == key {
-        return true;
+        return (t1, t2, true);
     }
     var cur = key;
     var i = 0;
@@ -50,7 +54,7 @@ fn cuckoo_insert(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> bool {
         let old1 = t1[pos1];
         t1.set(pos1, cur);
         if old1 == EMPTY {
-            return true;
+            return (t1, t2, true);
         }
         cur = old1;
 
@@ -59,12 +63,26 @@ fn cuckoo_insert(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> bool {
         let old2 = t2[pos2];
         t2.set(pos2, cur);
         if old2 == EMPTY {
-            return true;
+            return (t1, t2, true);
         }
         cur = old2;
         i = i + 1;
     }
-    false
+    (t1, t2, false)
+}
+
+// Insert each key in turn; reports false if any insert hit the loop limit.
+fn cuckoo_insert_all(var t1: Vec<i64>, var t2: Vec<i64>, keys: Vec<i64>) -> (Vec<i64>, Vec<i64>, bool) {
+    var all_ok = true;
+    for key in keys {
+        let (next1, next2, ok) = cuckoo_insert(t1, t2, key);
+        t1 = next1;
+        t2 = next2;
+        if !ok {
+            all_ok = false;
+        }
+    }
+    (t1, t2, all_ok)
 }
 
 fn cuckoo_lookup(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
@@ -80,20 +98,20 @@ fn cuckoo_lookup(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     false
 }
 
-fn cuckoo_remove(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> bool {
+fn cuckoo_remove(var t1: Vec<i64>, var t2: Vec<i64>, key: i64) -> (Vec<i64>, Vec<i64>, bool) {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     let idx1 = hash1(key, capacity);
     if t1[idx1] == key {
         t1.set(idx1, EMPTY);
-        return true;
+        return (t1, t2, true);
     }
     let idx2 = hash2(key, capacity);
     if t2[idx2] == key {
         t2.set(idx2, EMPTY);
-        return true;
+        return (t1, t2, true);
     }
-    false
+    (t1, t2, false)
 }
 
 fn cuckoo_size(t1: Vec<i64>, t2: Vec<i64>) -> i64 {
@@ -115,12 +133,10 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let cap = 16;
-    let t1 = make_table(cap);
-    let t2 = make_table(cap);
     // Test 1: Basic insert and lookup
-    let _ = cuckoo_insert(t1, t2, 5);
-    let _ = cuckoo_insert(t1, t2, 10);
-    let _ = cuckoo_insert(t1, t2, 15);
+    let (seeded1, seeded2, _seeded_ok) = cuckoo_insert_all(make_table(cap), make_table(cap), [5, 10, 15]);
+    var t1 = seeded1;
+    var t2 = seeded2;
     if cuckoo_lookup(t1, t2, 5) {
         if cuckoo_lookup(t1, t2, 10) {
             if cuckoo_lookup(t1, t2, 15) {
@@ -157,7 +173,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Duplicate insert doesn't increase size
-    let _ = cuckoo_insert(t1, t2, 5);
+    let (dup1, dup2, _dup_ok) = cuckoo_insert(t1, t2, 5);
+    t1 = dup1;
+    t2 = dup2;
     let sz2 = cuckoo_size(t1, t2);
     if sz2 == 3 {
         println("PASS: duplicate insert");
@@ -168,7 +186,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Remove
-    let _ = cuckoo_remove(t1, t2, 10);
+    let (pruned1, pruned2, _removed) = cuckoo_remove(t1, t2, 10);
+    t1 = pruned1;
+    t2 = pruned2;
     if cuckoo_lookup(t1, t2, 10) {
         println("FAIL: remove");
         failed = failed + 1;
@@ -183,13 +203,11 @@ fn main() {
         }
     }
     // Test 6: Displacement chains - insert keys that collide in table 1
-    let t1b = make_table(16);
-    let t2b = make_table(16);
     var all_ok = true;
     // Keys 3, 19, 35 all hash to 3 in table 1 (mod 16), causing displacements
-    let _ = cuckoo_insert(t1b, t2b, 3);
-    let _ = cuckoo_insert(t1b, t2b, 19);
-    let _ = cuckoo_insert(t1b, t2b, 35);
+    let (chained1, chained2, _chain_ok) = cuckoo_insert_all(make_table(16), make_table(16), [3, 19, 35]);
+    var t1b = chained1;
+    var t2b = chained2;
     if !cuckoo_lookup(t1b, t2b, 3) {
         all_ok = false;
     }
@@ -207,8 +225,10 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Remove and re-insert
-    let _ = cuckoo_remove(t1b, t2b, 19);
-    let _ = cuckoo_insert(t1b, t2b, 19);
+    let (without1, without2, _dropped) = cuckoo_remove(t1b, t2b, 19);
+    let (again1, again2, _readded) = cuckoo_insert(without1, without2, 19);
+    t1b = again1;
+    t2b = again2;
     if cuckoo_lookup(t1b, t2b, 19) {
         println("PASS: remove and re-insert");
         passed = passed + 1;
@@ -217,15 +237,11 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Multiple elements test
-    let t1c = make_table(32);
-    let t2c = make_table(32);
-    var insert_ok = true;
+    var triples: Vec<i64> = Vec.new();
     for i in 0 .. 20 {
-        let ok = cuckoo_insert(t1c, t2c, i * 3);
-        if !ok {
-            insert_ok = false;
-        }
+        triples.push(i * 3);
     }
+    let (t1c, t2c, insert_ok) = cuckoo_insert_all(make_table(32), make_table(32), triples);
     var lookup_ok = true;
     for i in 0 .. 20 {
         if !cuckoo_lookup(t1c, t2c, i * 3) {

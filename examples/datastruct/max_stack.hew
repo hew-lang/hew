@@ -1,5 +1,8 @@
 // Max Stack - Stack that tracks maximum in O(1)
 // Uses two Vecs: main stack and max-tracking stack
+//
+// A parameter is the callee's own copy, so push and pop hand both stacks back
+// and the caller reassigns; pop also reports the value it removed.
 fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
@@ -9,9 +12,9 @@ fn run_test(name: string, passed: i64) -> i64 {
     passed
 }
 
-fn ms_push(var data: Vec<i64>, var maxs: Vec<i64>, val: i64) {
+fn ms_push(var data: Vec<i64>, var maxs: Vec<i64>, val: i64) -> (Vec<i64>, Vec<i64>) {
     data.push(val);
-    if maxs.len() == 0 {
+    if maxs.is_empty() {
         maxs.push(val);
     } else {
         let cm = maxs[maxs.len() - 1];
@@ -21,33 +24,39 @@ fn ms_push(var data: Vec<i64>, var maxs: Vec<i64>, val: i64) {
             maxs.push(cm);
         }
     }
+    (data, maxs)
 }
 
-fn ms_pop(var data: Vec<i64>, var maxs: Vec<i64>) -> i64 {
+// Push every value in order.
+fn ms_push_all(var data: Vec<i64>, var maxs: Vec<i64>, values: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    for value in values {
+        let (grown, tracked) = ms_push(data, maxs, value);
+        data = grown;
+        maxs = tracked;
+    }
+    (data, maxs)
+}
+
+fn ms_pop(var data: Vec<i64>, var maxs: Vec<i64>) -> (Vec<i64>, Vec<i64>, i64) {
     maxs.pop();
-    data.pop()
+    let val = data.pop();
+    (data, maxs, val)
 }
 
 fn ms_max(maxs: Vec<i64>) -> i64 {
     maxs[maxs.len() - 1]
 }
 
-fn ms_peek(data: Vec<i64>) -> i64 {
-    data[data.len() - 1]
-}
-
-fn ms_size(data: Vec<i64>) -> i64 {
-    data.len()
-}
-
 fn main() {
     var total = 0;
     var passed = 0;
-    let data: Vec<i64> = Vec.new();
-    let maxs: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new();
+    var maxs: Vec<i64> = Vec.new();
     // Test 1: push single, max is that element
     total = total + 1;
-    ms_push(data, maxs, 5);
+    let (data_five, maxs_five) = ms_push(data, maxs, 5);
+    data = data_five;
+    maxs = maxs_five;
     let r1 = if ms_max(maxs) == 5 {
         1
     } else {
@@ -57,7 +66,9 @@ fn main() {
 
     // Test 2: push larger, max updates
     total = total + 1;
-    ms_push(data, maxs, 8);
+    let (data_eight, maxs_eight) = ms_push(data, maxs, 8);
+    data = data_eight;
+    maxs = maxs_eight;
     let r2 = if ms_max(maxs) == 8 {
         1
     } else {
@@ -67,7 +78,9 @@ fn main() {
 
     // Test 3: push smaller, max stays
     total = total + 1;
-    ms_push(data, maxs, 3);
+    let (data_three, maxs_three) = ms_push(data, maxs, 3);
+    data = data_three;
+    maxs = maxs_three;
     let r3 = if ms_max(maxs) == 8 {
         1
     } else {
@@ -77,7 +90,9 @@ fn main() {
 
     // Test 4: push even larger
     total = total + 1;
-    ms_push(data, maxs, 12);
+    let (data_twelve, maxs_twelve) = ms_push(data, maxs, 12);
+    data = data_twelve;
+    maxs = maxs_twelve;
     let r4 = if ms_max(maxs) == 12 {
         1
     } else {
@@ -89,7 +104,9 @@ fn main() {
 
     // Test 5: pop removes largest, max reverts
     total = total + 1;
-    ms_pop(data, maxs);
+    let (data_p5, maxs_p5, _p5) = ms_pop(data, maxs);
+    data = data_p5;
+    maxs = maxs_p5;
     let r5 = if ms_max(maxs) == 8 {
         1
     } else {
@@ -99,7 +116,9 @@ fn main() {
 
     // Test 6: pop again, max stays 8
     total = total + 1;
-    ms_pop(data, maxs);
+    let (data_p6, maxs_p6, _p6) = ms_pop(data, maxs);
+    data = data_p6;
+    maxs = maxs_p6;
     let r6 = if ms_max(maxs) == 8 {
         1
     } else {
@@ -109,7 +128,9 @@ fn main() {
 
     // Test 7: pop the 8, max becomes 5
     total = total + 1;
-    ms_pop(data, maxs);
+    let (data_p7, maxs_p7, _p7) = ms_pop(data, maxs);
+    data = data_p7;
+    maxs = maxs_p7;
     let r7 = if ms_max(maxs) == 5 {
         1
     } else {
@@ -119,15 +140,12 @@ fn main() {
 
     // Test 8: many elements
     total = total + 1;
-    let d2: Vec<i64> = Vec.new();
-    let m2: Vec<i64> = Vec.new();
-    ms_push(d2, m2, 10);
-    ms_push(d2, m2, 30);
-    ms_push(d2, m2, 20);
-    ms_push(d2, m2, 50);
-    ms_push(d2, m2, 40);
-    ms_push(d2, m2, 90);
-    ms_push(d2, m2, 60);
+    var d2: Vec<i64> = Vec.new();
+    var m2: Vec<i64> = Vec.new();
+    let many: Vec<i64> = [10, 30, 20, 50, 40, 90, 60];
+    let (d2_many, m2_many) = ms_push_all(d2, m2, many);
+    d2 = d2_many;
+    m2 = m2_many;
     let r8 = if ms_max(m2) == 90 {
         1
     } else {
@@ -137,8 +155,10 @@ fn main() {
 
     // Test 9: pop back, max reverts correctly
     total = total + 1;
-    ms_pop(d2, m2); // remove 60, max=90
-    ms_pop(d2, m2); // remove 90, max=50
+    let (d2_a, m2_a, _sixty) = ms_pop(d2, m2); // remove 60, max=90
+    let (d2_b, m2_b, _ninety) = ms_pop(d2_a, m2_a); // remove 90, max=50
+    d2 = d2_b;
+    m2 = m2_b;
     let r9 = if ms_max(m2) == 50 {
         1
     } else {

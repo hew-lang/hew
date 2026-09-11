@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-adaptors-consume"
+intent = "The std stream externs that consume their source (`sink.close`, `input.close`, `input.collect`, `stream.forward`) transfer the handle to the runtime and leave the caller no drop, while `sink.send` borrows both the sink and the item; repeated frames release each handle exactly once."
+source = "cases/stream-adaptors-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "round-0|\nforwarded 9\nabandoned 0\nround-1|\nforwarded 9\nabandoned 1\nround-2|\nforwarded 9\nabandoned 2\nround-3|\nforwarded 9\nabandoned 3\n"
+exit = 0

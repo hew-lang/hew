@@ -1,0 +1,63 @@
+// The std stream externs that CONSUME their source hand the runtime the only
+// owner there is, and the ones that BORROW leave it with the caller.
+//
+// `sink.send` borrows the sink and the item; `sink.close`, `input.collect` and
+// `input.close` each consume their handle, so the runtime frees the box and
+// the caller keeps no drop for it. `stream.forward` consumes both halves at
+// once. Each frame runs inside a loop body so a boundary that released twice,
+// or not at all, shows up as a fault or a leak rather than as a wrong string.
+import std.stream;
+
+fn collected(round: i64) -> string {
+    let (sink, input) = match stream.pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    sink.send(f"round-{round}");
+    sink.send("|");
+    // A consuming close: the sink box is the runtime's after this call.
+    sink.close();
+    // A consuming collect: the stream box goes with it, and the string comes
+    // back as the caller's own owner.
+    input.collect()
+}
+
+fn forwarded(round: i64) -> i64 {
+    let (source_sink, source) = match stream.pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let (dest_sink, dest) = match stream.pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    source_sink.send(f"payload-{round}");
+    source_sink.close();
+    // Both halves are consumed by the one call.
+    stream.forward(source, dest_sink);
+    let text = dest.collect();
+    text.len()
+}
+
+fn abandoned(round: i64) -> i64 {
+    let (sink, input) = match stream.pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    sink.send(f"unread-{round}");
+    sink.close();
+    // A consuming close over an undrained stream: the queued item is released
+    // with the box, not leaked and not freed twice.
+    input.close();
+    round
+}
+
+fn main() {
+    var round = 0;
+    while round < 4 {
+        println(collected(round));
+        println(f"forwarded {forwarded(round)}");
+        println(f"abandoned {abandoned(round)}");
+        round = round + 1;
+    }
+}

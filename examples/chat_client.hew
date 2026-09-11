@@ -96,7 +96,10 @@ fn main() {
         .Err(_) => panic("channel.new failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
-    let _ = reader.pump();
+    // A handler call is an ask, and `pump` runs until the stream ends, so
+    // asking it would hold main out of its stdin loop for the whole session.
+    // The forked task joins at main's scope exit, after `done_rx.recv()`.
+    fork reader.pump();
     loop {
         let line = io.read_line();
         if line.contains("/quit") {

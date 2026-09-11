@@ -50,9 +50,9 @@ fn main() {
     //   Node.connect("127.0.0.1:9000");
     //   let found: Result<RemotePid<ChatRoom>, LookupError> = Node.lookup("room");
 
-    // These are direct calls on the local actor. They are lossless unit sends
-    // for ChatRoom's unbounded mailbox; a RemotePid uses its typed send/ask
-    // methods and returns a Result that callers must handle.
+    // These are direct calls on the local actor. Every handler call is an ask:
+    // it waits for the handler's turn and returns a Result. A RemotePid uses
+    // the same typed methods and the same Result.
     let _ = room.enter("alice");
     let _ = room.enter("bob");
     let _ = room.say("alice", "hello everyone!");

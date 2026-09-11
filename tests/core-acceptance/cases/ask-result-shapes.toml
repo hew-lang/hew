@@ -1,0 +1,10 @@
+[[case]]
+id = "ask-result-shapes"
+intent = "An ask yields `Result<T, ActorError<..>>` in every position it is written: matched directly at the call, bound to an explicitly annotated `Result` and matched later, and matched inside a handler that asks a peer."
+source = "cases/ask-result-shapes.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "direct=7\ncaller=3\n"
+exit = 0

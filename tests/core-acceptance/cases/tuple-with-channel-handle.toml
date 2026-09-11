@@ -1,0 +1,10 @@
+[[case]]
+id = "tuple-with-channel-handle"
+intent = "A channel handle packed into a tuple and sent to an actor transfers with the tuple: the worker destructures the pair and closes the handle exactly once, and the caller's binding is gone. The refusal for a caller that uses it again is pinned by `nested_channel_handle_in_tuple_use_after_send_refused`."
+source = "cases/tuple-with-channel-handle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "worker got 99\ndone\n"
+exit = 0

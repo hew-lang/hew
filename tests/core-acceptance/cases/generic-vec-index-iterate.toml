@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-vec-index-iterate"
+intent = "A generic function reads and walks a `Vec<T>` for every element class: `xs[0]` and `xs.get(0)` return the element out of the function, and `for x in xs` walks it. The element read is pinned as a borrow while `T` is abstract, so the instance decides whether that is a real loan or an independent value."
+source = "cases/generic-vec-index-iterate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "nums=7 count=3\nnames=alpha count=2\npoints=1 count=2\nmaybe=7\n"
+exit = 0

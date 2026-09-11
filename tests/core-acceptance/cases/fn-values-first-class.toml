@@ -1,0 +1,10 @@
+[[case]]
+id = "fn-values-first-class"
+intent = "A function is an ordinary value: bound to a name, stored in a vector, held in a record field, passed as a callback parameter and called through each of those, alongside a capture-free closure with the same type."
+source = "cases/fn-values-first-class.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "a=4 b=9 c=10 d=2 n=double\n"
+exit = 0

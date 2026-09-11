@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-filter-map-closures"
+intent = "A Vec pipeline runs its closure over every element and collects into a fresh vector: `filter` and `map` with an inline closure, and `filter` with a closure that captures an outer binding. The collected vector is a mutable place the expansion pushes into, so a captured closure no longer refuses the whole pipeline."
+source = "cases/vec-filter-map-closures.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "evens=2 doubled=5 big=2\n"
+exit = 0

@@ -11,7 +11,8 @@ const ITERS: i64 = 1000000;
 fn main() {
     // factorial(20) is ~2.4e18; summing it ITERS times would overflow i64
     // almost immediately, so fold each result into the checksum modulo a
-    // large prime instead of accumulating the raw value.
+    // large prime instead of accumulating the raw value. Go wraps where Hew
+    // traps, so the Go twin folds the same way and both print one checksum.
     var sum = 0;
     for i in 0 .. ITERS {
         sum = (sum + factorial(20)) % 1000000007;

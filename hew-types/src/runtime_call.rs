@@ -1707,8 +1707,13 @@ pub enum RuntimeCallFamily {
     // `true` for `StreamClose`/`SinkClose` to mirror
     // `runtime_symbol_consumes_receiver`.
     StreamClose,
+    /// The three lazy adaptors. Each consumes its source stream and returns a
+    /// fresh one that closes the source cooperatively when the consumer stops.
+    StreamChunks,
+    StreamLines,
     StreamNextLayout,
     StreamSendLayout,
+    StreamTake,
     StreamTryNextLayout,
 
     // --- String runtime helpers --------------------------------------------
@@ -8301,6 +8306,63 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StreamChunks => RuntimeOpRow {
+                symbol: "hew_stream_chunks",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Stream),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Stream)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StreamLines => RuntimeOpRow {
+                symbol: "hew_stream_lines",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::Receiver(BuiltinType::Stream),
+                        effect: E::Move,
+                    }],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Stream)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StreamTake => RuntimeOpRow {
+                symbol: "hew_stream_take",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Stream),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::FreshOwned(K::Receiver(BuiltinType::Stream)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StreamNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_next_layout",
                 contract: None,
@@ -11923,6 +11985,10 @@ impl RuntimeCallFamily {
             | F::Set(_)
             | F::Encoding { .. }
             | F::StreamClose
+            // Wrapping a source stream in an adaptor is a pointer handoff.
+            | F::StreamChunks
+            | F::StreamLines
+            | F::StreamTake
             | F::StreamTryNextLayout
             | F::SinkTryWrite(_)
             | F::SinkClose

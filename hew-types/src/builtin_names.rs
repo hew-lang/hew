@@ -201,8 +201,8 @@ builtin_named_types! {
         qualified: "stream.Stream",
         methods: [
             // Channel-family naming: recv/close mirror Duplex and RecvHalf.
-            // Iterator-style aliases (.next, .lines) are removed from
-            // the fundamental surface; they land via trait impls in stdlib work.
+            // `.next` is spelled `.recv`; `.lines`/`.chunks`/`.take` are the
+            // lazy adaptors, each consuming its source stream.
             // Layout-witness recv entries: one symbol per operation for every
             // describable element type (mirrors Receiver<T> above). The
             // blocking recv flips to the suspending channel-await substrate
@@ -218,6 +218,12 @@ builtin_named_types! {
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
+            },
+            // `CloneSelf` is the `() -> Self` shape: `lines()` re-frames the
+            // same stream, one newline-terminated item at a time.
+            "lines" => {
+                signature: CloneSelf,
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
             },
             "chunks" => {
                 signature: CountToSelf,

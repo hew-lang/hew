@@ -2131,9 +2131,9 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
 
 /// Wrap a `Stream<bytes>` with a lines adapter.
 ///
-/// Returns a new `HewStream*` that yields one newline-terminated line at a
-/// time (as a UTF-8 byte sequence, newline included).  Takes ownership of
-/// `stream` — do not use it after this call.
+/// Returns a new `HewStream*` that yields one line at a time, with the
+/// newline removed.  Takes ownership of `stream` — do not use it after this
+/// call.
 ///
 /// # Safety
 ///

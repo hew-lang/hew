@@ -4009,12 +4009,29 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "chunks" => {
+            // The lazy adaptors: each consumes its source stream and returns a
+            // fresh one. The runtime adaptors work on the type-erased envelope,
+            // so only the content witnesses (`string`, `bytes`) reach them;
+            // `chunks` counts bytes on both.
+            "lines" | "chunks" | "take" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, param_ty);
                     }
+                }
+                if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Stream<{}>.{method}` is not supported: the stream \
+                             adaptors read the content witness, so they need a \
+                             `string` or `bytes` element",
+                            inner.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
                 }
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
@@ -4031,17 +4048,13 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "take" | "map" | "filter" => {
-                // These lazy adapters have builtin signatures (so they
-                // type-check) but no MIR lowering: they routed to the legacy
-                // `DeferToLowering` codegen path the Rust MIR pipeline does not
-                // consume, dead-ending in HIR lowering with two misleading,
-                // internal-shaped `E_NOT_YET_IMPLEMENTED` notes. Fail closed here
-                // at the checker with one honest capability-boundary diagnostic
-                // so the user sees a single clear message pointing at the
-                // supported alternative, and lowering never reaches the stub.
-                // Still check the argument so an ill-typed adapter arg is not
-                // masked by this boundary error.
+            "map" | "filter" => {
+                // `map`/`filter` carry a user callback, so they have no
+                // type-erased runtime row the way `lines`/`chunks`/`take` do
+                // (`builtin_names` gives them `BuiltinMethodRuntime::None`).
+                // Fail closed here with one honest capability-boundary
+                // diagnostic pointing at the supported alternative. Still check
+                // the argument so an ill-typed adapter arg is not masked.
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
@@ -4055,10 +4068,10 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "`Stream<{}>.{method}` is not yet supported: the lazy \
-                         stream adapters (`take`/`map`/`filter`) have no lowering \
+                        "`Stream<{}>.{method}` is not yet supported: the \
+                         callback adapters (`map`/`filter`) have no lowering \
                          yet; consume the stream directly with `for x in \
-                         s {{ ... }}` (applying the `take`/`map`/`filter` logic in \
+                         s {{ ... }}` (applying the `map`/`filter` logic in \
                          the loop body), or `.recv()` in a loop \
                          [E_STREAM_ADAPTER_UNSUPPORTED]",
                         inner.user_facing()

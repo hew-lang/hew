@@ -2467,15 +2467,19 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 ```hew
 fn apply(f: fn(i64, i64) -> i64, a: i64, b: i64) -> i64 { f(a, b) }
 
-// Closure parameters infer i64 from apply's signature
-let sum = apply(|x, y| x + y, 3, 4);      // x: i64, y: i64 inferred
-let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
+fn main() {
+    // Closure parameters infer i64 from apply's signature
+    let sum = apply(|x, y| x + y, 3, 4);      // x: i64, y: i64 inferred
+    let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
 
-// Method chaining with inference
-numbers
-    .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
-    .map(|x| x * 2)                 // x: i64, result: i64
-    .reduce(|a, b| a + b, 0)        // a: i64 (accumulator), b: i64 (element); seed last
+    // Method chaining with inference
+    let numbers: Vec<i64> = [-2, -1, 1, 2, 3];
+    let total = numbers
+        .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
+        .map(|x| x * 2)                 // x: i64, result: i64
+        .reduce(|a, b| a + b, 0);       // a: i64 (accumulator), b: i64 (element); seed last
+    println(f"{sum} {product} {total}");
+}
 ```
 
 `Vec.reduce` takes the combining closure first and the seed second

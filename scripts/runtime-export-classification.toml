@@ -2160,6 +2160,207 @@ stops the call site from being read as an independent lane operation."""
 # Allocation returns zeroed storage with no initialized captures. Raw cleanup
 # uses the exact descriptor layout; initialized callable cleanup wraps the
 # storage in its carrier and uses hew_callable_drop.
+
+# string accessors reached as `#[extern_symbol]` methods on `string` --
+# hew-runtime/src/string.rs. Every one borrows its handles through
+# string_as_str / string_as_bytes and returns a scalar, so no owner crosses the
+# boundary in either direction and the caller keeps every handle it passed.
+[[ownership.contracts]]
+symbol = "hew_string_byte_length"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_char_at"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_char_at_utf8"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_char_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_contains"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_ends_with"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_find"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_is_alpha"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_is_alphanumeric"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_is_digit"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_is_empty"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_length"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_string_starts_with"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+
+# bytes accessors reached as `#[extern_symbol]` methods on `bytes` --
+# hew-runtime/src/bytes.rs. These read or mutate the caller's BytesTriple in
+# place (copy-on-write where the backing is shared) and never take the triple
+# away; hew_bytes_clear releases the backing and leaves the caller's slot
+# empty, which is still the caller's own value. hew_bytes_append takes the
+# source as a raw pointer/offset/length, not as a second owner.
+[[ownership.contracts]]
+symbol = "hew_bytes_append"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_clear"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_contains"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_is_empty"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_pop"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_push"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_set"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+
+# Vec accessors reached as `#[extern_symbol]` methods on `Vec<T>` --
+# hew-runtime/src/vec.rs and hew-runtime/src/string.rs. hew_vec_append retains
+# the source's elements into the destination and leaves the source with its
+# caller; hew_vec_clear releases the elements and keeps the vector. join
+# borrows both arguments and builds a new string, whose retention axis stays
+# unanswered so no caller-side release is minted for it.
+[[ownership.contracts]]
+symbol = "hew_vec_append"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_vec_clear"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_vec_is_empty"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_vec_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_vec_join_str"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
 [[ownership.contracts]]
 symbol = "hew_callable_env_alloc"
 result = "fresh"

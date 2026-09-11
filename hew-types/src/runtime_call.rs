@@ -794,6 +794,14 @@ pub enum VecValueOp {
     /// `v[a..]` - the open-ended form; the runtime supplies the end bound so
     /// the receiver expression is evaluated once.
     SliceFrom,
+    /// `dst.append(src)` - every element of `src` is added to `dst`. The
+    /// element authority admits this only for the shared-copy families
+    /// (bit-copyable and refcounted-string elements), so `src` keeps its own
+    /// elements and stays usable afterwards.
+    Append,
+    /// `v.join(sep)` - concatenate a `Vec<string>` with `sep` between
+    /// elements into one fresh string.
+    Join,
 }
 
 impl VecValueOp {
@@ -808,6 +816,8 @@ impl VecValueOp {
             crate::VecMethod::Pop => Self::Pop,
             crate::VecMethod::Remove => Self::Remove,
             crate::VecMethod::Clear => Self::Clear,
+            crate::VecMethod::Append => Self::Append,
+            crate::VecMethod::Join => Self::Join,
             _ => return None,
         })
     }
@@ -9860,6 +9870,48 @@ impl RuntimeCallFamily {
                     ],
                     result: R::IndependentValue(K::Receiver(BuiltinType::Vec)),
                     failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::Vector(VecValueOp::Append) => RuntimeOpRow {
+                symbol: "vec.value.append",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::Vector(VecValueOp::Join) => RuntimeOpRow {
+                symbol: "vec.value.join",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Borrow,
+                        },
+                        A {
+                            ty: K::String,
+                            effect: E::Borrow,
+                        },
+                    ],
+                    result: R::FreshOwned(K::String),
+                    failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,
                 abi_shape: RuntimeCallAbiShape::Other,

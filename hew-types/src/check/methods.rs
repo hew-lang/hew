@@ -4961,6 +4961,21 @@ impl Checker {
         if !self.resolved_calls.contains_key(&key) {
             return;
         }
+        // `append` gives the receiver its own copy of every source element, so
+        // an element that owns a closure environment has nothing to copy: a
+        // shallow buffer copy would leave two owners of one environment.
+        if vec_method == VecMethod::Append
+            && matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
+        {
+            self.report_vec_symbol_unsupported(
+                vec_method,
+                &elem_ty,
+                crate::vec_authority::VecUnsupported::FunctionSharedCopy,
+                span,
+            );
+            self.resolved_calls.remove(&key);
+            return;
+        }
         if let Some(op) = crate::VecValueOp::from_method(vec_method) {
             // Final value operations retain semantic identity. Element ABI
             // selection belongs to physical MIR after concrete type demand.

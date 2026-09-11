@@ -631,6 +631,10 @@ pub enum PhysicalVectorOp {
     },
     Slice,
     SliceFrom,
+    /// Bulk add: every element of argument one joins the receiver.
+    Append,
+    /// Concatenate a vector of strings with a separator into a fresh string.
+    Join,
 }
 
 impl PhysicalVectorOp {}
@@ -4002,6 +4006,8 @@ impl FunctionLowerer<'_> {
             },
             VecValueOp::Slice => PhysicalVectorOp::Slice,
             VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
+            VecValueOp::Append => PhysicalVectorOp::Append,
+            VecValueOp::Join => PhysicalVectorOp::Join,
         };
         Ok(PhysicalRuntimeCarrier::Vector { operation, glue })
     }
@@ -8319,6 +8325,7 @@ fn verify_vector_call(
             | PhysicalVectorOp::Get { .. }
             | PhysicalVectorOp::Slice
             | PhysicalVectorOp::SliceFrom
+            | PhysicalVectorOp::Append
     ) && glue.element.clone.is_none()
     {
         return Err(PhysicalError::new(
@@ -8388,6 +8395,23 @@ fn verify_vector_call(
             if result != &glue.ty {
                 return Err(PhysicalError::new(
                     "physical vector slice result is not its own vector type",
+                ));
+            }
+        }
+        PhysicalVectorOp::Append => {
+            if arguments.get(1) != Some(&glue.ty) || result != &glue.ty {
+                return Err(PhysicalError::new(
+                    "physical vector append joins a foreign vector type",
+                ));
+            }
+        }
+        PhysicalVectorOp::Join => {
+            if glue.element.ty != ResolvedTy::String
+                || arguments.get(1) != Some(&ResolvedTy::String)
+                || result != &ResolvedTy::String
+            {
+                return Err(PhysicalError::new(
+                    "physical vector join is not its exact Vec<string> to string contract",
                 ));
             }
         }

@@ -6510,6 +6510,41 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.emit_edge(failure()?)?;
                 self.builder.position_at_end(present);
             }
+            PhysicalVectorOp::Append => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_append",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[pointer.into(), pointer.into()], false),
+                )?;
+                let source_vector = self
+                    .load(source(1)?, "vector.append.source")?
+                    .into_pointer_value();
+                self.runtime_call_void(
+                    function,
+                    &[vector.into(), source_vector.into()],
+                    "vector.append",
+                )?;
+                self.clear_owned(receiver)?;
+                self.store(result, vector.into())?;
+            }
+            PhysicalVectorOp::Join => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_join_str",
+                    pointer.fn_type(&[pointer.into(), pointer.into()], false),
+                )?;
+                let separator = self
+                    .load(source(1)?, "vector.join.separator")?
+                    .into_pointer_value();
+                let joined = self.runtime_call_value(
+                    function,
+                    &[vector.into(), separator.into()],
+                    "vector.join",
+                )?;
+                self.store(result, joined)?;
+            }
             PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {
                 let length_fn = get_or_declare_external(
                     self.llvm,

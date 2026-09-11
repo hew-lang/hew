@@ -1947,8 +1947,12 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
 // Append (bulk)
 // ---------------------------------------------------------------------------
 
-/// Append all elements from `src` to `dst`.
-/// Both vecs must have the same `elem_size`.
+/// Append an independent copy of every element of `src` to `dst`. `src` keeps
+/// its own elements and stays usable afterwards.
+///
+/// Both vectors must agree on element size, kind and descriptor. A
+/// descriptor-backed element is copied through the descriptor's clone thunk,
+/// exactly as [`hew_vec_clone`] copies one.
 ///
 /// # Safety
 ///
@@ -1958,31 +1962,55 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
     cabi_guard!(dst.is_null() || src.is_null());
     // SAFETY: caller guarantees both pointers are valid HewVecs with matching elem_size.
     unsafe {
-        abort_if_layout_aware(dst);
-        abort_if_layout_aware(src);
         let src_len = (*src).len;
         if src_len == 0 {
             return;
         }
-        if (*dst).elem_size != (*src).elem_size || (*dst).elem_kind != (*src).elem_kind {
+        if (*dst).elem_size != (*src).elem_size
+            || (*dst).elem_kind != (*src).elem_kind
+            || (*dst).layout.is_null() != (*src).layout.is_null()
+        {
             libc::abort();
         }
         let Some(new_len) = (*dst).len.checked_add(src_len) else {
             libc::abort();
         };
-        ensure_cap(dst, new_len);
+        ensure_cap_raw(dst, new_len);
         let elem_size = (*dst).elem_size;
         let dst_ptr = (*dst).data.add((*dst).len * elem_size);
-        if (*dst).elem_kind == ElemKind::String {
-            retain_string_elements_into(
-                (*src).data.cast::<*const HewString>(),
-                dst_ptr.cast::<*mut HewString>(),
-                src_len,
-            );
-        } else {
-            core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+        if (*dst).layout.is_null() {
+            if (*dst).elem_kind == ElemKind::String {
+                retain_string_elements_into(
+                    (*src).data.cast::<*const HewString>(),
+                    dst_ptr.cast::<*mut HewString>(),
+                    src_len,
+                );
+            } else {
+                core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+            }
+            (*dst).len += src_len;
+            return;
         }
-        (*dst).len += src_len;
+        let layout = &*(*dst).layout;
+        if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.clone_fn.is_none() {
+            abort_owned_thunk_missing("clone");
+        }
+        let Some(clone_fn) = layout.clone_fn else {
+            core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+            (*dst).len += src_len;
+            return;
+        };
+        for i in 0..src_len {
+            let src_slot = (*src).data.add(i * layout.size);
+            let dst_slot = dst_ptr.add(i * layout.size);
+            core::ptr::copy_nonoverlapping(src_slot, dst_slot, layout.size);
+            if clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>()) != 0 {
+                let msg = b"PANIC: Vec descriptor clone failed\n\0";
+                write_stderr(&msg[..msg.len() - 1]);
+                libc::abort();
+            }
+            (*dst).len += 1;
+        }
     }
 }
 

@@ -764,7 +764,8 @@ pub unsafe extern "C" fn hew_string_chars(s: *const HewString) -> *mut crate::ve
 }
 
 /// Join a `Vec<String>` into a single string with `sep` between elements.
-/// Caller must free the result with `hew_string_drop`.
+/// An empty vector joins to the empty string. Caller must free the result
+/// with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -779,7 +780,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
     // SAFETY: v is a valid HewVec per caller contract.
     let len = unsafe { crate::vec::hew_vec_len(v) };
     if len == 0 {
-        return core::ptr::null_mut();
+        return string_from_str("");
     }
     // SAFETY: `sep` is a live managed handle; null is empty.
     let separator = unsafe { string_as_str(sep) };

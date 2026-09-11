@@ -1,6 +1,18 @@
+// Inherent impl methods on a builtin receiver reach the final path as
+// `ResolvedImplCall`. `append` and `join` were the two Vec methods with no
+// semantic runtime operation of their own.
 fn main() {
-    var a: Vec<i64> = [1, 2];
-    let b: Vec<i64> = [3, 4];
-    a.append(b);
-    println(f"len={a.len()}");
+    var nums: Vec<i64> = [1, 2];
+    let more: Vec<i64> = [3, 4];
+    nums.append(more);
+
+    var words: Vec<string> = ["alpha"];
+    let rest: Vec<string> = ["beta", "gamma"];
+    words.append(rest);
+
+    let empty: Vec<string> = Vec.new();
+    let joined = words.join("-");
+    let nothing = empty.join(",");
+    println(f"nums={nums.len()} last={nums[3]} more={more.len()}");
+    println(f"words={joined} rest={rest[0]} empty=[{nothing}] emptylen={nothing.len()}");
 }

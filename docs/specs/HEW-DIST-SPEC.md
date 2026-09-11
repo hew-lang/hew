@@ -236,7 +236,7 @@ that authority.
 
 ## 7. Registry and names
 
-`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` publishes
+`Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
 the actor's exact `Location` and records `A`'s declaration identity beside it.
 `Node.lookup<A>(name)` returns a typed `RemotePid<A>` discovered through the
 authenticated registry, and MUST compare the recorded identity against `A`
@@ -247,7 +247,7 @@ the returned handle is an unchecked cast.
 `Node.register` is the one registration verb. It registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
 `Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<LocalPid<A>, LookupError>` is the local view of the same registry and
+Result<A, LookupError>` is the local view of the same registry and
 performs the same comparison.
 
 At v0.6.0 the declaration identity is recorded and compared on the registering

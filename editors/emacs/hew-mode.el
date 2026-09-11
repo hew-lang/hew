@@ -85,7 +85,7 @@
     "bool" "char" "string" "bytes" "duration" "instant"
     "Result" "Option" "Ok" "Err" "Some" "Vec" "HashMap" "HashSet" "Range"
     "Box" "Arc" "Rc" "Weak"
-    "LocalPid" "RemotePid" "LambdaPid" "Task" "Scope"
+    "RemotePid" "Task" "Scope"
     "Generator" "AsyncGenerator" "Stream" "Sink"
     "Self")
   "Hew built-in types.")

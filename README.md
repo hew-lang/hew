@@ -238,7 +238,7 @@ reason-only rejection is not the final API.
 
 Distributed actors share the call contract, with transport and liveness errors
 visible to callers. The native cutover still needs distributed acceptance and
-unified `Pid<T>` integration; do not infer network parity from a local example.
+unified remote-handle integration; do not infer network parity from a local example.
 See the [actor guide](docs/hew-language-guide.md#actors) and
 [distributed protocol reference](docs/specs/HEW-DIST-SPEC.md).
 

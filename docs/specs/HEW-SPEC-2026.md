@@ -111,11 +111,15 @@ to know whether a handler finished; handle its failure envelope (§2.1.1).
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-**One actor identity (normative).** `Pid<A>` names an actor, local or remote.
-There is no second surface handle for a remote actor: `RemotePid` is the wire
-form the runtime uses to carry an identity between nodes, not a type a program
-writes. `ChildRef<A>` stays distinct because it names a supervised *role*
-rather than an incarnation, and re-resolves on every call (§5.6).
+**An actor is the type of its handle (normative).** `spawn Orders(...)` has
+type `Orders`. A field, parameter, return, collection element or record field
+that holds an actor is written with the actor's own name, `self` inside an
+actor body is `Self` which is that actor, and a supervisor is addressed by its
+own name the same way. There is no separate handle type to write and no second
+surface handle for a remote actor: location is a runtime fact. An anonymous
+actor's handle mirrors an `fn` type and is written `actor(M) -> R`.
+`ChildRef<A>` stays distinct because it names a supervised *role* rather than
+an incarnation, and re-resolves on every call (§5.6).
 
 **Completion calls.** A call on a `receive fn` through an actor handle waits
 for the handler to finish, exactly as a call on a function does.
@@ -263,8 +267,8 @@ afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
 init field, moved in at `spawn` and closed by the actor's drop glue at stop, so
 one actor can own one connection and serve many requests over it. Across nodes
 the rule is the wire rule: a remote payload must be CBOR-serializable, and a
-handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`,
-`LambdaPid`) are never payloads, local or remote, because an actor's heap is its
+handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`, an
+anonymous actor's handle) are never payloads, local or remote, because an actor's heap is its
 own; closures, generators, and tasks are never payloads either
 (`E_CALLABLE_MESSAGE_PAYLOAD`).
 
@@ -288,9 +292,14 @@ policy do not change these result types (§6).
 The following are gaps in the current native cutover, not alternative
 language contracts:
 
-- Actor identity unification is pending. Current source names local handles
-  `LocalPid<A>` and remote handles `RemotePid<A>`; `Pid<A>` above is the
-  intended unified identity.
+- A handle obtained from a node lookup is still written `RemotePid<A>`. A
+  remote handle has its own runtime representation, so unifying it under the
+  actor's own type waits on the location-aware delivery path.
+- There is no abandon or unjoin primitive. `fork orders.log(line)` without a
+  later `await` is the one-shot send, and it still joins at the enclosing
+  scope's exit like every fork. Whether Hew needs a true fire-and-forget send
+  is an open question: it would make resources, cleanup and control flow less
+  deterministic, and nothing in this specification promises it.
 - `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
   forms, but native supervisor lowering has not adopted them. The current
   internal stop entry point is not the public language spelling (§5.6).
@@ -422,7 +431,7 @@ ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Cou
 
 **Type system:**
 
-A lambda actor expression evaluates to a `LambdaPid<M, R>` handle — a PID-like
+A lambda actor expression evaluates to an `actor(M) -> R` handle — a PID-like
 handle in the same family as `Pid` ("a pid you ask, `M` in →
 `R` out"), where:
 
@@ -458,9 +467,9 @@ fn main() {
     // Spawn a named actor
     let counter = spawn Counter(count: 0);
 
-    // Lambda actor expression returns LambdaPid<M, R>
-    let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // unit reply
-    let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // value reply
+    // A lambda actor expression has the type `actor(M) -> R`
+    let worker: actor(i64) = actor |msg: i64| { println(msg); };          // unit reply
+    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 { x + 1 };       // value reply
     close(counter);
     close(worker);
     close(adder);
@@ -655,7 +664,7 @@ to use `type`.
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
-- **Actor references**: `Pid<A>` is sendable.
+- **Actor references**: an actor handle is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
 #### Variant spelling (normative)
@@ -786,7 +795,7 @@ A value may cross an actor boundary only if it satisfies **Send**.
 - the value is a value type (integers, floats, bool, char), or
 - the value is **owned** and transferred (move) with no remaining aliases, or
 - the value is `Frozen` (deeply immutable), or
-- the value is an actor reference (`Pid<A>`)
+- the value is an actor reference
 
 This is the central compile-time guarantee: **no data races without locks**, aligning with capability-based actor safety in Pony. ([tutorial.ponylang.io][1])
 
@@ -800,7 +809,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char, isize, usize) | Always `Send`                |
 | `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
-| `Pid<A>`                      | Always `Send`                              |
+| an actor handle               | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
 | `Vec<T>`                           | `T` is `Send`                              |
@@ -827,7 +836,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ----------------------------- | ----------------------------------------- |
 | Value types                   | Always `Frozen`                           |
 | `string`                      | NOT `Frozen` (mutable content)            |
-| `Pid<A>`                 | Always `Frozen` (identity reference only) |
+| an actor handle          | Always `Frozen` (identity reference only) |
 | `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
 | `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
 | `enum E`                      | All variant payloads are `Frozen`         |
@@ -999,7 +1008,7 @@ value closes.
 | affine composite | an aggregate containing a non-copyable owner, or `dyn Trait` without a clone contract | transfers ownership | requires a valid transfer contract | automatic release of owned members |
 | linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
 | pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `close` to request actor termination |
-| counted handle | `Rc`, `Weak`, `LambdaPid` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
+| counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
 | opaque/resource handle | channel endpoints, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
 | callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
 | task/generator | `Task<T>`, `Generator<Y, R>` | transfers ownership | not an actor message payload | structured completion or cooperative close |
@@ -1040,7 +1049,7 @@ actor Handler {
 }
 
 actor Forwarder {
-    receive fn forward(message: Message, target: Pid<Handler>) {
+    receive fn forward(message: Message, target: Handler) {
         let _ = target.process(message);  // target receives a snapshot of message
     }
 }
@@ -1094,7 +1103,7 @@ actor Handler {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: Pid<Handler>, second: Pid<Handler>) {
+    receive fn broadcast(message: Message, first: Handler, second: Handler) {
         let _ = first.process(message);
         let _ = second.process(message);   // message still valid — each send snapshots
     }
@@ -1171,7 +1180,7 @@ collection loans still enforce ownership boundaries. Mutation uses `var`.
 
 ```hew
 actor Example {
-    receive fn bad_examples(other: Pid<Other>) {
+    receive fn bad_examples(other: Other) {
         // Sending a non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
         let _ = other.process(local_handle);  // compile error: RawPointer is not Send
@@ -1490,7 +1499,7 @@ impl PointRenderer for Point {
   - Value types (integers, floats, bool, char)
   - Owned types transferred by move
   - `Frozen` types (deeply immutable)
-  - `Pid<A>`
+  - an actor handle
 
 - `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
 
@@ -1619,7 +1628,7 @@ actor Counter {
 ```
 
 Inside an actor body, `self` is the **actor handle**: a read-only value of type
-`Pid<Self>` naming the enclosing actor (`LocalPid<Self>` on the current
+`Self` naming the enclosing actor (the actor's own type on the current
 native surface). A projection such as `self.count` still names the actor's
 state field; bare `count` is the same state access.
 
@@ -1701,7 +1710,7 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
+    receive fn broadcast(message: Message, first: Receiver, second: Receiver) {
         let _ = first.accept(message.clone());
         let _ = second.accept(message.clone());
     }
@@ -1789,7 +1798,7 @@ trait Send {}  // Marker trait — no methods
 - The value is a value type (integers, floats, bool, char)
 - The value is owned and transferred by move with no remaining aliases
 - The value is `Frozen` (deeply immutable)
-- The value is a `Pid<A>`
+- The value is an actor handle
 - The value is a type/enum where all fields/variants satisfy `Send`
 
 `Send` describes whether a boundary is safe; it does not prescribe a copy
@@ -2329,7 +2338,7 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: Pid<Receiver>, second: Pid<Receiver>) {
+    receive fn broadcast(message: Message, first: Receiver, second: Receiver) {
         let _ = first.accept(message.clone());
         let _ = second.accept(message.clone());
     }
@@ -2438,12 +2447,12 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 ```hew
 // Error: T might not be Send
-receive fn forward_unsafe<T>(message: T, target: Pid<Handler<T>>) {
+receive fn forward_unsafe<T>(message: T, target: Handler<T>) {
     let _ = target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
-receive fn forward<T: Send>(message: T, target: Pid<Handler<T>>) {
+receive fn forward<T: Send>(message: T, target: Handler<T>) {
     let _ = target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
@@ -2691,7 +2700,7 @@ help: or annotate the lambda parameters directly
 Actors and supervisors take type parameters like records. An instantiation is
 keyed by its concrete type arguments: state layout, `init`, handlers, hooks,
 methods, mailbox message types and reply types are monomorphized per
-instantiation, and `LocalPid<Latest<i64>>` and `LocalPid<Latest<string>>` are
+instantiation, and `Latest<i64>` and `Latest<string>` are
 distinct handle types. Two instantiations never share a dispatch table, a
 mailbox protocol or a restart budget.
 
@@ -5784,7 +5793,7 @@ in the type system:
   `Node.shutdown()` stays `()`.
 
 **The registry knows the actor's type (normative).**
-`Node.register(name, pid: Pid<A>) -> Result<(), RegisterError>` records
+`Node.register(name, actor: A) -> Result<(), RegisterError>` records
 `A`'s declaration identity beside the location, and `Node.lookup<A>(name)`
 compares the two, answering `Err(LookupError.TypeMismatch)` when they
 disagree. Without that record a lookup's type argument is the reader's wish and
@@ -5793,7 +5802,7 @@ the handle it produces is an unchecked cast.
 `Node.register` is the one registration verb: it registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
 `Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<Pid<A>, LookupError>` is the local view of the same registry, and
+Result<A, LookupError>` is the local view of the same registry, and
 carries the same identity comparison.
 
 **Distributed operations:**

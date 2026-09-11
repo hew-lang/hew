@@ -1,5 +1,7 @@
 # SIR domain matrix
 
+> **Since D489.** An actor is the type of its handle: the builtin this document calls `LocalPid` is now `BuiltinType::ActorHandle`, carrying the actor's own name and type arguments rather than wrapping them, and `LambdaPid` is `BuiltinType::ActorFn`, written `actor(M) -> R` in source. The ownership and representation facts recorded below are unchanged.
+
 > Historical design reference. The revision-specific tables and obligations
 > below describe the earlier ladder program, not current symbol ownership or
 > language support. Use [the current architecture](../diagrams.md),

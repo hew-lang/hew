@@ -11,9 +11,9 @@ An actor gets its own handle by writing `self`, so it can hand another actor a w
 
 ```hew
 actor Worker {
-    var registry: LocalPid<Registry>,
+    var registry: Registry,
     receive fn enrol() {
-        let _ = registry.take(self);   // `self` is this worker's LocalPid<Worker>
+        let _ = registry.take(self);   // `self` is this worker, of type `Worker`
     }
     receive fn done() { println("called back"); }
 }
@@ -74,7 +74,7 @@ for the documented resolver precedence.
 - Use `.get` for optional collection reads and `match`, `??`, `?` or expression-local `handle` as appropriate. Use `expect(reason)` for a deliberate invariant assertion.
 - Commas separate record fields and enum variants in declarations and values. Semicolons terminate executable statements and bodyless function declarations.
 - Declare records with `type Name { field: T, }` and enums with `enum Choice { First, Second, }`.
-- Inside an actor body, `self` as a value is its handle (`LocalPid<Self>` in this build); `self.field` accesses state, and bare field names also work. `this` is not a keyword.
+- Inside an actor body, `self` as a value is its handle, of type `Self`, which is the actor itself; `self.field` accesses state, and bare field names also work. `this` is not a keyword.
 - Every actor call waits for completion, including a void handler. Use `mailbox(target, on_full: ...)` for submission-only delivery; handle its outcome.
 - Ask (request-reply) is `ref.method(arg)` and returns `Result<R, ActorError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
@@ -1402,9 +1402,9 @@ actor Counter {
 }
 ```
 
-Reference and assign state fields by bare name — there is no field prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error). Inside an actor body, `self` as a value is the actor's own handle of type `LocalPid<Self>`; `self.field` accesses its state.
+Reference and assign state fields by bare name — there is no field prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error). Inside an actor body, `self` as a value is the actor's own handle, of type `Self`, which is the actor itself; `self.field` accesses its state.
 
-### spawn returns LocalPid<ActorType>
+### An actor is the type of its handle
 
 ```hew
 actor Greeter {
@@ -1412,15 +1412,15 @@ actor Greeter {
     receive fn greet() -> i64 { name }
 }
 fn main() {
-    let g: LocalPid<Greeter> = spawn Greeter(name: 5);
+    let g: Greeter = spawn Greeter(name: 5);
     let r = g.greet();
     match r { .Ok(v) => println(f"name={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
-Let the actor handle type infer. This build spells local handles `LocalPid<T>`; the intended unified `Pid<T>` surface is pending. Handlers may take multiple arguments.
+`spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
-> **Spelling in this build.** One actor identity `Pid<A>` covers local and remote actors (HEW-SPEC-2026 §2.1.1). The compiler still spells the local case `LocalPid<A>` and the remote case `RemotePid<A>`, which is what the examples in this guide write.
+`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
 
 ### Calling a handler that returns nothing
 
@@ -1665,7 +1665,7 @@ actor Worker {
     receive fn work(n: i64) -> i64 { n * id }
 }
 actor Manager {
-    var worker: LocalPid<Worker>,
+    var worker: Worker,
     receive fn dispatch(n: i64) -> i64 {
         let r = worker.work(n);
         match r { .Ok(v) => v, .Err(_) => -1 }
@@ -1679,13 +1679,13 @@ fn main() {
 }
 ```
 
-Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, ActorError>` like any ask.
+Spawn the dependency first, pass it into the dependent actor's spawn, store it in a field typed with the dependency's own name, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, ActorError>` like any ask.
 
 ### Lambda actors — `actor |params| { .. }`
 
 An `actor |params| { .. }` expression declares an actor with no source name.
 Its captures become the actor's state, its body becomes its one handler, and
-it evaluates to a `LambdaPid<Msg, Reply>` handle.
+it evaluates to an `actor(Msg) -> Reply` handle, which mirrors an `fn` type.
 
 ```hew
 fn main() {
@@ -1705,7 +1705,7 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor's pid does. A
 multi-parameter lambda is called with one argument per parameter.
 
-A `LambdaPid<Msg, Reply>` is an ordinary value. Store it in a record field or a
+An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is
 borrowed, and the call addresses the actor through the borrow without taking
 it. `close(handle)` stops the actor and waits for its terminal cleanup, and
@@ -1744,7 +1744,7 @@ their state then leak.
 The leak is silent: there is no compiler diagnostic and no runtime warning.
 Break the ownership cycle by storing a stable actor id and looking up a strong
 handle only when it is needed. For named local actors, store the non-owning
-`LocalPid<T>` shown above instead of a strong handle. Keep ownership flowing in
+actor handle shown above instead of a strong handle. Keep ownership flowing in
 one direction when neither form is available.
 
 Do not rely on a future cycle collector to reclaim an ownership cycle.
@@ -3908,7 +3908,7 @@ An operation's ordinary `Err` stays a value to handle at the call. Explicit
 An unrecovered fault prints its typed diagnostic and exits 1; an explicit
 non-zero program exit status is preserved.
 
-### Remote ask suspension — a remote `Pid<T>.ask` from an actor handler
+### Remote ask suspension — a remote `.ask` from an actor handler
 
 ```hew
 actor Echo {
@@ -3937,7 +3937,7 @@ actor Client {
 }
 ```
 
-`Pid<T>` names an actor, wherever it lives; a lookup through the node registry
+An actor handle names an actor wherever it lives; a lookup through the node registry
 returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
 lowers to the cross-node suspending remote-ask path and returns
 `Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
@@ -3946,11 +3946,11 @@ remote path, and the local-mailbox bridge for that path is scoped to fail
 closed as `ActorError.RoutingFailed`; use a direct actor call when both actors
 are intentionally local.
 
-> **Not yet in this build.** The one-identity surface is ratified
-> (HEW-SPEC-2026 §2.1.1): `Pid<A>` names a local or remote actor and
-> `RemotePid` is the internal wire form. The compiler still spells the two
-> types separately, which is why the example above writes `RemotePid<Echo>`
-> and `LocalPid<T>` appears elsewhere in this guide.
+> **Not yet in this build.** A local handle is the actor's own type
+> (HEW-SPEC-2026 §2.1.1), but a handle obtained from a node lookup is still
+> written `RemotePid<A>`: a remote handle has its own runtime representation,
+> so unifying it under the actor's own type waits on the location-aware
+> delivery path. That is why the example above writes `RemotePid<Echo>`.
 
 Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)

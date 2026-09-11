@@ -300,9 +300,7 @@
       "None"
     ],
     "concurrency": [
-      "LocalPid",
       "RemotePid",
-      "LambdaPid",
       "Stream",
       "Sink",
       "Task",

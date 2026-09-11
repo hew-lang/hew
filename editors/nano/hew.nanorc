@@ -69,7 +69,7 @@ color brightblue "\<(bool|char|string|bytes|duration|instant)\>"
 
 # Types — generic / collection / concurrency
 color brightblue "\<(HashMap|HashSet|Vec|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range)\>"
-color brightblue "\<(LocalPid|RemotePid|LambdaPid|Stream|Sink|Task|Scope|Generator)\>"
+color brightblue "\<(RemotePid|Stream|Sink|Task|Scope|Generator)\>"
 
 # Traits
 color brightblue "\<(Send|Frozen|Copy|Drop|Clone|Eq|Ord|Hash|Display|Debug)\>"

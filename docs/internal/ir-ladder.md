@@ -1,5 +1,7 @@
 # Hew IR Ladder — Historical Design Reference (v2, revision 7)
 
+> **Since D489.** An actor is the type of its handle: the builtin this document calls `LocalPid` is now `BuiltinType::ActorHandle`, carrying the actor's own name and type arguments rather than wrapping them, and `LambdaPid` is `BuiltinType::ActorFn`, written `actor(M) -> R` in source. The ownership and representation facts recorded below are unchanged.
+
 This is a historical design snapshot, not the current driver or gate contract.
 Native commands now consume verified ownership SIR through physical MIR. The
 alternate native body route, `sir-coverage` and `sir-parity` have been retired;

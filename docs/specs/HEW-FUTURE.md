@@ -177,7 +177,7 @@ the design:
   one envelope form rather than a local fast path beside the wire path.
 - **The wire identity field.** A node-identity field in the envelope header,
   carried with a wire version bump (`docs/diagrams.md`, §7).
-- **`Pid<A>` runtime unification.** One actor-identity type at runtime, with
+- **Remote-handle runtime unification.** One actor-identity representation at runtime, with
   `RemotePid` reduced to the internal wire form it already is on the surface
   (HEW-SPEC-2026 §3.4.3).
 

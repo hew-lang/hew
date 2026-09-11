@@ -121,19 +121,10 @@ linux	failure	hew-cli::eval_e2e	eval_wasm_json_runtime_failure_captures_stderr_w
 linux	failure	hew-cli::eval_e2e	eval_wasm_timeout_is_reported	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::explain_cow_e2e	explain_cow_no_sends_produces_no_send_lines	#3383 makes hew check --explain-cow report what it explains
 linux	failure	hew-cli::explain_cow_e2e	explain_cow_renders_mir_authored_send_modes	#3383 makes hew check --explain-cow report what it explains
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_container_over_a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hashmap_insert_of_a_wrapped_extern_record_is_refused	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_hew_wrapper_around_an_opaque_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_domestic_record_still_releases_once_per_frame	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_domestic_enum_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_wrapped_extern_enum_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_embedding_a_direct_extern_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_of_a_domestic_field_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_vec_push_of_a_wrapped_extern_record_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_wrapped_extern_record_in_a_borrowing_argument_sees_no_caller_release	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_returned_string_interpolation_releases_exactly_once	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_sink_that_retains_a_payload_sees_no_caller_release	#3389 keeps an extern's string argument owned after the handle is retained
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
 linux	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
 macos	failure	hew-cli::for_in_vec_iter_leak_oracle	vec_iter_cursor_transfer_and_reassign_has_zero_leak_endpoints	#3120 makes Vec iterator cleanup path-sensitive
@@ -180,12 +171,7 @@ macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_re
 macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_tuple_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_bind_len_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::nested_vec_get_clone_leak_oracle	get_clone_for_in_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-linux	failure	hew-cli::opaque_resource_close_counterfactual	opaque_close_with_extra_side_effect_is_not_a_canonical_release	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::opaque_resource_vec_containment	vec_of_exact_imported_opaque_resources_uses_exact_drop_only_descriptor	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::param_record_field_loop_drop_leak_oracle	projection_store_mid_loop_rejects_at_check_time	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::param_record_field_loop_drop_leak_oracle	rvalue_rooted_projection_cursor_still_frees_its_snapshot	#3120 makes Vec iterator cleanup path-sensitive
-linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	loop_backedge_cannot_reread_the_cleared_field	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::projected_tuple_owner_active_leak_oracle	whole_tuple_escape_after_projection_transfer_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_over_release	#3079 transfers one live Rc aggregate generation
 macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_reassign_does_not_under_release	#3079 derives cleanup from exact owner states
 macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_reassign_does_not_over_release	#3079 transfers one live Weak aggregate generation
@@ -195,7 +181,6 @@ macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_af
 macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_under_release	#3079 derives cleanup from exact owner states
 macos,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
 macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_under_release	#3079 derives cleanup from exact owner states
-linux	failure	hew-cli::record_builtin_handle_overwrite_failclosed	ordinary_record_builtin_handle_overwrites_are_refused	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract

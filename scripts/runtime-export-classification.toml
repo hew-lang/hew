@@ -983,6 +983,7 @@ stable-stdlib = [
   "hew_cron_free",
   "hew_cron_is_valid",
   "hew_cron_last_error",
+  "hew_cron_next",
   "hew_cron_next_hew",
   "hew_cron_parse",
   "hew_cron_to_string",
@@ -1144,6 +1145,7 @@ stable-stdlib = [
   "hew_quic_stream_finish",
   "hew_quic_stream_last_error",
   "hew_quic_stream_last_recv_status",
+  "hew_quic_stream_last_recv_timed_out",
   "hew_quic_stream_recv",
   "hew_quic_stream_recv_closed",
   "hew_quic_stream_recv_timeout_hew",
@@ -2246,6 +2248,15 @@ params = []
 release-symbol = ""
 discharge-depth = "none"
 
+# Cancelling an observation takes a scalar reference id and drops the runtime's
+# own registry entry; nothing the caller owns crosses the boundary.
+[[ownership.contracts]]
+symbol = "hew_actor_demonitor"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_node_api_id"
 result = "none"
@@ -3249,6 +3260,66 @@ result-retention-basis = "hew_stream_channel returns a fresh Box::into_raw(HewSt
 symbol = "hew_stream_close"
 result = "none"
 params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# The three adaptors each call consume_stream_inner on their upstream, which
+# reads the backing out and deallocates the HewStream box, then return a fresh
+# into_stream_ptr Box wrapping the new adapter. The source handle is gone when
+# they return, so the parameter is a transfer, and the result is the caller's
+# sole handle, released by hew_stream_close.
+[[ownership.contracts]]
+symbol = "hew_stream_chunks"
+result = "fresh"
+params = ["consume", "borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_stream_lines"
+result = "fresh"
+params = ["consume", "borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_stream_take"
+result = "fresh"
+params = ["consume", "borrow"]
+release-symbol = "hew_stream_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+# hew_sink_close takes Box::from_raw ownership of the sink and drops it; the
+# write and flush entries only read through the handle and the item they are
+# given, leaving both owners with the caller.
+[[ownership.contracts]]
+symbol = "hew_sink_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_sink_flush"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_sink_write_bytes"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_sink_write_string"
+result = "none"
+params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4504,6 +4575,15 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
+# The barrier waits on a dispatch watermark and carries no value across the
+# boundary; its i64 result is a status code.
+[[ownership.contracts]]
+symbol = "hew_observe_barrier"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
 [[ownership.contracts]]
 symbol = "hew_observe_scrape"
 result = "fresh"
@@ -4727,6 +4807,15 @@ result-retention = "transferred"
 symbol = "hew_cron_next_hew"
 result = "none"
 params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# The out-parameter form: the expression handle and the caller's timestamp slot
+# are both borrowed, and the i32 result is a status code.
+[[ownership.contracts]]
+symbol = "hew_cron_next"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5609,6 +5698,13 @@ result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_stream_last_recv_status"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_last_recv_timed_out"
 result = "none"
 params = []
 release-symbol = ""

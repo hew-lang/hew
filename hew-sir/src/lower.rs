@@ -8676,8 +8676,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     /// Refuse a declaration that disagrees with the generated ownership row.
     ///
     /// The row is the audited truth for a classified runtime symbol; an
-    /// unclassified symbol has no row and the declaration stands alone. Only
-    /// parameters that carry a Hew obligation are compared: a `#[opaque]`
+    /// unclassified foreign symbol has no row and the declaration stands
+    /// alone. A classified runtime export that moves a Hew owner across the
+    /// boundary must be audited: absence is an unanswered question, and
+    /// guessing it either leaks or double-frees, so the call is refused.
+    ///
+    /// Only parameters that carry a Hew obligation are compared: a `#[opaque]`
     /// pointer-width handle is a bit-copied id whose lifecycle belongs to its
     /// `#[resource]` owner, so a row that frees the underlying C allocation
     /// says nothing about the handle's Hew boundary.
@@ -8690,6 +8694,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             extern_ownership_contract, ExternParamOwnership, ExternResultOwnership,
         };
         let Some(contract) = extern_ownership_contract(&signature.symbol).contract() else {
+            if (obligations.iter().any(|carries| *carries) || result_owned)
+                && hew_types::jit_symbols::is_classified_hew_ffi_symbol(&signature.symbol)
+            {
+                return Err(format!(
+                    "extern `{}` is a classified runtime export with no audited ownership row; \
+                     add its `[[ownership.contracts]]` entry to \
+                     scripts/runtime-export-classification.toml",
+                    signature.symbol
+                ));
+            }
             return Ok(());
         };
         if contract.params.len() == signature.consumes.len() {
@@ -8767,15 +8781,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         let mut decisions = Vec::with_capacity(args.len());
         for (index, ty) in signature.params.iter().enumerate() {
-            decisions.push(
-                if OwnKind::of_ty(ty, self.service.checked_facts.rows())? == OwnKind::None {
-                    crate::BoundaryDecision::Copy
-                } else if signature.consumes[index] {
-                    crate::BoundaryDecision::Move
-                } else {
-                    crate::BoundaryDecision::Borrow
-                },
-            );
+            let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
+            decisions.push(signature.param_decision(index, own));
         }
         let obligations = decisions
             .iter()

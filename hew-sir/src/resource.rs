@@ -65,6 +65,26 @@ pub struct ExternSignature {
     pub result: ResolvedTy,
 }
 
+impl ExternSignature {
+    /// The boundary decision for argument `index`, whose value kind is `own`.
+    ///
+    /// A type that owns nothing is copied into the call. Otherwise the
+    /// declaration decides: `consume` transfers the owner to the callee, and
+    /// its absence is a borrow the caller keeps and releases. Consumption is
+    /// declared, never inferred from the symbol or from what the host does
+    /// with the handle, so lowering and both verifiers read this one rule.
+    #[must_use]
+    pub fn param_decision(&self, index: usize, own: crate::OwnKind) -> crate::BoundaryDecision {
+        if own == crate::OwnKind::None {
+            crate::BoundaryDecision::Copy
+        } else if self.consumes[index] {
+            crate::BoundaryDecision::Move
+        } else {
+            crate::BoundaryDecision::Borrow
+        }
+    }
+}
+
 /// An exact HIR extern declaration retained as part of the release proof.
 pub type ResourceExtern = ExternSignature;
 

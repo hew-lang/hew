@@ -3853,9 +3853,7 @@ fn verify_extern_call_terminator(
             continue;
         }
         let expected = match crate::OwnKind::of_ty(declared, facts) {
-            Ok(crate::OwnKind::None) => crate::BoundaryDecision::Copy,
-            Ok(_) if signature.consumes[index] => crate::BoundaryDecision::Move,
-            Ok(_) => crate::BoundaryDecision::Borrow,
+            Ok(own) => signature.param_decision(index, own),
             Err(reason) => {
                 invalid_operation(function, id, reason, diagnostics);
                 continue;

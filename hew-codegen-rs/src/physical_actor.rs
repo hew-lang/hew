@@ -343,6 +343,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     matches!(
                         block.terminator,
                         PhysicalTerminator::NativeIo { .. }
+                            // A content-backed stream receive or send offloads
+                            // its producer work to the runtime's blocking pool,
+                            // which resolves through the installed process
+                            // runtime. Without one the operation completes with
+                            // "asynchronous file I/O requires an installed
+                            // runtime" and the receive faults. A channel-backed
+                            // stream does not offload, but the terminator alone
+                            // does not say which backing it has.
+                            | PhysicalTerminator::StreamNext { park: true, .. }
+                            | PhysicalTerminator::StreamSend { .. }
                             | PhysicalTerminator::RuntimeCall {
                                 action: hew_mir::physical::PhysicalRuntimeAction {
                                     family: hew_types::RuntimeCallFamily::NodeStart

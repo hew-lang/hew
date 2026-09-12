@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes_ops"
+intent = "The bytes value surface end to end: length, index, slice, push, pop, set, is_empty, contains, clear, append and the drop at scope exit."
+source = "cases/bytes_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "4\n97\n2\nbc\n33\n1\n6\n"
+exit = 0

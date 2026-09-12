@@ -1,0 +1,11 @@
+[[case]]
+id = "vec_scalar_ops"
+intent = "Vec scalar runtime surface."
+source = "cases/vec_scalar_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "3\n20\n2\n30\n1.5\n1\ntrue\n1\n1\n30\n"
+exit = 0

@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_record_let_wildcard"
+intent = "Reconfirmation."
+source = "cases/pattern_record_let_wildcard.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,14 @@
+[[case]]
+id = "actor_counter_ask"
+intent = "Actor spawn, void and value-returning completion calls."
+source = "cases/actor_counter_ask.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "42\n"
+exit = 0

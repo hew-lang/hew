@@ -1,0 +1,11 @@
+[[case]]
+id = "hashset_ops"
+intent = "Layout-backed HashSet runtime surface."
+source = "cases/hashset_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "n=2 has1=true removed=true\nfalse\nwords=2 hasc=true\n"
+exit = 0

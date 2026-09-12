@@ -1,0 +1,11 @@
+[[case]]
+id = "math_intrinsics"
+intent = "Math builtin intrinsics."
+source = "cases/math_intrinsics.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "4\n1024\n3\n4\n4\n5\n3\n7\n5\n3\n7\n0\n1\n2.71828\n0\n"
+exit = 0

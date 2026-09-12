@@ -1,0 +1,11 @@
+[[case]]
+id = "match_skip_drop_control_flow"
+intent = "Skipped-field drops under control flow — the back-edge, join, and all-wildcard legs of the exact-drop-op matrix."
+source = "cases/match_skip_drop_control_flow.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

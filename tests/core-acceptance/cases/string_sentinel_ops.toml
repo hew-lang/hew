@@ -1,0 +1,11 @@
+[[case]]
+id = "string_sentinel_ops"
+intent = "Sentinel->Option string inspectors (D46)."
+source = "cases/string_sentinel_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "6\n-1\n104\n-1\n101\n-1\n"
+exit = 0

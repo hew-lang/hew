@@ -1,0 +1,11 @@
+[[case]]
+id = "rc_weak_graph"
+intent = "A `Weak` taken before `Rc.set` replaces the value no longer upgrades once the `Rc` leaves scope, even though the replacement stored a clone of that same `Weak`."
+source = "cases/rc_weak_graph.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 1

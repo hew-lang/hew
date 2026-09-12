@@ -1,0 +1,11 @@
+[[case]]
+id = "vec_set_owned_move"
+intent = "Owned-element `Vec.set` move-in."
+source = "cases/vec_set_owned_move.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1\n"
+exit = 0

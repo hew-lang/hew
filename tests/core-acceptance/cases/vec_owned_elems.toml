@@ -1,0 +1,11 @@
+[[case]]
+id = "vec_owned_elems"
+intent = "Vec owned-element accessors and drops."
+source = "cases/vec_owned_elems.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "alan\nada\n2\nada\nalan\ngrace\n3\n1\n2\n"
+exit = 0

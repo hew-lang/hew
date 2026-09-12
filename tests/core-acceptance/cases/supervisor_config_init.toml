@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor_config_init"
+intent = "Historical supervisor fixture: its stop call still needs migration to the decided close(sup) form, whose implementation is pending. MIR-corpus fixture: the v0.6 init-closure restart model — config-derived child init."
+source = "cases/supervisor_config_init.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = ""
+exit = 0

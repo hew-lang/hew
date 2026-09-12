@@ -1,0 +1,11 @@
+[[case]]
+id = "option_result_predicates"
+intent = "Builtin Option predicate helpers + Result match."
+source = "cases/option_result_predicates.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "7\n"
+exit = 0

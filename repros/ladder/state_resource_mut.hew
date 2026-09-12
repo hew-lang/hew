@@ -1,7 +1,7 @@
 #[resource]
 type Conn { fd: i64 }
 impl Conn {
-    fn close(c: Conn) { println(f"close {c.fd}"); }
+    fn close(consume self) { println(f"close {self.fd}"); }
     fn bump(var self) { self.fd = self.fd + 1; }
 }
 actor Holder {

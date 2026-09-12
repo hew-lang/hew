@@ -1,0 +1,11 @@
+[[case]]
+id = "stream_blocking_recv"
+intent = "Blocking stream recv/try_recv from a context-free caller."
+source = "cases/stream_blocking_recv.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "eof\nempty\n"
+exit = 0

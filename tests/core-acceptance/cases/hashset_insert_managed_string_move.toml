@@ -1,0 +1,11 @@
+[[case]]
+id = "hashset_insert_managed_string_move"
+intent = "A managed string moved into `HashSet.insert` is not read again afterwards. A set is a value, so each helper returns the set it grew and `main` reassigns; all three members land."
+source = "cases/hashset_insert_managed_string_move.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "3\n"
+exit = 0

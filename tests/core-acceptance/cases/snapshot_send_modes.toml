@@ -1,0 +1,14 @@
+[[case]]
+id = "snapshot_send_modes"
+intent = "One actor call carries three send modes at once: a scalar copies, a shared string is still readable in the sender after the send, and an owned aggregate is snapshotted so the sender can go on mutating its own value."
+source = "cases/snapshot_send_modes.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = "shared\n"
+exit = 0

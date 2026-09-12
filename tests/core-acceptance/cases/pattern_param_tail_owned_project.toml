@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_param_tail_owned_project"
+intent = "Owned record/tuple parameters use one chain-wide ownership decision. Full projection transfers both string fields to binders in tail and non-tail position; wildcard-only helpers borrow so their caller can reuse and drop the original composite once."
+source = "cases/pattern_param_tail_owned_project.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

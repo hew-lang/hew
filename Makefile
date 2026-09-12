@@ -86,7 +86,6 @@
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: dogfood-compile-measure perf-verify-linear
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
-.PHONY: checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
 
@@ -694,7 +693,6 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	checked-mir-run \
 	test-core-matrix test-stdlib-ratchet \
 	test-surface-examples forced-cancel-composite-check hew-check-all
 
@@ -1064,9 +1062,10 @@ macos-leak-oracle: test-leak-oracle-selftest hew-native
 # contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
 # inspector commands and incomplete work witnesses; the shell counterfactuals
 # prove empty/shrunken inventories and a missing ffi authority are red.
-test-leak-oracle-selftest:
+test-leak-oracle-selftest: hew-native
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
 	scripts/tests/test_macos_leak_oracle_runner.sh
+	HEW_BIN="$(DEBUG_HEW)" scripts/tests/test_actor_leak_oracle_counterfactual.sh
 
 # The C-ABI crate, run on its own.
 #
@@ -1194,22 +1193,6 @@ test-pkg-import: hew-native
 # stdout under an isolated HOME.
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
-
-# Execution gate for examples/v05/checked-mir: build and run every fixture and diff
-# a transcript (exit status + verbatim stdout) against its committed
-# `<name>.expected` sibling. Runnability is read back from the compiler
-# (a fixture is runnable exactly when its raw MIR declares `main`), and
-# the expectation set is closed both ways: a fixture with `main` and no
-# expectation fails, an expectation for a fixture without `main` fails.
-checked-mir-run: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh run
-
-# Regenerate explicitly with `make checked-mir-expect`.
-
-# Artifacts only.
-
-checked-mir-expect: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
 
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same

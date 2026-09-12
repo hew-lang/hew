@@ -1,6 +1,6 @@
 //! Escaped-sibling field-drop oracle (#2212) — the empirical
 //! (compiled-binary) half of the sibling-discharge contract whose MIR side
-//! lives in `examples/v05/checked-mir/escaped_sibling_field_drop.hew`.
+//! lives in `tests/core-acceptance/cases/escaped_sibling_field_drop.hew`.
 //!
 //! ## The shape
 //!

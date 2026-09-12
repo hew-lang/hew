@@ -1,7 +1,7 @@
 #[resource]
 type Conn { fd: i64 }
 impl Conn {
-    fn close(c: Conn) { println(f"close {c.fd}"); }
+    fn close(consume self) { println(f"close {self.fd}"); }
 }
 fn mk() -> Conn { Conn { fd: 9 } }
 fn peek(c: Conn) -> i64 { c.fd }

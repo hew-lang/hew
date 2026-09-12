@@ -1,6 +1,6 @@
 //! Skipped-field drop oracle for partial match destructures — the
 //! empirical (compiled-binary) half of the exact-drop-op matrix whose MIR
-//! side lives in `examples/v05/checked-mir/match_skip_*.hew`.
+//! side lives in `tests/core-acceptance/cases/match_skip_*.hew`.
 //!
 //! ## What the safety-drop loop emits per skipped shape
 //!

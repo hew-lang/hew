@@ -2565,12 +2565,12 @@ mechanism and it is observable.
   `--sir-lower`, so the leg being compared is the routing the compiler actually
   ships), **both legs under ASan with leak detection**, and a **reject corpus**
   comparing diagnostic codes. Concretely: for every runnable fixture in
-  `tests/vertical-slice/accept`, `examples/v05/checked-mir`,
+  `tests/vertical-slice/accept`, `tests/core-acceptance/cases`,
   `tests/core-matrix/cells`, and `tests/ownership-balance`, compile twice
   (default routing; `HEW_SIR_ROUTE=force-legacy`), both with
   `HEW_SANITIZE_ADDRESS=1` and `nm`-verified as `tests/ownership-balance/run.py:120-160`
   does; run both under `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1`; diff
-  exit status and stdout byte-for-byte (`scripts/checked-mir-corpus.sh run`
+  exit status and stdout byte-for-byte (the core-acceptance `run` case
   transcript shape). **Reject corpus**: every fixture in
   `tests/vertical-slice/reject` is checked on both routes and the diagnostic
   code and primary span must agree after mapping the legacy codes to the
@@ -2713,7 +2713,7 @@ deactivate/retire` and `hew_dispatch_state_cleanup_*` (§4.7 registry target);
 `fork_for_write`/`clone_alias` (next paragraph); `hew_reply_channel_*`;
 `coalesce_message_key`;
 `HirActorDecl.cycle_capable`; `tests/ownership-balance`, vertical-slice,
-core-matrix, checked-mir `.expected` transcripts (behavioural oracles, not
+core-matrix, core-acceptance `run` transcripts (behavioural oracles, not
 dump pins); `hew-sir/src/{analysis.rs, optimize.rs, dump.rs}`.
 
 ---

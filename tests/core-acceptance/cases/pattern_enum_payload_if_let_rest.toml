@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_enum_payload_if_let_rest"
+intent = "A `..` rest in an enum record-variant pattern skips an owned sibling: the bound field is read and the skipped one is released exactly once, the same discharge `b: _` produces."
+source = "cases/pattern_enum_payload_if_let_rest.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

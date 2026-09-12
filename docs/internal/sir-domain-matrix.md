@@ -891,7 +891,7 @@ reason) and the twenty open-set `std` externs of D-EXTERN-P1 (nineteen
 `find -> Option<i64>`, `char_at -> Option<char>`, `get -> Option<char>`, and any
 use needs a `match` with a payload binder. The rows above now split those
 families out at P2. The witness is
-`examples/v05/checked-mir/string_sentinel_ops.hew` — a string-only program that
+`tests/core-acceptance/cases/string_sentinel_ops.hew` — a string-only program that
 needs `switch_enum` + payload binders (P2) *and* `println` (D-CATALOG), so it
 belongs to P2's gate, not P1's. Every remaining `string`/`bytes` family whose
 result is a scalar, a bool or a fresh `string`/`bytes` stays P1 — including

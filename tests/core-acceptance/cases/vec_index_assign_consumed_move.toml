@@ -1,0 +1,11 @@
+[[case]]
+id = "vec_index_assign_consumed_move"
+intent = "Consumed bound-local owned-element index assignment."
+source = "cases/vec_index_assign_consumed_move.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "1\n"
+exit = 0

@@ -1,0 +1,14 @@
+[[case]]
+id = "scope_fork_spawn"
+intent = "Structured-concurrency scope + fork inside an actor handler."
+source = "cases/scope_fork_spawn.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = ""
+exit = 0

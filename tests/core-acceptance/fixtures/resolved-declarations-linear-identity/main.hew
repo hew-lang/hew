@@ -1,0 +1,8 @@
+import declarations.finished;
+
+import declarations.unfinished;
+
+fn main() {
+    finished.run();
+    unfinished.run();
+}

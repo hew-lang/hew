@@ -1,0 +1,8 @@
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+pub fn run() {
+    let ticket = Ticket { id: 2 };
+}

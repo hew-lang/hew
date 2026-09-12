@@ -1,0 +1,12 @@
+[[case]]
+id = "resolved-declarations-resource-identity"
+intent = "An inherent close method belongs to its canonical resource declaration and cannot satisfy a same-named resource in another module."
+source = "fixtures/resolved-declarations-resource-identity/main.hew"
+suites = ["acceptance"]
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceMissingClose"
+file = "resolved-declarations-resource-identity/src/unclosed.hew"
+line = 1
+column = 1

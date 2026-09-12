@@ -1,0 +1,12 @@
+[[case]]
+id = "resolved-declarations-linear-identity"
+intent = "A consuming method on one module's linear type cannot make a same-named type in a neighbouring module satisfy its declaration contract."
+source = "fixtures/resolved-declarations-linear-identity/main.hew"
+suites = ["acceptance"]
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "LinearNoConsumingMethods"
+file = "resolved-declarations-linear-identity/src/unfinished.hew"
+line = 1
+column = 1

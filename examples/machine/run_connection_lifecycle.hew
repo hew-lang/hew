@@ -1,14 +1,15 @@
 // Depth-1 composite state machine executed end-to-end.
 //
 // `Connected` is a composite state grouping three substates and owning the
-// shared `Disconnect` rule. The composite + substate entry/exit hooks print,
-// so the Harel ordering is observable at stdout:
-//   * enter composite (D2): Connected.entry THEN the initial child's entry
-//   * intra-composite move (D4): old child.exit THEN new child.entry, with no
-//     composite hooks
-//   * leave composite (D3): child.exit THEN Connected.exit
-//   * the parent-level Disconnect rule (D1) applies to every substate via a
-//     concrete-source expansion, so a fourth substate would inherit it.
+// shared `Disconnect` rule. Machine evaluation is pure, so the hooks emit a
+// typed `Trace` output instead of printing; `main` prints the outputs the
+// step report carries back, which makes the Harel ordering observable:
+//   * enter the composite: Connected.entry THEN the initial child's entry
+//   * move inside it: old child's exit THEN new child's entry, no composite
+//     hook
+//   * leave it: child's exit THEN Connected.exit
+//   * the parent-level Disconnect rule applies to every substate, so a fourth
+//     substate would inherit it
 //
 // The whole composite desugars to a flat machine at the parser/AST level;
 // HIR, MIR, and codegen never see a composite.
@@ -21,70 +22,70 @@ machine ConnectionLifecycle {
         Disconnect,
     }
 
+    emits {
+        Trace { text: string },
+    }
+
     state Disconnected,
 
     state Connected {
         entry {
-            println("Connected.entry");
+            emit Trace { text: "Connected.entry" };
         }
         exit {
-            println("Connected.exit");
+            emit Trace { text: "Connected.exit" };
         }
         initial state Authenticating {
             entry {
-                println("Authenticating.entry");
+                emit Trace { text: "Authenticating.entry" };
             }
             exit {
-                println("Authenticating.exit");
+                emit Trace { text: "Authenticating.exit" };
             }
         },
         state Active {
             entry {
-                println("Active.entry");
+                emit Trace { text: "Active.entry" };
             }
             exit {
-                println("Active.exit");
+                emit Trace { text: "Active.exit" };
             }
         },
         state Draining {
             entry {
-                println("Draining.entry");
+                emit Trace { text: "Draining.entry" };
             }
             exit {
-                println("Draining.exit");
+                emit Trace { text: "Draining.exit" };
             }
         },
+
         on Disconnect: _ => Disconnected,
     },
 
-    on Connect: Disconnected => Authenticating,
+    on Connect: Disconnected => Connected,
     on AuthOk: Authenticating => Active,
     on DrainStart: Active => Draining,
     on DrainDone: Draining => Disconnected,
-    on Connect: _ => _ {
-        state
-    }
-    on AuthOk: _ => _ {
-        state
-    }
-    on DrainStart: _ => _ {
-        state
-    }
-    on DrainDone: _ => _ {
-        state
-    }
-    on Disconnect: _ => _ {
-        state
+
+    default { state }
+}
+
+fn show(report: ConnectionLifecycleStep) {
+    for output in report.outputs {
+        match output {
+            .Trace { text } => println(text),
+        }
     }
 }
 
 fn main() {
-    var c = Disconnected;
-    println(c.state_name());
-    c.step(.Connect);
-    println(c.state_name());
-    c.step(.AuthOk);
-    println(c.state_name());
-    c.step(.Disconnect);
-    println(c.state_name());
+    var connection: ConnectionLifecycle = .Disconnected;
+    println(connection.state_name());
+    show(connection.step(.Connect));
+    println(connection.state_name());
+    show(connection.step(.AuthOk));
+    println(connection.state_name());
+    show(connection.step(.Disconnect));
+    println(connection.state_name());
 }

@@ -1,0 +1,23 @@
+// A composite state nests exactly one level. A substate that declares
+// substates of its own is refused where it is written.
+
+machine Deep {
+    events {
+        Go,
+    }
+
+    state Outer {
+        initial state Inner {
+            initial state TooDeep,
+        }
+    },
+
+    on Go: _ => _ {
+        state
+    }
+}
+
+fn main() {
+    var deep: Deep = .Inner;
+    println(deep.state_name());
+}

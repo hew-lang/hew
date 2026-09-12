@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-const-params"
+intent = "A machine const parameter names its declared value in guards and transition bodies, and two declarations with different defaults exhaust after their own count."
+source = "cases/machine-const-params.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "trying 0\ntrying 1\ntrying 2\nexhausted\ntrying 0\nwhole 0\nblown\n"
+exit = 0

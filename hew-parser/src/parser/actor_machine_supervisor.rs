@@ -424,10 +424,14 @@ impl Parser<'_> {
 
         self.expect(&Token::RightBrace)?;
 
-        // Splice composite entry/exit hooks into every boundary-crossing
-        // transition (top-level + expanded) now that the full flat list is
-        // assembled. Done as a post-pass so a top-level `Outside => Sk` enter
-        // and `Sk => Outside` leave are covered, not just parent-rule clones.
+        // Expand composite parent rules, then splice composite entry/exit
+        // hooks into every boundary-crossing transition (top-level + expanded)
+        // now that the full flat list is assembled. Both run as post-passes so
+        // rules authored after the composite block are seen: a substate
+        // override written below the block still beats the parent rule, and a
+        // top-level `Outside => Sk` enter or `Sk => Outside` leave still gets
+        // its hooks.
+        Self::expand_all_composite_parent_rules(&mut transitions, &composite_groups);
         Self::splice_all_composite_hooks(&mut transitions, &composite_groups);
 
         Some(MachineDecl {
@@ -443,6 +447,39 @@ impl Parser<'_> {
             has_default,
             composite_groups,
         })
+    }
+
+    /// Post-pass: expand each composite's wildcard-source parent rules (D1) to
+    /// one concrete-source transition per member. Concrete sources are required
+    /// because the checker refuses `state.field` under a literal `_` source.
+    ///
+    /// A substate's own unguarded rule for the same event wins outright and the
+    /// parent rule is not expanded onto it. A guarded substate rule keeps the
+    /// parent rule, appended after it as the unconditional fallback.
+    pub(crate) fn expand_all_composite_parent_rules(
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &[CompositeGroup],
+    ) {
+        for group in composite_groups {
+            for parent in &group.parent_transitions {
+                if parent.source_state != "_" {
+                    continue;
+                }
+                for member in &group.members {
+                    let covered = transitions.iter().any(|existing| {
+                        existing.source_state == *member
+                            && existing.event_name == parent.event_name
+                            && existing.guard.is_none()
+                    });
+                    if covered {
+                        continue;
+                    }
+                    let mut expanded = parent.clone();
+                    expanded.source_state.clone_from(member);
+                    transitions.push(expanded);
+                }
+            }
+        }
     }
 
     /// Post-pass: splice composite `entry`/`exit` hooks into every transition
@@ -795,8 +832,6 @@ impl Parser<'_> {
         };
 
         // ── Desugar to the flat lists. ───────────────────────────────────────
-        let member_set: std::collections::HashSet<String> = member_names.iter().cloned().collect();
-
         // Stamp composite-owned fields onto every member (shared layout).
         for member in &mut members {
             for (fname, fty) in &fields {
@@ -806,29 +841,13 @@ impl Parser<'_> {
             }
         }
 
-        // Explicit per-member rules already authored (inside the block as
-        // `on E: Sk => …`, or at the machine top level). Used for D1
-        // override-skip so an explicit rule beats the expanded parent rule.
-        let explicit_keys: std::collections::HashSet<(String, String)> = transitions
-            .iter()
-            .chain(parent_transitions.iter())
-            .filter(|t| member_set.contains(&t.source_state))
-            .map(|t| (t.source_state.clone(), t.event_name.clone()))
-            .collect();
-
-        // D1: expand each parent rule to one concrete-source transition per
-        // member. Composite entry/exit hooks are spliced uniformly in a
-        // post-pass (`splice_all_composite_hooks`) once every transition —
-        // top-level and expanded — is in the flat list, so boundary-crossing
-        // top-level transitions are covered too.
+        // A parent rule written with a concrete member source (`on E: Sk => …`
+        // inside the block) is that member's own rule; it joins the flat list
+        // here. Wildcard-source parent rules are expanded per member by the
+        // post-pass, once every top-level rule is also in the list.
         for pt in &parent_transitions {
-            for member in &member_names {
-                if explicit_keys.contains(&(member.clone(), pt.event_name.clone())) {
-                    continue;
-                }
-                let mut expanded = pt.clone();
-                expanded.source_state.clone_from(member);
-                transitions.push(expanded);
+            if pt.source_state != "_" {
+                transitions.push(pt.clone());
             }
         }
 
@@ -850,7 +869,7 @@ impl Parser<'_> {
 
     /// Parse a single substate declaration (`state Name;` /
     /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
-    /// body is depth>1 nesting, rejected with a v0.6 diagnostic.
+    /// body nests deeper than one level and is refused.
     pub(crate) fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
         self.expect(&Token::State)?;
         let name = self.expect_ident()?;
@@ -868,9 +887,9 @@ impl Parser<'_> {
                 } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
                     self.error_at(
                         format!(
-                            "nested composite states (depth > 1) are reserved for v0.6; \
-                             substate `{name}` of composite `{composite_name}` may not contain \
-                             further substates"
+                            "a composite state nests one level; substate `{name}` of \
+                             composite `{composite_name}` may not declare substates of \
+                             its own"
                         ),
                         self.peek_span(),
                     );

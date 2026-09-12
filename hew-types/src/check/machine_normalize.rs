@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use hew_parser::ast::{
     Block, CallArg, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
-    DeclarationOrigin, Expr, FnDecl, Item, Literal, MachineDecl, MachineEvent, MachineState,
-    MachineTransition, MachineTransitionBodyForm, MatchArm, NominalPatternPayload, Pattern,
-    PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
+    DeclarationOrigin, Expr, FnDecl, IntRadix, Item, Literal, MachineDecl, MachineEvent,
+    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NominalPatternPayload,
+    Pattern, PatternField, Program, ResourceMarker, Span, Spanned, Stmt, StringPart, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, Visibility,
 };
 
 use crate::error::{TypeError, TypeErrorKind};
@@ -289,6 +289,52 @@ impl Builder {
             })
             .collect()
     }
+    /// Bind every const parameter as an immutable `usize` local at the top of
+    /// the generated `step`, so each inlined guard, transition body and hook
+    /// names it like an ordinary value. The declared default is the value: a
+    /// machine type annotation cannot spell const arguments, and
+    /// `validate_relation` refuses a parameter that has no default.
+    fn const_param_bindings(&mut self, machine: &MachineDecl) -> Vec<Spanned<Stmt>> {
+        machine
+            .const_params
+            .iter()
+            .filter_map(|param| {
+                let default = param.default?;
+                let ty = self.ty("usize");
+                let literal = self.expr(Expr::Literal(Literal::Integer {
+                    value: i128::from(default),
+                    radix: IntRadix::Decimal,
+                }));
+                Some(self.let_value(&param.name, Some(ty), literal))
+            })
+            .collect()
+    }
+
+    /// A const parameter is a fixed machine-wide value, so a body binding of
+    /// the same name would silently shade it for the rest of its block.
+    fn refuse_const_shadow(
+        &self,
+        pattern: &Spanned<Pattern>,
+        machine: &MachineDecl,
+    ) -> Result<(), TypeError> {
+        let mut names = Vec::new();
+        collect_pattern_bindings(&pattern.0, &mut names);
+        for name in names {
+            self.refuse_const_shadow_name(name, machine)?;
+        }
+        Ok(())
+    }
+
+    fn refuse_const_shadow_name(&self, name: &str, machine: &MachineDecl) -> Result<(), TypeError> {
+        if machine.const_params.iter().any(|param| param.name == name) {
+            return Err(self.error(format!(
+                "`{name}` is a const parameter of machine `{}` and cannot be rebound in a machine body",
+                machine.name
+            )));
+        }
+        Ok(())
+    }
+
     fn error(&self, message: impl Into<String>) -> TypeError {
         TypeError::new(
             TypeErrorKind::MachineExhaustivenessError,
@@ -542,8 +588,14 @@ impl Builder {
         if machine.states.is_empty() || machine.events.is_empty() {
             return Err(self.error("a machine must declare a state and an input event"));
         }
-        if !machine.const_params.is_empty() || !machine.composite_groups.is_empty() {
-            return Err(self.error("ordinary machine evaluation does not yet admit const parameters or composite states"));
+        for param in &machine.const_params {
+            if param.default.is_none() {
+                return Err(self.error(format!(
+                    "const parameter `{}` on machine `{}` needs a default value; \
+                     a machine type annotation cannot yet spell const arguments",
+                    param.name, machine.name
+                )));
+            }
         }
         // The generated declarations carry the machine's where clause, so a
         // predicate naming anything but a declared parameter would reach HIR
@@ -715,8 +767,10 @@ impl Builder {
             value: candidate_value,
         });
         let result = self.ident("_$machine_report");
+        let mut stmts = self.const_param_bindings(machine);
+        stmts.extend([outputs, disposition, candidate, report_binding, commit]);
         Ok(Block {
-            stmts: vec![outputs, disposition, candidate, report_binding, commit],
+            stmts,
             trailing_expr: Some(Box::new(result)),
         })
     }
@@ -1148,6 +1202,7 @@ impl Builder {
         event: &MachineEvent,
     ) -> Result<(), TypeError> {
         for arm in arms {
+            self.refuse_const_shadow(&arm.pattern, machine)?;
             self.refresh_pattern(&mut arm.pattern);
             if let Some(guard) = &mut arm.guard {
                 *guard = self.rewrite(guard, machine, state, event)?;
@@ -1222,6 +1277,7 @@ impl Builder {
                     value,
                     else_block,
                 } => {
+                    self.refuse_const_shadow(pattern, machine)?;
                     self.refresh_pattern(pattern);
                     if let Some(ty) = ty {
                         self.refresh_type(ty);
@@ -1233,7 +1289,8 @@ impl Builder {
                         *other = self.rewrite_block(other, machine, state, event)?;
                     }
                 }
-                Stmt::Var { ty, value, .. } => {
+                Stmt::Var { name, ty, value } => {
+                    self.refuse_const_shadow_name(name, machine)?;
                     if let Some(ty) = ty {
                         self.refresh_type(ty);
                     }
@@ -1274,6 +1331,7 @@ impl Builder {
                     body,
                     ..
                 } => {
+                    self.refuse_const_shadow(pattern, machine)?;
                     self.refresh_pattern(pattern);
                     *iterable = self.rewrite(iterable, machine, state, event)?;
                     *body = self.rewrite_block(body, machine, state, event)?;
@@ -1304,6 +1362,57 @@ impl Builder {
             **value = self.rewrite(value, machine, state, event)?;
         }
         Ok(block)
+    }
+}
+
+/// Names a pattern binds, for the const-parameter shadowing refusal.
+fn collect_pattern_bindings<'a>(pattern: &'a Pattern, names: &mut Vec<&'a str>) {
+    match pattern {
+        Pattern::Identifier(name) => names.push(name),
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+            for (pattern, _) in patterns {
+                collect_pattern_bindings(pattern, names);
+            }
+        }
+        Pattern::Or(left, right) => {
+            collect_pattern_bindings(&left.0, names);
+            collect_pattern_bindings(&right.0, names);
+        }
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+            collect_pattern_fields(fields, names);
+        }
+        Pattern::ContextVariant(ContextVariantPattern {
+            payload: Some(payload),
+            ..
+        })
+        | Pattern::NominalPath {
+            payload: Some(payload),
+            ..
+        } => match payload {
+            NominalPatternPayload::Tuple(patterns) => {
+                for (pattern, _) in patterns {
+                    collect_pattern_bindings(pattern, names);
+                }
+            }
+            NominalPatternPayload::Record { fields, .. } => {
+                collect_pattern_fields(fields, names);
+            }
+        },
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Regex { .. }
+        | Pattern::ContextVariant(_)
+        | Pattern::NominalPath { .. } => {}
+    }
+}
+
+fn collect_pattern_fields<'a>(fields: &'a [PatternField], names: &mut Vec<&'a str>) {
+    for field in fields {
+        match &field.pattern {
+            Some((pattern, _)) => collect_pattern_bindings(pattern, names),
+            // `{ a }` shorthand binds the field name itself.
+            None => names.push(&field.name),
+        }
     }
 }
 

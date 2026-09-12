@@ -1,0 +1,33 @@
+#[resource]
+type Ticket {
+    name: string,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.name}");
+    }
+}
+
+type Inner {
+    ticket: Ticket,
+    spare: Ticket,
+    label: string,
+}
+
+type Outer {
+    inner: Inner,
+    other: string,
+}
+
+fn fail(divisor: i64) -> i64 {
+    12 / divisor
+}
+
+fn main() -> i64 {
+    let outer = Outer { inner: Inner { ticket: Ticket { name: "taken".to_upper() }, spare: Ticket { name: "retained".to_upper() }, label: "inner".to_upper() }, other: "outer".to_upper() };
+    let Outer { inner: Inner { ticket: selected, .. }, .. } = outer;
+    selected.close();
+    println(outer.inner.label);
+    fail(0)
+}

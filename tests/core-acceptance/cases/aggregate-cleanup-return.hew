@@ -1,0 +1,168 @@
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type ResRec {
+    t: Tok,
+}
+
+enum Held {
+    Nothing,
+    One(Tok),
+}
+
+#[opaque]
+type DqH {
+}
+
+#[resource]
+type Dq {
+    handle: DqH,
+    tag: i64,
+}
+
+impl Dq {
+    fn close(consume self) {
+        unsafe {
+            hew_deque_free(self.handle)
+        };
+        println(f"close {self.tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> DqH;
+    fn hew_deque_free(dq: DqH);
+    fn hew_deque_len(dq: DqH) -> i64;
+}
+
+fn resource_return(early: bool) -> i64 {
+    let h = Tok { id: 1 };
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn record_return(early: bool) -> i64 {
+    let h = ResRec { t: Tok { id: 1 } };
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn tuple_return(early: bool) -> i64 {
+    let h: (i64, Tok) = (1, Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn option_return(early: bool) -> i64 {
+    let h: Option<Tok> = Option.Some(Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn result_return(early: bool) -> i64 {
+    let h: Result<Tok, string> = Result.Ok(Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn enum_payload_return(early: bool) -> i64 {
+    let h: Held = .One(Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn vec_return(early: bool) -> i64 {
+    var h: Vec<Tok> = Vec.new();
+    h.push(Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn hashmap_return(early: bool) -> i64 {
+    var h: HashMap<string, Tok> = HashMap.new();
+    h.insert("k", Tok { id: 1 });
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn opaque_return(early: bool) -> i64 {
+    let h = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 1 };
+    if early {
+        println("early");
+        return 1;
+    }
+    println("late");
+    2
+}
+
+fn main() {
+    println("resource");
+    println(resource_return(true));
+    println(resource_return(false));
+    println("record");
+    println(record_return(true));
+    println(record_return(false));
+    println("tuple");
+    println(tuple_return(true));
+    println(tuple_return(false));
+    println("option");
+    println(option_return(true));
+    println(option_return(false));
+    println("result");
+    println(result_return(true));
+    println(result_return(false));
+    println("enum_payload");
+    println(enum_payload_return(true));
+    println(enum_payload_return(false));
+    println("vec");
+    println(vec_return(true));
+    println(vec_return(false));
+    println("hashmap");
+    println(hashmap_return(true));
+    println(hashmap_return(false));
+    println("opaque");
+    println(opaque_return(true));
+    println(opaque_return(false));
+}

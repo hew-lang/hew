@@ -12,7 +12,7 @@ fn main() {
     let root_c = Colliding { c: 1 };
     println(root_c.c);
     let s = spawn mixreply.Src(seed: 4);
-    match await s.get() {
+    match s.get() {
         .Ok(inner) => match inner {
             .Ok(u) => println(u.u),
             .Err(cc) => println(cc.c),

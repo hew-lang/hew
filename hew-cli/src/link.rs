@@ -295,7 +295,9 @@ pub(crate) fn link_executable_with_hew_lib(
     if !coverage_instrument {
         cmd.args(plan.gc_flags);
     }
-    if !debug && !coverage_instrument {
+    // Sanitizer reports need function symbols even when source debug metadata
+    // is not requested, including frames inside the linked runtime.
+    if !debug && !coverage_instrument && !sanitize_address {
         cmd.args(plan.strip_flags);
     }
 

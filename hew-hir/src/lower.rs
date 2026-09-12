@@ -15921,6 +15921,7 @@ impl LowerCtx {
                     u32::try_from(idx).expect("tuple pattern index must fit in u32"),
                 ),
                 binding,
+                nested: is_nested,
             });
         }
         stmts.push(HirStmt {
@@ -16057,6 +16058,7 @@ impl LowerCtx {
             fields.push(HirDestructureField {
                 selector: HirDestructureSelector::Record(field_name),
                 binding,
+                nested: is_nested,
             });
         }
         stmts.push(HirStmt {
@@ -17119,6 +17121,7 @@ impl LowerCtx {
                             u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
                         ),
                         binding: Some(self.bind(name, ty, false, pattern_span.clone())),
+                        nested: false,
                     })
                     .collect();
                 HirStmtKind::Destructure {
@@ -33568,10 +33571,12 @@ mod tests {
             groups[0].1.as_slice(),
             [
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Tuple(0),
                     binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Tuple(1),
                     binding: Some(HirBinding { name: bytes, ty: ResolvedTy::Bytes, .. }),
                 },
@@ -33581,10 +33586,12 @@ mod tests {
             groups[1].1.as_slice(),
             [
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Record(x),
                     binding: Some(HirBinding { name: x_binding, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Record(payload),
                     binding: Some(HirBinding { name: payload_binding, ty: ResolvedTy::Bytes, .. }),
                 },
@@ -33594,6 +33601,7 @@ mod tests {
             groups[2].1.as_slice(),
             [
                 HirDestructureField {
+                    nested: true,
                     selector: HirDestructureSelector::Tuple(0),
                     binding: Some(HirBinding {
                         ty: ResolvedTy::Tuple(_),
@@ -33602,6 +33610,7 @@ mod tests {
                 },
                 // `_` names nothing, so the field carries no binding.
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Tuple(1),
                     binding: None,
                 },
@@ -33611,10 +33620,12 @@ mod tests {
             groups[3].1.as_slice(),
             [
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Tuple(0),
                     binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
+                    nested: false,
                     selector: HirDestructureSelector::Tuple(1),
                     binding: Some(HirBinding { name: payload, ty: ResolvedTy::Bytes, .. }),
                 },

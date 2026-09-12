@@ -247,6 +247,10 @@ pub enum PhysicalRepr {
         element: Box<PhysicalLayout>,
         len: u32,
     },
+    Vector {
+        element: Box<PhysicalLayout>,
+        len: u32,
+    },
     Struct(Vec<PhysicalLayout>),
 }
 
@@ -6130,8 +6134,10 @@ impl BorrowDependents {
         &self,
         function: &PhysicalFunction,
         state: &FlowState,
-        root: StorageId,
+        source: StorageId,
     ) -> bool {
+        let projection = function.place_storage.get(&source);
+        let root = projection.map_or(source, |entry| entry.root);
         let mut pending = vec![root];
         let mut seen = BTreeSet::new();
         while let Some(id) = pending.pop() {
@@ -6142,6 +6148,18 @@ impl BorrowDependents {
                 return true;
             }
             for &child in self.children.get(&id).into_iter().flatten() {
+                // Canonical projection paths preserve the SIR partition:
+                // sibling storage cannot hold a loan of the selected field.
+                if let (Some(source), Some(child)) =
+                    (projection, function.place_storage.get(&child))
+                {
+                    if source.root == child.root
+                        && !source.path.starts_with(&child.path)
+                        && !child.path.starts_with(&source.path)
+                    {
+                        continue;
+                    }
+                }
                 if function.storage[child.0 as usize].borrow_parent.is_some()
                     && state.slots[child.0 as usize] != InitState::Uninitialized
                 {
@@ -6160,10 +6178,6 @@ fn require_no_live_borrows(
     state: &FlowState,
     source: StorageId,
 ) -> Result<(), PhysicalError> {
-    let source = function
-        .place_storage
-        .get(&source)
-        .map_or(source, |entry| entry.root);
     if borrows.any_live_loan(function, state, source) {
         return Err(PhysicalError::new(format!(
             "physical storage {} cannot end or change while a dependent loan is live",
@@ -9864,6 +9878,80 @@ mod tests {
             }
         }
         assert_eq!(loans, 2);
+    }
+
+    #[test]
+    fn projected_guard_loans_protect_fields_and_ancestors_but_not_siblings() {
+        let module = lower_source(
+            r"
+            #[resource] type Ticket { id: i64 }
+            impl Ticket { fn close(consume self) {} }
+            type Pair { first: Ticket, second: Ticket }
+            fn main() {
+                var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
+                match pair {
+                    Pair { first: ticket, .. } if { pair.second = Ticket { id: 3 }; true } => ticket.close(),
+                    _ => {},
+                }
+            }
+            ",
+        );
+        let physical = lower_physical_module(&module, target_for_inventory(&module))
+            .expect("disjoint projected guard mutation");
+        let main = module
+            .functions
+            .iter()
+            .find(|function| function.name.ends_with("main"))
+            .unwrap()
+            .callable;
+        let mut function = physical
+            .module()
+            .functions
+            .iter()
+            .find(|function| function.callable == main)
+            .unwrap()
+            .clone();
+        let (loan, field) = function
+            .storage
+            .iter()
+            .find_map(|slot| {
+                let parent = slot.borrow_parent?;
+                let projection = function.place_storage.get(&parent)?;
+                (projection.path.len() == 1 && projection.path[0].field == 0)
+                    .then_some((slot.id, parent))
+            })
+            .expect("the pattern loans the first field");
+        let root = function.place_storage[&field].root;
+        let sibling = *function
+            .place_storage
+            .iter()
+            .find(|(_, projection)| {
+                projection.root == root
+                    && projection.path.len() == 1
+                    && projection.path[0].field == 1
+            })
+            .unwrap()
+            .0;
+        let mut state = FlowState {
+            slots: vec![InitState::Uninitialized; function.storage.len()],
+            active: vec![InitState::Initialized; function.storage.len()],
+            fault: FaultState::None,
+            exit: defer::ORDINARY,
+            defers: defer::State::default(),
+        };
+        state.slots[loan.0 as usize] = InitState::Initialized;
+        let borrows = BorrowDependents::of(&function);
+        assert!(require_no_live_borrows(&function, &borrows, &state, sibling).is_ok());
+        assert!(require_no_live_borrows(&function, &borrows, &state, field).is_err());
+        assert!(require_no_live_borrows(&function, &borrows, &state, root).is_err());
+        function.storage[loan.0 as usize].borrow_parent = Some(root);
+        assert!(require_no_live_borrows(
+            &function,
+            &BorrowDependents::of(&function),
+            &state,
+            sibling
+        )
+        .is_err());
     }
 
     #[test]

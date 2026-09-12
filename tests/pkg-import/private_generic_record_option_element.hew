@@ -14,7 +14,7 @@
 import hew.privarena;
 
 fn main() {
-    let arena: privarena.Arena<string> = privarena.new();
+    var arena: privarena.Arena<string> = privarena.new();
     arena.insert("hello");
     arena.insert("world");
     match arena.value_at(1) {

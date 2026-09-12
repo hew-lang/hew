@@ -1,21 +1,18 @@
-// Accept fixture: an ALIASED re-exported supertrait. `SubA` is imported from
-// `hew::reexsubalias`, where `trait SubA: B` and `B` is `reexbase.Base` re-imported
-// under an alias (`import reexbase::{ Base as B }`). The importer provides the
-// inherited `base` inline. There is no `reexsubalias.B` def, so the super edge
-// must follow `reexsubalias`'s aliased import binding to the SOURCE identity
-// `reexbase.Base` (`-> i64`) — the alias renames the binding, not the identity.
-// `base`'s methods are folded into the KNOWN set through that owner, and the
-// inline `base`'s signature is checked against `reexbase.Base`. Run e2e.
+// The aliased re-exported supertrait edge resolves to its original Base impl.
 import hew.reexsubalias.{SubA};
+import hew.reexbase.{Base};
 
 type W {
     id: i64,
 }
 
-impl SubA for W {
+impl Base for W {
     fn base(w: W) -> i64 {
         w.id
     }
+}
+
+impl SubA for W {
     fn tag(w: W) -> i64 {
         w.id + 100
     }

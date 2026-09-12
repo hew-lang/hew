@@ -534,10 +534,6 @@ fn source_argument_fault_releases_capture_loan_at_o0_o2() {
 }
 
 fn assert_source_outcome(name: &str, source: &str, expected: Option<i64>) {
-    assert_source_cleanup(name, source, expected, None);
-}
-
-fn assert_source_cleanup(name: &str, source: &str, expected: Option<i64>, drops: Option<usize>) {
     let physical = physical(source);
     let main = physical
         .callables
@@ -546,10 +542,9 @@ fn assert_source_cleanup(name: &str, source: &str, expected: Option<i64>, drops:
         .unwrap();
     let symbol = emitted_symbol(&physical, main);
     for optimized in [false, true] {
-        CALLABLE_DROPS.set(0);
         let ctx = Context::create();
         let llvm = llvm(&ctx, &physical);
-        let engine = counter_engine(&llvm, optimized);
+        let engine = engine(&llvm, optimized);
         // SAFETY: source main uses the verified scalar result/fault ABI.
         unsafe {
             let main = engine
@@ -568,54 +563,6 @@ fn assert_source_cleanup(name: &str, source: &str, expected: Option<i64>, drops:
                 assert!(!fault.is_null(), "{name}");
                 hew_runtime::fault::hew_fault_drop(fault.cast());
             }
-        }
-        if let Some(drops) = drops {
-            assert_eq!(CALLABLE_DROPS.get(), drops, "{name}, optimized={optimized}");
-        }
-    }
-}
-
-#[test]
-fn source_destructured_once_fields_preserve_siblings_and_drop_owners_at_o0_o2() {
-    for capabilities in ["once", "once, clone"] {
-        let source = format!("type Two {{ a: fn[{capabilities}]() -> i64, b: fn() -> i64 }} fn main() -> i64 {{ let first: i64 = 41; let second: i64 = 1; let value = Two {{ a: || first, b: || second }}; let Two {{ a, b }} = value; let result = a(); result + b() }}");
-        // The sibling's erased type has no Clone guarantee, so the whole
-        // record transfers even when the once field is cloneable.
-        assert_source_cleanup(
-            "destructured once field and sibling",
-            &source,
-            Some(42),
-            Some(2),
-        );
-    }
-}
-
-#[test]
-fn source_destructured_once_tuple_fields_preserve_siblings_at_o0_o2() {
-    for capabilities in ["once", "once, clone"] {
-        let source = format!("fn main() -> i64 {{ let first: i64 = 41; let second: i64 = 1; let callback: fn[{capabilities}]() -> i64 = || first; let value = (callback, || second); let (a, b) = value; let result = a(); result + b() }}");
-        assert_source_outcome(
-            "destructured once tuple field and sibling",
-            &source,
-            Some(42),
-        );
-    }
-}
-
-#[test]
-fn source_destructured_once_fields_clean_up_argument_and_body_faults_at_o0_o2() {
-    for capabilities in ["once", "once, clone"] {
-        for (body, argument) in [
-            ("first + divisor", "100 / zero()"),
-            ("first / divisor", "0"),
-        ] {
-            let source = format!("type Two {{ a: fn[{capabilities}](i64) -> i64, b: fn() -> i64 }} fn zero() -> i64 {{ 0 }} fn main() -> i64 {{ let first: i64 = 41; let second: i64 = 1; let value = Two {{ a: |divisor: i64| {body}, b: || second }}; let Two {{ a, b }} = value; let result = a({argument}); result + b() }}");
-            assert_source_cleanup(
-                "destructured once field fault cleanup",
-                &source,
-                None,
-                Some(2),
-            );
         }
     }
 }

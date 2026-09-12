@@ -30,6 +30,9 @@ pub enum CoroStatus {
 pub struct HewCoroState {
     /// Direct nested calls share their strict actor turn; fresh tasks do not.
     pub(crate) actor_turn: crate::lifetime::live_actors::ActorIncarnation,
+    /// Original mailbox message identity, recorded before the actor turn parks.
+    /// Read only by the scheduler while it owns the activation.
+    pub(crate) actor_message_type: i32,
     waker: OwnedWaker,
     token: *mut HewCancellationToken,
     enclosing_tokens: Vec<*mut HewCancellationToken>,
@@ -73,6 +76,7 @@ pub unsafe extern "C" fn hew_coro_state_new(
     let observer = unsafe { hew_cancel_observe(token, retained.descriptor()) };
     Box::into_raw(Box::new(HewCoroState {
         actor_turn: crate::lifetime::live_actors::ActorIncarnation::NONE,
+        actor_message_type: 0,
         waker: retained,
         token,
         enclosing_tokens: Vec::new(),

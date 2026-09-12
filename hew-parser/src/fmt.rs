@@ -3437,7 +3437,22 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&value.0);
             }
             Expr::FieldAccess { object, field } => {
-                self.format_receiver(&object.0);
+                // Consecutive numeric fields otherwise merge into a float
+                // token: `(outer.0).1` must not become `outer.0.1`.
+                let numeric_receiver = match &object.0 {
+                    Expr::FieldAccess { field, .. } => {
+                        field.starts_with(|c: char| c.is_ascii_digit())
+                    }
+                    Expr::Literal(Literal::Integer { .. }) => true,
+                    _ => false,
+                };
+                if numeric_receiver && field.starts_with(|c: char| c.is_ascii_digit()) {
+                    self.write("(");
+                    self.format_expr(&object.0);
+                    self.write(")");
+                } else {
+                    self.format_receiver(&object.0);
+                }
                 self.write(".");
                 self.write(field);
             }

@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "used=fresh-value\nhandled-crash\n"
-stderr = "hew: failure: UserPanic (212): handled crash after fresh string use\nhew: actor crash in CrashAfterUse (actor 2): UserPanic\n"
+stderr = "hew: failure: UserPanic (212): handled crash after fresh string use\nhew: actor crash in CrashAfterUse.run (actor 2): UserPanic\n"
 exit = 1

@@ -1,0 +1,59 @@
+type OncePair {
+    a: fn[once]() -> string,
+    b: fn() -> string,
+}
+
+type ClonePair {
+    a: fn[once, clone]() -> string,
+    b: fn() -> string,
+}
+
+fn take_record() {
+    let first = "record once".to_upper();
+    let second = "record sibling".to_upper();
+    let value = OncePair { a: move || first, b: move || second };
+    let OncePair { a, b } = value;
+    println(a());
+    println(b());
+}
+
+fn copy_record() {
+    let first = "record clone".to_upper();
+    let second = "record sibling".to_upper();
+    let value = ClonePair { a: move || first, b: move || second };
+    let ClonePair { a, b } = value;
+    println(a());
+    println(b());
+    // Extracting the cloneable field preserves its original owner, even
+    // though the non-cloneable sibling moved out of the same record.
+    println(value.a());
+}
+
+fn take_tuple() {
+    let first = "tuple once".to_upper();
+    let second = "tuple sibling".to_upper();
+    let callback: fn[once]() -> string = move || first;
+    let sibling: fn() -> string = move || second;
+    let value = (callback, sibling);
+    let (a, b) = value;
+    println(a());
+    println(b());
+}
+
+fn copy_tuple() {
+    let first = "tuple clone".to_upper();
+    let second = "tuple sibling".to_upper();
+    let callback: fn[once, clone]() -> string = move || first;
+    let sibling: fn() -> string = move || second;
+    let value = (callback, sibling);
+    let (a, b) = value;
+    println(a());
+    println(b());
+}
+
+fn main() {
+    take_record();
+    copy_record();
+    take_tuple();
+    copy_tuple();
+}

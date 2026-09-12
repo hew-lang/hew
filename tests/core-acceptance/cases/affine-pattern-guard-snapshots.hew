@@ -1,0 +1,66 @@
+#[resource]
+type Ticket {
+    name: string,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.name}");
+    }
+}
+
+type Pair {
+    text: string,
+    other: string,
+}
+
+type OwnedPair {
+    ticket: Ticket,
+    text: string,
+    other: string,
+}
+
+fn selected() {
+    var pair = Pair { text: "old".to_upper(), other: "other".to_upper() };
+    match pair {
+        Pair { text: bound, .. } if {
+            pair.text = "new".to_upper();
+            true
+        } => println(bound),
+        _ => {},
+    }
+    println(pair.text);
+}
+
+fn declined() {
+    var pair = Pair { text: "old".to_upper(), other: "other".to_upper() };
+    match pair {
+        Pair { text: first, .. } if {
+            pair.text = "new".to_upper();
+            false
+        } => println(first),
+        Pair { text: second, .. } => println(second),
+    }
+    println(pair.text);
+}
+
+fn affine() {
+    var pair = OwnedPair { ticket: Ticket { name: "ticket".to_upper() }, text: "old".to_upper(), other: "other".to_upper() };
+    match pair {
+        OwnedPair { ticket: selected, text: bound, .. } if {
+            pair.other = "new".to_upper();
+            true
+        } => {
+            println(bound);
+            selected.close();
+        },
+        _ => {},
+    }
+    println(pair.other);
+}
+
+fn main() {
+    selected();
+    declined();
+    affine();
+}

@@ -41,6 +41,60 @@ fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
 }
 
 #[test]
+fn pattern_guard_can_replace_a_sibling_but_not_its_borrowed_field() {
+    let mut lowered = lower_source(
+        r"
+        #[resource] type Ticket { id: i64 }
+        impl Ticket { fn close(consume self) {} }
+        type Pair { first: Ticket, second: Ticket }
+        fn main() {
+            var pair = Pair { first: Ticket { id: 1 }, second: Ticket { id: 2 } };
+            match pair {
+                Pair { first: ticket, .. } if { pair.second = Ticket { id: 3 }; true } => ticket.close(),
+                _ => {},
+            }
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+    let main = lowered
+        .module
+        .functions
+        .iter_mut()
+        .find(|function| function.declaration.full_path() == "main")
+        .unwrap();
+    let borrowed = main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .find_map(|op| match op.kind {
+            SemOpKind::LoadBorrow { place } => Some(place),
+            _ => None,
+        })
+        .expect("the guard borrows the selected affine field");
+    let replacement = main
+        .blocks
+        .iter_mut()
+        .flat_map(|block| &mut block.ops)
+        .find_map(|op| match &mut op.kind {
+            SemOpKind::StoreAssign { place, .. } => Some(place),
+            _ => None,
+        })
+        .expect("the guard replaces a sibling");
+    *replacement = borrowed;
+    assert!(
+        verify_module(&lowered.module)
+            .iter()
+            .any(|diagnostic| matches!(
+                &diagnostic.kind,
+                hew_sir::SirDiagnosticKind::PlaceLifetime { place, reason, .. }
+                    if *place == borrowed && reason.contains("dependent borrow is live")
+            )),
+        "overwriting the borrowed field must remain invalid"
+    );
+}
+
+#[test]
 fn owned_tuple_construction_and_repeated_borrows_are_explicit() {
     let lowered = lower_source(
         r#"

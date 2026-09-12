@@ -1,0 +1,11 @@
+[[case]]
+id = "aggregate-cleanup-record-fault"
+intent = "A bounds fault unwinds the live record resource owner exactly once."
+source = "cases/aggregate-cleanup-record-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "before trap\nclose 1\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

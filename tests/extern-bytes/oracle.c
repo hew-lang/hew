@@ -73,3 +73,29 @@ BytesTriple oracle_relay(int32_t before, const BytesTriple *value,
 }
 
 BytesTriple oracle_empty(void) { return (BytesTriple){NULL, 0, 0}; }
+
+#include "aggregates.h"
+OracleSmall oracle_small(void) { return (OracleSmall){1234, 5678}; }
+OraclePacked oracle_packed(void) {
+  return (OraclePacked){9999999999LL, 444, 555};
+}
+OracleBig oracle_big(int low, long long high) {
+  return (OracleBig){high, low, high + low};
+}
+OracleMixed oracle_mixed(void) { return (OracleMixed){1.25, 71}; }
+OracleReversed oracle_reversed(void) { return (OracleReversed){73, 2.5}; }
+OracleFloatPair oracle_float_pair(void) {
+  return (OracleFloatPair){1.25f, 2.5f};
+}
+OracleFloatThree oracle_float_three(void) {
+  return (OracleFloatThree){1.25f, 2.5f, 3.75f};
+}
+OracleNested oracle_nested(void) {
+  return (OracleNested){{1.25f, 2.5f}, {3.75f, 4.5f}};
+}
+OracleHfa oracle_hfa(void) { return (OracleHfa){1.25, 2.5, 3.75, 4.5}; }
+
+OracleIntThree oracle_int_three(void) {
+  return (OracleIntThree){123, -456, 789};
+}
+OracleTiny oracle_tiny(void) { return (OracleTiny){7, 128, 255}; }

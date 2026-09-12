@@ -718,7 +718,33 @@ impl<'a> Flow<'a> {
         state: &State,
         emit: &mut impl FnMut(Violation),
     ) {
-        if self.any_live_dependent(base, state, |_| true) {
+        let mut borrowed = self.any_live_dependent(base, state, |_| true);
+        // A projected write conflicts with loans of that field or an
+        // enclosing value, but not loans rooted in a disjoint sibling place.
+        if matches!(base, PlaceBase::Place(_)) {
+            let mut parent = self.dependency_parent(base);
+            let mut seen = BTreeSet::new();
+            while let Some(ancestor) = parent {
+                if !seen.insert(ancestor) {
+                    break;
+                }
+                borrowed |= self
+                    .dependents
+                    .get(&ancestor)
+                    .into_iter()
+                    .flatten()
+                    .any(|child| {
+                        let PlaceBase::Value(value) = child else {
+                            return false;
+                        };
+                        (self.local_borrows.contains(value)
+                            && state.values[self.indices[value]] & LIVE != 0)
+                            || self.any_live_dependent(*child, state, |_| true)
+                    });
+                parent = self.dependency_parent(ancestor);
+            }
+        }
+        if borrowed {
             emit(Violation {
                 place: match base {
                     PlaceBase::Place(place) => Some(place),
@@ -1581,19 +1607,16 @@ impl<'a> Flow<'a> {
             _ => return,
         };
         if let Some(projection) = self.projections.projection(place) {
+            if changes {
+                self.require_no_live_borrows(block, PlaceBase::Place(place), state, emit);
+            }
             let root_value = match projection.root {
                 OwnerRoot::Value(root) => {
                     self.access(block, root, false, state, emit);
-                    if changes {
-                        self.require_no_live_borrows(block, PlaceBase::Value(root), state, emit);
-                    }
                     Some(root)
                 }
                 OwnerRoot::Local(root) => {
                     self.require_active(block, root, state, emit);
-                    if changes {
-                        self.require_no_live_borrows(block, PlaceBase::Place(root), state, emit);
-                    }
                     None
                 }
             };

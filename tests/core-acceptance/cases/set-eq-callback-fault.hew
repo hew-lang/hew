@@ -1,0 +1,23 @@
+type Key {
+    label: string,
+    code: i64,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        0
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let local = self.label.to_upper();
+        local.len() / (self.code - other.code) == 1
+    }
+}
+
+fn main() {
+    var values: HashSet<Key> = HashSet.new();
+    values.insert(Key { label: "stored".to_upper(), code: 7 });
+    values.insert(Key { label: "incoming".to_upper(), code: 7 });
+}

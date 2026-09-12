@@ -451,6 +451,10 @@ fn select_after_genuine_expiry_takes_after_arm() {
 /// The runtime-cycle and invalid-index paths release the selection and fault.
 /// These race-dependent edges complement the behavioural timeout tests.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the source fixture and its cancellation-edge assertions together"
+)]
 fn suspending_select_wake_gate_ir_shape_holds() {
     require_codegen();
 

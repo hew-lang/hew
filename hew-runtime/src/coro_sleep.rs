@@ -165,10 +165,10 @@ pub unsafe extern "C" fn hew_coro_sleep_until_new(
     // Keep the original sample: re-sampling after computing the remainder
     // would extend the deadline by any time spent preparing the operation.
     // hew_instant_now is a non-negative millisecond clock expressed in ns.
-    let now_ms = now_ns.cast_unsigned() / 1_000_000;
+    let sampled_millis = now_ns.cast_unsigned() / 1_000_000;
     // SAFETY: the wheel is runtime-owned and the caller keeps its descriptor
     // live. A non-positive remainder completes without registering a timer.
-    unsafe { start_on_wheel(remaining_ns, now_ms, &*waker, wheel) }
+    unsafe { start_on_wheel(remaining_ns, sampled_millis, &*waker, wheel) }
 }
 
 /// Poll sleep completion without blocking an actor worker.

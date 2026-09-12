@@ -4107,6 +4107,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         } else {
             self.acquire_binding_target(value)?
         };
+        self.bind_source_target(binding, target)
+    }
+
+    fn bind_source_target(
+        &mut self,
+        binding: &HirBinding,
+        target: BindingTarget,
+    ) -> Result<(), String> {
         let declaration = self.source_bindings.len();
         self.source_bindings.push(Binding {
             id: crate::BindingId(
@@ -6708,6 +6716,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let Some(binding) = &field.binding else {
                 continue;
             };
+            if field.nested {
+                self.bind_source_target(binding, BindingTarget::Place(place))?;
+                continue;
+            }
             let kind = if recipe.clone == hew_types::CloneKind::None {
                 SemOpKind::LoadTake { place }
             } else {

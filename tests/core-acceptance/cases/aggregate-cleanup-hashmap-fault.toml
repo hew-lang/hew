@@ -1,0 +1,11 @@
+[[case]]
+id = "aggregate-cleanup-hashmap-fault"
+intent = "A bounds fault unwinds the live hashmap resource owner exactly once."
+source = "cases/aggregate-cleanup-hashmap-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "before trap\nclose 1\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

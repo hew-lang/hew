@@ -2418,6 +2418,15 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // would see no reply channel and the caller would hang (R1). The context is
     // a scheduler-owned stack carrier for the duration of the resume, restored
     // after (mirroring the fresh-dispatch carrier install/restore).
+    let invocation = a.checked_invocation.load(Ordering::Acquire);
+    // Snapshot before driving the frame: completion clears and frees invocation
+    // state before this activation reports its fault.
+    let message_type = if invocation.is_null() {
+        0
+    } else {
+        // SAFETY: activation ownership keeps the parked invocation live here.
+        unsafe { (*invocation.cast::<crate::coro_state::HewCoroState>()).actor_message_type }
+    };
     let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
     let stashed_cancel_token = a.suspended_cancel_token.load(Ordering::Acquire);
     let mut resume_context = HewExecutionContext {
@@ -2486,6 +2495,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
                     finish_failed_resume(
                         actor,
                         &raw mut resume_context,
+                        message_type,
                         crate::actor_native::DispatchFailure::Checked(fault),
                     );
                 }
@@ -2500,6 +2510,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
                 finish_failed_resume(
                     actor,
                     &raw mut resume_context,
+                    message_type,
                     crate::actor_native::DispatchFailure::Unwind(payload),
                 );
             }
@@ -2589,6 +2600,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
 unsafe fn finish_failed_resume(
     actor: *mut HewActor,
     resume_context: *mut HewExecutionContext,
+    message_type: i32,
     failure: crate::actor_native::DispatchFailure,
 ) {
     // This frame is a crash teardown, and a crash teardown RELEASES OTHER
@@ -2622,7 +2634,12 @@ unsafe fn finish_failed_resume(
             code
         }
     };
-    crate::crash::record_logical_crash(a.id, code, 0, a.dispatch.map_or(0, |f| f as usize));
+    crate::crash::record_logical_crash(
+        a.id,
+        code,
+        message_type,
+        a.dispatch.map_or(0, |f| f as usize),
+    );
 
     // Generated dispatch wrappers acquire the actor-state lock before the
     // handler body; the unwind may bypass their explicit release edge, so release any
@@ -3741,6 +3758,15 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     unsafe { (*msg).reply_channel = std::ptr::null_mut() };
                 }
                 if !suspend_handle.is_null() {
+                    let invocation = a.checked_invocation.load(Ordering::Acquire);
+                    if !invocation.is_null() {
+                        // SAFETY: this activation owns the invocation until its
+                        // park is published; resume consumes the message identity.
+                        unsafe {
+                            (*invocation.cast::<crate::coro_state::HewCoroState>())
+                                .actor_message_type = msg_ref.msg_type;
+                        }
+                    }
                     // SAFETY: `ec_ptr` points at the live dispatch-local
                     // context; reading `cancel_token` through it avoids
                     // re-borrowing the local (which would Unique-retag and
@@ -5875,6 +5901,56 @@ mod tests {
         // Clean up the parked scratch frame.
         // SAFETY: parked handle is live and not yet destroyed.
         assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
+    }
+
+    #[test]
+    fn resumed_checked_crash_preserves_message_identity_after_invocation_cleanup() {
+        unsafe extern "C" fn fail_after_resume(frame: *mut c_void) {
+            let context = crate::execution_context::current_context();
+            // SAFETY: the test owns this active actor, invocation and scratch frame.
+            unsafe {
+                let actor = &*(*context).actor;
+                let invocation = actor.checked_invocation.load(Ordering::Acquire);
+                crate::coro_state::hew_coro_state_free(invocation.cast());
+                crate::actor_native::hew_actor_coro_set_fault(crate::fault::hew_fault_new(212));
+                (*frame.cast::<crate::coro_exec::test_support::ScratchFrame>()).resume = None;
+            }
+        }
+
+        let _runtime = crate::runtime_test_guard();
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr = (&raw const actor).cast_mut();
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        // SAFETY: the test publishes one invocation and one parked frame, both
+        // exclusively owned by the activation driven below.
+        unsafe {
+            let invocation =
+                crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            (*invocation).actor_message_type = 71;
+            actor
+                .checked_invocation
+                .store(invocation.cast(), Ordering::Release);
+            (*frame
+                .handle()
+                .cast::<crate::coro_exec::test_support::ScratchFrame>())
+            .resume = Some(fail_after_resume);
+            assert!(park_suspended_activation(actor_ptr, frame.handle()));
+        }
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        // SAFETY: the crash log returns a value copy of the completed report.
+        let report = unsafe { crate::crash::hew_crash_log_last() };
+        assert_eq!(report.actor_id, actor.id);
+        assert_eq!(report.msg_type, 71);
+        assert_eq!(report.signal, 212);
+        assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
     }
 
     /// Full seed round-trip through `activate_actor`: park a scratch cont that

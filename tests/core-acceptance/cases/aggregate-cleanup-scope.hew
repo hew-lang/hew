@@ -1,0 +1,114 @@
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type ResRec {
+    t: Tok,
+}
+
+enum Held {
+    Nothing,
+    One(Tok),
+}
+
+#[opaque]
+type DqH {
+}
+
+#[resource]
+type Dq {
+    handle: DqH,
+    tag: i64,
+}
+
+impl Dq {
+    fn close(consume self) {
+        unsafe {
+            hew_deque_free(self.handle)
+        };
+        println(f"close {self.tag}");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> DqH;
+    fn hew_deque_free(dq: DqH);
+    fn hew_deque_len(dq: DqH) -> i64;
+}
+
+fn resource_scope() {
+    let h = Tok { id: 1 };
+    println("body");
+}
+
+fn record_scope() {
+    let h = ResRec { t: Tok { id: 1 } };
+    println("body");
+}
+
+fn tuple_scope() {
+    let h: (i64, Tok) = (1, Tok { id: 1 });
+    println("body");
+}
+
+fn option_scope() {
+    let h: Option<Tok> = Option.Some(Tok { id: 1 });
+    println("body");
+}
+
+fn result_scope() {
+    let h: Result<Tok, string> = Result.Ok(Tok { id: 1 });
+    println("body");
+}
+
+fn enum_payload_scope() {
+    let h: Held = .One(Tok { id: 1 });
+    println("body");
+}
+
+fn vec_scope() {
+    var h: Vec<Tok> = Vec.new();
+    h.push(Tok { id: 1 });
+    println("body");
+}
+
+fn hashmap_scope() {
+    var h: HashMap<string, Tok> = HashMap.new();
+    h.insert("k", Tok { id: 1 });
+    println("body");
+}
+
+fn opaque_scope() {
+    let h = Dq { handle: unsafe {
+        hew_deque_new()
+    }, tag: 1 };
+    println("body");
+}
+
+fn main() {
+    println("resource");
+    resource_scope();
+    println("record");
+    record_scope();
+    println("tuple");
+    tuple_scope();
+    println("option");
+    option_scope();
+    println("result");
+    result_scope();
+    println("enum_payload");
+    enum_payload_scope();
+    println("vec");
+    vec_scope();
+    println("hashmap");
+    hashmap_scope();
+    println("opaque");
+    opaque_scope();
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "affine-destructure-nested-fault"
+intent = "Failure after moving a nested affine leaf closes retained nested resources and releases sibling values without closing the transferred leaf again."
+source = "cases/affine-destructure-nested-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "close TAKEN\nINNER\nclose RETAINED\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

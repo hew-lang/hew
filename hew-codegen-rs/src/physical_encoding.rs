@@ -161,8 +161,8 @@ impl FunctionEmitter<'_, '_> {
             .transpose()?;
         let return_type = match result_abi {
             PhysicalExternResultAbi::Direct => storage_type,
-            PhysicalExternResultAbi::BytesCoerce(repr) => Some(llvm_type(self.ctx, repr)?),
-            PhysicalExternResultAbi::BytesIndirect => {
+            PhysicalExternResultAbi::Coerce(repr) => Some(llvm_type(self.ctx, repr)?),
+            PhysicalExternResultAbi::Indirect => {
                 parameters.insert(0, self.ctx.ptr_type(AddressSpace::default()).into());
                 None
             }
@@ -172,7 +172,7 @@ impl FunctionEmitter<'_, '_> {
             |ty| ty.fn_type(&parameters, false),
         );
         let function = get_or_declare_external(self.llvm, symbol, signature)?;
-        let indirect_result = if *result_abi == PhysicalExternResultAbi::BytesIndirect {
+        let indirect_result = if *result_abi == PhysicalExternResultAbi::Indirect {
             let result = result.ok_or_else(|| {
                 CodegenError::FailClosed("indirect extern result lacks storage".into())
             })?;
@@ -211,12 +211,27 @@ impl FunctionEmitter<'_, '_> {
             self.store(result, self.load(result, "extern.result")?)?;
         } else if let Some(result) = result {
             let mut value = self.runtime_call_value(function, &arguments, "extern.result")?;
-            if matches!(result_abi, PhysicalExternResultAbi::BytesCoerce(_)) {
-                // Interpret the register carrier through the ordinary byte
-                // layout, preserving the target's packing and byte order.
+            if matches!(result_abi, PhysicalExternResultAbi::Coerce(_)) {
+                // The ABI carrier may include tail padding absent from storage
+                // (AAPCS64's two integer registers for a 12-byte record), or vice
+                // versa. Allocate enough space and alignment for both views.
+                let storage = storage_type.expect("result storage");
+                let data = TargetData::create(&self.module.target.data_layout);
+                let (storage_size, storage_align) = measure_layout(&data, storage);
+                let (carrier_size, carrier_align) = measure_layout(&data, value.get_type());
+                let scratch_type = if storage_size >= carrier_size {
+                    storage
+                } else {
+                    value.get_type()
+                };
                 let scratch = self
                     .value_emitter()
-                    .entry_scratch(value.get_type(), "extern.bytes.result.slot")?;
+                    .entry_scratch(scratch_type, "extern.result.slot")?;
+                scratch
+                    .as_instruction()
+                    .expect("entry allocation")
+                    .set_alignment(storage_align.max(carrier_align))
+                    .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
                 self.builder
                     .build_store(scratch, value)
                     .llvm_ctx("store extern result register carrier")?;
@@ -225,9 +240,9 @@ impl FunctionEmitter<'_, '_> {
                     .build_load(
                         storage_type.expect("result storage"),
                         scratch,
-                        "extern.bytes",
+                        "extern.aggregate",
                     )
-                    .llvm_ctx("load extern byte result")?;
+                    .llvm_ctx("load extern aggregate result")?;
             }
             self.store(result, value)?;
         } else {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare C return ABIs and execute owned extern byte results at O0/O2."""
+"""Compare C aggregate return ABIs and execute field/byte-ownership oracles at O0/O2."""
 
 import argparse
 import os
@@ -19,27 +19,29 @@ def run(command, *, env=None, expected=0):
     return result
 
 
-def result_abi(ir):
+def expand_type(ir, spelling):
+    definitions = dict(re.findall(r"^(%[^=]+?) = type (.+)$", ir, re.MULTILINE))
+    return re.sub(
+        r"%[\w.]+", lambda match: expand_type(ir, definitions[match[0]]), spelling
+    )
+
+
+def result_abi(ir, symbol):
     declaration = next(
         line
         for line in ir.splitlines()
-        if line.startswith("declare ") and "@oracle_make(" in line
+        if line.startswith("declare ") and f"@{symbol}(" in line
     )
-    prefix, parameters = declaration.split("@oracle_make(", 1)
+    prefix, parameters = declaration.split(f"@{symbol}(", 1)
     carrier = prefix.removeprefix("declare ").removeprefix("dso_local ").strip()
     indirect = re.search(r"sret\(([^)]+)\) align (\d+)", parameters)
     if indirect is None:
-        return carrier, None
+        return expand_type(ir, carrier), None
     # sret must be on the first parameter, before the source's i32 argument.
     if not parameters.startswith("ptr "):
         raise RuntimeError(f"sret is not the leading C parameter: {declaration}")
     pointee, align = indirect.groups()
-    if pointee.startswith("%"):
-        definition = next(
-            line for line in ir.splitlines() if line.startswith(pointee + " = type ")
-        )
-        pointee = definition.split(" = type ", 1)[1]
-    return carrier, (pointee, align)
+    return carrier, (expand_type(ir, pointee), align)
 
 
 def compare_target_abis(args, source, output, env):
@@ -70,26 +72,46 @@ def compare_target_abis(args, source, output, env):
             ],
             env=env,
         ).stdout.decode()
-        run(
-            [
-                args.hew_bin,
-                "build",
-                source / "signature.hew",
-                "--target",
-                triple,
-                "--emit-obj",
-                "--emit-llvm",
-                "-o",
-                directory / "signature.o",
-            ],
-            env=env,
-        )
-        hew_ir = (directory / "signature.ll").read_text()
-        if result_abi(hew_ir) != result_abi(c_ir):
-            raise RuntimeError(
-                f"{triple}: Hew {result_abi(hew_ir)} != C {result_abi(c_ir)}"
+        for case, symbols in (
+            ("signature", ("oracle_make",)),
+            (
+                "aggregate_results",
+                (
+                    "oracle_small",
+                    "oracle_int_three",
+                    "oracle_tiny",
+                    "oracle_packed",
+                    "oracle_big",
+                    "oracle_mixed",
+                    "oracle_reversed",
+                    "oracle_float_pair",
+                    "oracle_float_three",
+                    "oracle_nested",
+                    "oracle_hfa",
+                ),
+            ),
+        ):
+            run(
+                [
+                    args.hew_bin,
+                    "build",
+                    source / f"{case}.hew",
+                    "--target",
+                    triple,
+                    "--emit-obj",
+                    "--emit-llvm",
+                    "-o",
+                    directory / f"{case}.o",
+                ],
+                env=env,
             )
-        print(f"PASS Clang C return ABI: {triple}")
+            hew_ir = (directory / f"{case}.ll").read_text()
+            for symbol in symbols:
+                if result_abi(hew_ir, symbol) != result_abi(c_ir, symbol):
+                    raise RuntimeError(
+                        f"{triple} {symbol}: Hew {result_abi(hew_ir, symbol)} != C {result_abi(c_ir, symbol)}"
+                    )
+            print(f"PASS Clang C return ABI: {triple} / {case}")
 
 
 def main():
@@ -105,9 +127,7 @@ def main():
     env = os.environ.copy()
     if args.sanitize:
         if not sys.platform.startswith("linux"):
-            raise RuntimeError(
-                "extern byte ASan/LSan acceptance currently requires Linux"
-            )
+            raise RuntimeError("extern C ASan/LSan acceptance currently requires Linux")
         env["HEW_SANITIZE_ADDRESS"] = "1"
         env["ASAN_OPTIONS"] = "detect_leaks=1"
         env["LSAN_OPTIONS"] = ""
@@ -122,9 +142,15 @@ def main():
         if args.sanitize:
             flags += ["-fsanitize=address", "-fno-omit-frame-pointer"]
         run([args.cc, *flags, "-c", source / "oracle.c", "-o", obj])
-        for case, exit_code, owners, stderr in (
-            ("round_trip", 0, 34, b""),
-            ("fault_cleanup", 1, 1, b"hew: failure: DivideByZero (202)\n"),
+        for case, exit_code, stdout, stderr in (
+            ("round_trip", 0, b"owned extern bytes released: 34\n", b""),
+            (
+                "fault_cleanup",
+                1,
+                b"owned extern bytes released: 1\n",
+                b"hew: failure: DivideByZero (202)\n",
+            ),
+            ("aggregate_results", 0, b"C aggregate results preserve all fields\n", b""),
         ):
             executable = directory / (case + (".exe" if os.name == "nt" else ""))
             run(
@@ -147,7 +173,6 @@ def main():
                 if "sanitize_address" not in ir or "@__asan_init" not in ir:
                     raise RuntimeError("generated Hew code lacks ASan instrumentation")
             result = run([executable], env=env, expected=exit_code)
-            stdout = f"owned extern bytes released: {owners}\n".encode()
             if (
                 result.stdout.replace(b"\r\n", b"\n") != stdout
                 or result.stderr.replace(b"\r\n", b"\n") != stderr

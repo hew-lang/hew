@@ -914,6 +914,7 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
 }
 
 /// Compare source paths across canonical and editor-provided spellings.
+#[must_use]
 pub fn paths_name_same_file(left: &Path, right: &Path) -> bool {
     left == right
         || match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
@@ -7290,7 +7291,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         assert_eq!(inner.code, "E_IMPORT_CYCLE");
         // Primary location: the first edge, at `a.hew`'s `import "b.hew";`.
-        assert!(paths_name_same_file(
+        assert!(crate::paths_name_same_file(
             Path::new(
                 failure.diagnostics[0]
                     .filename

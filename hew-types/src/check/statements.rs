@@ -789,7 +789,7 @@ impl Checker {
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 let place = self.expr_place(&scrutinee.0);
-                self.check_match_expr(&scr_ty, place, arms, span, expected)
+                self.check_match_expr(&scr_ty, place.as_ref(), arms, span, expected)
             }
             Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
             Stmt::Return(value) => {
@@ -2249,7 +2249,7 @@ impl Checker {
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 let place = self.expr_place(&scrutinee.0);
-                self.check_match_stmt(&scr_ty, place, arms, span);
+                self.check_match_stmt(&scr_ty, place.as_ref(), arms, span);
             }
             Stmt::Defer(expr) => {
                 let ownership = self.env.ownership_snapshot();
@@ -2278,7 +2278,7 @@ impl Checker {
     pub(super) fn check_match_stmt(
         &mut self,
         scrutinee_ty: &Ty,
-        scrutinee_place: Option<(String, crate::env::PlacePath)>,
+        scrutinee_place: Option<&(String, crate::env::PlacePath)>,
         arms: &[MatchArm],
         span: &Span,
     ) {
@@ -2288,7 +2288,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
-            self.pattern_place.clone_from(&scrutinee_place);
+            self.pattern_place = scrutinee_place.cloned();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);

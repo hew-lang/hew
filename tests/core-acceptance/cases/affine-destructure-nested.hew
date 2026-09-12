@@ -1,0 +1,47 @@
+#[resource]
+type Ticket {
+    name: string,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.name}");
+    }
+}
+
+type Inner {
+    ticket: Ticket,
+    label: string,
+}
+
+type Outer {
+    inner: Inner,
+    other: string,
+}
+
+fn record_case() {
+    let outer = Outer { inner: Inner { ticket: Ticket { name: "record".to_upper() }, label: "inner".to_upper() }, other: "outer".to_upper() };
+    let Outer { inner: Inner { ticket: selected, .. }, .. } = outer;
+    selected.close();
+    println(outer.inner.label);
+    println(outer.other);
+}
+
+fn tuple_case() {
+    let outer = ((Ticket { name: "tuple".to_upper() }, "inner".to_upper()), "outer".to_upper());
+    let ((selected, _), _) = outer;
+    selected.close();
+    println((outer.0).1);
+    println(outer.1);
+}
+
+fn temporary_case() {
+    let Outer { inner: Inner { ticket: _, label }, .. } = Outer { inner: Inner { ticket: Ticket { name: "temporary".to_upper() }, label: "inner".to_upper() }, other: "outer".to_upper() };
+    println(label);
+}
+
+fn main() {
+    record_case();
+    tuple_case();
+    temporary_case();
+}

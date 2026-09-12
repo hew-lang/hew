@@ -517,7 +517,7 @@ impl Checker {
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 let place = self.expr_place(&scrutinee.0);
-                self.check_match_expr(&scr_ty, place, arms, span, None)
+                self.check_match_expr(&scr_ty, place.as_ref(), arms, span, None)
             }
 
             // Tuple
@@ -3791,7 +3791,8 @@ impl Checker {
                 // does not. `check_match_expr` threads the flag to each arm body.
                 self.tail_ok_armed = tail_ok_armed;
                 let place = self.expr_place(&scrutinee.0);
-                let actual = self.check_match_expr(&scr_ty, place, arms, span, Some(expected));
+                let actual =
+                    self.check_match_expr(&scr_ty, place.as_ref(), arms, span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
@@ -7652,7 +7653,7 @@ impl Checker {
     pub(super) fn check_match_expr(
         &mut self,
         scrutinee_ty: &Ty,
-        scrutinee_place: Option<(String, crate::env::PlacePath)>,
+        scrutinee_place: Option<&(String, crate::env::PlacePath)>,
         arms: &[MatchArm],
         span: &Span,
         expected: Option<&Ty>,
@@ -7718,7 +7719,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
-            self.pattern_place.clone_from(&scrutinee_place);
+            self.pattern_place = scrutinee_place.cloned();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);

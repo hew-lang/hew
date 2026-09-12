@@ -779,6 +779,15 @@ fn llvm_type<'ctx>(ctx: &'ctx Context, repr: &PhysicalRepr) -> CodegenResult<Bas
         PhysicalRepr::Array { element, len } => {
             llvm_type(ctx, &element.repr)?.array_type(*len).into()
         }
+        PhysicalRepr::Vector { element, len } => match llvm_type(ctx, &element.repr)? {
+            BasicTypeEnum::IntType(ty) => ty.vec_type(*len).into(),
+            BasicTypeEnum::FloatType(ty) => ty.vec_type(*len).into(),
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "C register vector requires scalar elements".into(),
+                ))
+            }
+        },
         PhysicalRepr::Struct(fields) => {
             let fields = fields
                 .iter()
@@ -6348,7 +6357,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         equality.as_global_value().as_pointer_value().into(),
                     ],
                     Some(failure()?),
-                    None,
+                    &[],
                 )?;
                 self.store(result, contains.into())?;
             }
@@ -6815,7 +6824,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "hew_hashmap_contains_key_layout",
                     &[map.into(), self.slots[source(1)?.0 as usize].into()],
                     failure,
-                    None,
+                    &[],
                 )?;
                 self.store(result, contains.into())?;
             }
@@ -6824,6 +6833,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     // The adopted value transfers into the slot; the key is
                     // cloned in either entry point.
                     let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
+                    let mut consumed = vec![(receiver, DestroyAction::Map(glue))];
+                    if moved {
+                        let descriptor =
+                            self.module.map_glue.get(glue.0 as usize).ok_or_else(|| {
+                                CodegenError::FailClosed("unknown map descriptor".into())
+                            })?;
+                        if let Some(destroy) = descriptor.value.destroy {
+                            consumed.push((source(2)?, destroy));
+                        }
+                    }
                     self.emit_collection_callback(
                         if moved {
                             "hew_hashmap_insert_take_layout"
@@ -6836,7 +6855,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             self.slots[source(2)?.0 as usize].into(),
                         ],
                         failure,
-                        Some((receiver, DestroyAction::Map(glue))),
+                        &consumed,
                     )?;
                     if moved {
                         self.clear_owned(source(2)?)?;
@@ -6957,7 +6976,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 output.into(),
             ],
             failure,
-            consumed,
+            consumed.as_slice(),
         )?;
         let found = self
             .builder
@@ -7073,13 +7092,24 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     PhysicalSetOp::Remove { .. } => "hew_hashset_remove_layout",
                     _ => unreachable!("matched membership operation"),
                 };
-                let consumed = (operation != PhysicalSetOp::Contains)
-                    .then_some((receiver, DestroyAction::Set(glue)));
+                let mut consumed = Vec::new();
+                if operation != PhysicalSetOp::Contains {
+                    consumed.push((receiver, DestroyAction::Set(glue)));
+                }
+                if matches!(operation, PhysicalSetOp::Insert { .. }) && moved {
+                    let descriptor =
+                        self.module.set_glue.get(glue.0 as usize).ok_or_else(|| {
+                            CodegenError::FailClosed("unknown set descriptor".into())
+                        })?;
+                    if let Some(destroy) = descriptor.element.destroy {
+                        consumed.push((source(1)?, destroy));
+                    }
+                }
                 let present = self.emit_collection_callback(
                     symbol,
                     &[set.into(), self.slots[source(1)?.0 as usize].into()],
                     failure,
-                    consumed,
+                    &consumed,
                 )?;
                 if matches!(operation, PhysicalSetOp::Insert { .. }) && moved {
                     self.clear_owned(source(1)?)?;
@@ -7107,14 +7137,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     }
 
     /// Callback status precedes every read of the presence or value outputs.
-    /// A failed borrowing kernel retains its receiver; a semantic Move still
-    /// consumes that receiver, so release it before entering SIR cleanup.
+    /// A failed kernel retains its inputs. Release every semantic Move still
+    /// owned by this operation before entering SIR cleanup.
     fn emit_collection_callback(
         &self,
         symbol: &str,
         inputs: &[BasicMetadataValueEnum<'ctx>],
         failure: Option<&PhysicalEdge>,
-        consumed: Option<(StorageId, DestroyAction)>,
+        consumed: &[(StorageId, DestroyAction)],
     ) -> CodegenResult<IntValue<'ctx>> {
         let failure = failure.ok_or_else(|| {
             CodegenError::FailClosed(format!("{symbol} lacks callback fault cleanup"))
@@ -7160,13 +7190,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_conditional_branch(succeeded, success, failed)
             .llvm_ctx("select callback outcome")?;
         self.builder.position_at_end(failed);
-        if let Some((receiver, destroy)) = consumed {
-            self.value_emitter().destroy_loaded_value(
-                self.load(receiver, "collection.failed.receiver")?,
-                &self.storage(receiver)?.layout,
-                destroy,
-            )?;
-            self.clear_owned(receiver)?;
+        for &(source, destroy) in consumed {
+            self.destroy_owned_operand(source, destroy)?;
         }
         self.emit_edge(failure)?;
         self.builder.position_at_end(success);

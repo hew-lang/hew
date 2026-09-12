@@ -1,0 +1,11 @@
+[[case]]
+id = "aggregate-cleanup-scope"
+intent = "Resource owners in records, tuples, variants, collections and opaque wrappers close once across scope exit."
+source = "cases/aggregate-cleanup-scope.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "resource\nbody\nclose 1\nrecord\nbody\nclose 1\ntuple\nbody\nclose 1\noption\nbody\nclose 1\nresult\nbody\nclose 1\nenum_payload\nbody\nclose 1\nvec\nbody\nclose 1\nhashmap\nbody\nclose 1\nopaque\nbody\nclose 1\n"
+stderr = ""
+exit = 0

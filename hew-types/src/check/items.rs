@@ -151,15 +151,21 @@ impl Checker {
             return identity;
         }
         let (subkind, message) = if let Some(identity) = identity.filter(|_| definition.is_some()) {
-            (SupervisorErrorKind::ChildNotSupervisable, format!(
-                "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names `{}`; the selected declaration `{identity}` is neither an actor nor a supervisor",
-                supervisor.name, child.name, child.actor_type,
-            ))
+            (
+                SupervisorErrorKind::ChildNotSupervisable,
+                format!(
+                    "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names `{}`; the selected declaration `{identity}` is neither an actor nor a supervisor",
+                    supervisor.name, child.name, child.actor_type,
+                ),
+            )
         } else {
-            (SupervisorErrorKind::UnknownChildActor, format!(
-                "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references unknown actor `{}`; import a public actor into this scope or qualify it through a module binding",
-                supervisor.name, child.name, child.actor_type,
-            ))
+            (
+                SupervisorErrorKind::UnknownChildActor,
+                format!(
+                    "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references unknown actor `{}`; import a public actor into this scope or qualify it through a module binding",
+                    supervisor.name, child.name, child.actor_type,
+                ),
+            )
         };
         self.errors.push(TypeError::new(
             TypeErrorKind::SupervisorError { subkind },
@@ -2220,6 +2226,10 @@ impl Checker {
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            // The receiving handler owns the delivered message. Its fields
+            // may move out of an aggregate parameter just as they may from a
+            // local owner; ordinary function parameters retain borrow semantics.
+            self.env.set_parameter_consume(&p.name, true);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {

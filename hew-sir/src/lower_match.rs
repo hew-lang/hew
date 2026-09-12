@@ -100,6 +100,9 @@ struct MatchPlan {
     /// The whole scrutinee value, absent when the match reads its fields in
     /// place instead of taking the aggregate out of its storage.
     scrutinee: Option<ValueId>,
+    /// Copyable fields are evaluated once, before any guard can mutate the
+    /// source. Affine fields remain in their places until an arm selects them.
+    field_snapshots: Vec<Option<BlockArg>>,
     scrutinee_ty: ResolvedTy,
     /// The scrutinee is a loan of a value the match did not take: its payloads
     /// name that region rather than owning it.
@@ -109,6 +112,23 @@ struct MatchPlan {
     outer_bindings: HashSet<BindingId>,
     outer_loans: usize,
     outer_live: BTreeMap<ValueId, ResolvedTy>,
+}
+
+fn observed_fields(arm: &HirMatchArm) -> BTreeSet<usize> {
+    arm.bindings
+        .iter()
+        .map(|binding| binding.field_idx as usize)
+        .chain(
+            arm.payload_predicates
+                .iter()
+                .map(|predicate| predicate.field_idx as usize),
+        )
+        .chain(
+            arm.payload_variant_predicates
+                .iter()
+                .map(|predicate| predicate.field_idx as usize),
+        )
+        .collect()
 }
 
 impl MatchPlan {
@@ -130,7 +150,7 @@ struct CandidateGroup {
     arms: Vec<usize>,
     /// The payloads a switch branch handed out; empty for the other shapes,
     /// which project their fields per candidate.
-    fields: Vec<BlockArg>,
+    fields: Vec<Option<BlockArg>>,
     variant: Option<u32>,
 }
 
@@ -173,11 +193,39 @@ impl Builder<'_, '_> {
         if let Some(scrutinee) = scrutinee {
             outer_live.remove(&scrutinee);
         }
+        let mut field_snapshots = Vec::new();
+        if let MatchShape::Aggregate {
+            places: Some(places),
+            recipes,
+            ..
+        } = &shape
+        {
+            let observed: BTreeSet<_> = source_arms.iter().flat_map(observed_fields).collect();
+            for (index, (place, recipe)) in places.iter().zip(recipes).enumerate() {
+                let snapshot =
+                    if observed.contains(&index) && recipe.clone != hew_types::CloneKind::None {
+                        let value = self.emit_typed(
+                            Provenance::Site(scrutinee_expr.site),
+                            &recipe.ty,
+                            SemOpKind::LoadCopy { place: *place },
+                        )?;
+                        Some(BlockArg {
+                            value,
+                            ty: recipe.ty.clone(),
+                            own: recipe.own,
+                        })
+                    } else {
+                        None
+                    };
+                field_snapshots.push(snapshot);
+            }
+        }
         let plan = MatchPlan {
             borrowed: scrutinee
                 .is_some_and(|value| self.value_own_kind(value) == Some(OwnKind::Guaranteed)),
             shape,
             scrutinee,
+            field_snapshots,
             scrutinee_ty,
             provenance: Provenance::Site(scrutinee_expr.site),
             result_ty: self.ty(&whole.ty),
@@ -239,7 +287,7 @@ impl Builder<'_, '_> {
                     entry,
                     owned_live: branch.owned_live,
                     arms: candidates[variant].clone(),
-                    fields: branch.fields,
+                    fields: branch.fields.into_iter().map(Some).collect(),
                     variant: Some(branch.variant),
                 })
             })
@@ -368,7 +416,7 @@ impl Builder<'_, '_> {
         plan: &MatchPlan,
         arm: &HirMatchArm,
         variant: Option<u32>,
-        fields: &mut Vec<BlockArg>,
+        fields: &mut Vec<Option<BlockArg>>,
         rebuilt: &mut Option<ValueId>,
         failures: &mut Vec<ControlState>,
     ) -> Result<(), String> {
@@ -393,7 +441,7 @@ impl Builder<'_, '_> {
                 *fields = if let Some(places) = places {
                     let places = places.clone();
                     let recipes = recipes.clone();
-                    self.probe_aggregate_field_places(&places, &recipes)?
+                    self.probe_aggregate_field_places(plan, arm, &places, &recipes)?
                 } else {
                     self.probe_aggregate_fields(plan.scrutinee()?, *shape, recipes, *initial_value)?
                 };
@@ -428,7 +476,7 @@ impl Builder<'_, '_> {
         &mut self,
         plan: &MatchPlan,
         variant: Option<u32>,
-        fields: &[BlockArg],
+        fields: &[Option<BlockArg>],
         rebuilt: &mut Option<ValueId>,
     ) -> Result<ValueId, String> {
         let MatchShape::Variant { shape, .. } = &plan.shape else {
@@ -438,7 +486,16 @@ impl Builder<'_, '_> {
             return plan.scrutinee();
         }
         let variant = variant.ok_or("variant candidate has no switch branch")?;
-        let value = self.emit_variant_make(*shape, variant, &plan.scrutinee_ty, fields)?;
+        let value = self.emit_variant_make(
+            *shape,
+            variant,
+            &plan.scrutinee_ty,
+            &fields
+                .iter()
+                .cloned()
+                .collect::<Option<Vec<_>>>()
+                .ok_or("variant reconstruction has missing fields")?,
+        )?;
         *rebuilt = Some(value);
         Ok(value)
     }
@@ -449,7 +506,7 @@ impl Builder<'_, '_> {
         plan: &MatchPlan,
         variant: Option<u32>,
         value: ValueId,
-    ) -> Result<Vec<BlockArg>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, String> {
         let MatchShape::Variant {
             shape, descriptor, ..
         } = &plan.shape
@@ -458,6 +515,7 @@ impl Builder<'_, '_> {
         };
         let variant = variant.ok_or("variant candidate has no switch branch")?;
         self.emit_variant_destructure(*shape, variant, descriptor, value)
+            .map(|fields| fields.into_iter().map(Some).collect())
     }
 
     /// Take what the winning arm needs out of the scrutinee, once no test can
@@ -466,7 +524,7 @@ impl Builder<'_, '_> {
         &mut self,
         plan: &MatchPlan,
         arm: &HirMatchArm,
-        fields: &[BlockArg],
+        fields: &[Option<BlockArg>],
     ) -> Result<(), String> {
         match &plan.shape {
             MatchShape::Scalar => Ok(()),
@@ -527,12 +585,12 @@ impl Builder<'_, '_> {
                     self.argument_receiver_loans.extend(
                         fields
                             .iter()
+                            .flatten()
                             .filter(|field| field.own == OwnKind::Guaranteed)
                             .map(|field| field.value),
                     );
                 }
-                let owned = fields.iter().cloned().map(Some).collect::<Vec<_>>();
-                self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
+                self.transfer_selected_payloads(fields, &arm.payload_variant_predicates)
             }
         }
     }
@@ -562,12 +620,27 @@ impl Builder<'_, '_> {
             let (Some(place), Some(recipe)) = (places.get(index), recipes.get(index)) else {
                 return Err(format!("match arm selects missing aggregate field {index}"));
             };
-            let kind = if recipe.clone == hew_types::CloneKind::None {
-                SemOpKind::LoadTake { place: *place }
+            let value = if let Some(snapshot) = &plan.field_snapshots[index] {
+                if snapshot.own == OwnKind::None {
+                    snapshot.value
+                } else {
+                    self.emit_typed(
+                        plan.provenance.clone(),
+                        &recipe.ty,
+                        SemOpKind::CopyValue {
+                            source: Operand {
+                                value: snapshot.value,
+                            },
+                        },
+                    )?
+                }
             } else {
-                SemOpKind::LoadCopy { place: *place }
+                self.emit_typed(
+                    plan.provenance.clone(),
+                    &recipe.ty,
+                    SemOpKind::LoadTake { place: *place },
+                )?
             };
-            let value = self.emit_typed(plan.provenance.clone(), &recipe.ty, kind)?;
             owned[index] = Some(BlockArg {
                 value,
                 ty: recipe.ty.clone(),
@@ -861,7 +934,7 @@ impl Builder<'_, '_> {
         shape: AggregateShapeRef,
         recipes: &[AggregateFieldRecipe],
         initial_value: bool,
-    ) -> Result<Vec<BlockArg>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, String> {
         let source = Operand { value: scrutinee };
         let mut fields = Vec::with_capacity(recipes.len());
         for (index, recipe) in recipes.iter().enumerate() {
@@ -889,7 +962,7 @@ impl Builder<'_, '_> {
             if owning && !initial_value {
                 self.argument_receiver_loans.push(value);
             }
-            fields.push(BlockArg {
+            fields.push(Some(BlockArg {
                 value,
                 ty: recipe.ty.clone(),
                 own: if owning && !initial_value {
@@ -897,7 +970,7 @@ impl Builder<'_, '_> {
                 } else {
                     OwnKind::None
                 },
-            });
+            }));
         }
         Ok(fields)
     }
@@ -907,22 +980,44 @@ impl Builder<'_, '_> {
     /// the candidate fails or the arm is selected; the rest are copies.
     fn probe_aggregate_field_places(
         &mut self,
+        plan: &MatchPlan,
+        arm: &HirMatchArm,
         places: &[PlaceId],
         recipes: &[AggregateFieldRecipe],
-    ) -> Result<Vec<BlockArg>, String> {
+    ) -> Result<Vec<Option<BlockArg>>, String> {
         let mut fields = Vec::with_capacity(recipes.len());
-        for (place, recipe) in places.iter().zip(recipes) {
+        let observed = observed_fields(arm);
+        for (index, (place, recipe)) in places.iter().zip(recipes).enumerate() {
+            if !observed.contains(&index) {
+                fields.push(None);
+                continue;
+            }
             let owning = recipe.own == OwnKind::Owned;
-            let kind = if owning {
-                SemOpKind::LoadBorrow { place: *place }
+            let value = if let Some(snapshot) = &plan.field_snapshots[index] {
+                if owning {
+                    self.emit_typed(
+                        Provenance::Synthesized,
+                        &recipe.ty,
+                        SemOpKind::BeginBorrow {
+                            owner: Operand {
+                                value: snapshot.value,
+                            },
+                        },
+                    )?
+                } else {
+                    snapshot.value
+                }
             } else {
-                SemOpKind::LoadCopy { place: *place }
+                self.emit_typed(
+                    Provenance::Synthesized,
+                    &recipe.ty,
+                    SemOpKind::LoadBorrow { place: *place },
+                )?
             };
-            let value = self.emit_typed(Provenance::Synthesized, &recipe.ty, kind)?;
             if owning {
                 self.argument_receiver_loans.push(value);
             }
-            fields.push(BlockArg {
+            fields.push(Some(BlockArg {
                 value,
                 ty: recipe.ty.clone(),
                 own: if owning {
@@ -930,7 +1025,7 @@ impl Builder<'_, '_> {
                 } else {
                     OwnKind::None
                 },
-            });
+            }));
         }
         Ok(fields)
     }
@@ -1026,13 +1121,14 @@ impl Builder<'_, '_> {
     fn bind_match_fields(
         &mut self,
         bindings: &[HirMatchArmBinding],
-        fields: &[BlockArg],
+        fields: &[Option<BlockArg>],
         span: &std::ops::Range<usize>,
     ) -> Result<(), String> {
         for binding in bindings {
             let field = usize::try_from(binding.field_idx)
                 .ok()
                 .and_then(|index| fields.get(index))
+                .and_then(Option::as_ref)
                 .ok_or_else(|| {
                     format!(
                         "match binding `{}` selects missing field {}",
@@ -1081,12 +1177,13 @@ impl Builder<'_, '_> {
 
     fn lower_payload_literal_test(
         &mut self,
-        fields: &[BlockArg],
+        fields: &[Option<BlockArg>],
         predicate: &HirPayloadPredicate,
     ) -> Result<ValueId, String> {
         let field = usize::try_from(predicate.field_idx)
             .ok()
             .and_then(|index| fields.get(index))
+            .and_then(Option::as_ref)
             .ok_or_else(|| {
                 format!(
                     "payload literal selects missing field {}",
@@ -1160,13 +1257,14 @@ impl Builder<'_, '_> {
     /// [`Self::transfer_selected_payloads`] takes them.
     fn lower_nested_predicate(
         &mut self,
-        parent_fields: &[BlockArg],
+        parent_fields: &[Option<BlockArg>],
         predicate: &HirPayloadVariantPredicate,
         span: &std::ops::Range<usize>,
     ) -> Result<Vec<ControlState>, String> {
         let field = usize::try_from(predicate.field_idx)
             .ok()
             .and_then(|index| parent_fields.get(index))
+            .and_then(Option::as_ref)
             .ok_or_else(|| {
                 format!(
                     "nested variant predicate selects missing field {}",
@@ -1218,7 +1316,7 @@ impl Builder<'_, '_> {
             if owning {
                 self.argument_receiver_loans.push(value);
             }
-            fields.push(BlockArg {
+            fields.push(Some(BlockArg {
                 value,
                 ty: field.ty.clone(),
                 own: if owning {
@@ -1226,7 +1324,7 @@ impl Builder<'_, '_> {
                 } else {
                     OwnKind::None
                 },
-            });
+            }));
         }
         for literal in &predicate.literals {
             let condition = self.lower_payload_literal_test(&fields, literal)?;

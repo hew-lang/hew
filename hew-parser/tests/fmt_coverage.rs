@@ -2381,6 +2381,29 @@ fn fmt_binary_receiver_of_method_call_is_parenthesised() {
 }
 
 #[test]
+fn fmt_numeric_field_chains_preserve_parse_and_identity() {
+    for expression in [
+        "(outer.0).1",
+        "((outer.0).1).2",
+        "(outer.inner.10).11",
+        "((outer.0).1).name",
+        "(outer.0)[1].2",
+        "(1).0",
+        "outer.0.name",
+        "outer.name.0",
+    ] {
+        let source = format!("fn f() {{ let _ = {expression}; }}");
+        let formatted = roundtrip(&source);
+        let original = parse(&source);
+        let reparsed = parse(&formatted);
+        assert!(
+            program_eq_ignoring_spans(&original.program, &reparsed.program),
+            "field expression changed: {expression}\n{formatted}"
+        );
+    }
+}
+
+#[test]
 fn fmt_binary_receiver_of_field_access_is_parenthesised() {
     // `(a + b).x` — binary expr as object of a field access.
     exact_roundtrip("fn f(a: Point, b: Point) -> i64 {\n    (a + b).x\n}\n");

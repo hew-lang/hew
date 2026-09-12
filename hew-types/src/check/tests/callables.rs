@@ -15,7 +15,9 @@ fn capture(output: &TypeCheckOutput, name: &str) -> ClosureCaptureFact {
 
 #[test]
 fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
-    let output = check_source("fn main() { let count: i64 = 0; var next = capture(var count) || { count = count + 1; count }; next(); next(); }");
+    let output = check_source(
+        "fn main() { let count: i64 = 0; var next = capture(var count) || { count = count + 1; count }; next(); next(); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let fact = capture(&output, "count");
     assert_eq!(fact.acquisition, ClosureCaptureAcquisition::Snapshot);
@@ -26,7 +28,9 @@ fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
         .values()
         .any(|ty| matches!(ty, Ty::Closure { capabilities, .. }
         if capabilities.call == CallableCallMode::Var && capabilities.clone)));
-    let output = check_source("fn main() { let count: i64 = 0; let next = capture(var count) || { count = count + 1; count }; next(); }");
+    let output = check_source(
+        "fn main() { let count: i64 = 0; let next = capture(var count) || { count = count + 1; count }; next(); }",
+    );
     assert!(
         output
             .errors
@@ -57,7 +61,9 @@ fn implicit_capture_mutation_names_the_private_prefix() {
 
 #[test]
 fn private_prefix_resolves_existing_binding_and_respects_body_shadowing() {
-    let output = check_source("fn main() { let count: i64 = 0; let f = capture(var count) || { var count: i64 = 2; count = 3; count }; }");
+    let output = check_source(
+        "fn main() { let count: i64 = 0; let f = capture(var count) || { var count: i64 = 2; count = 3; count }; }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.closure_capture_facts.values().all(Vec::is_empty));
     let output = check_source("fn main() { let f = capture(var missing) || 1; }");
@@ -172,14 +178,18 @@ fn resource_capture_requires_move_and_body_consumption_requires_once() {
         "{:?}",
         output.errors
     );
-    let output = check_source(&format!("{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move || socket.fd; f(); f(); }}"));
+    let output = check_source(&format!(
+        "{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move || socket.fd; f(); f(); }}"
+    ));
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
         .expr_types
         .values()
         .any(|ty| matches!(ty, Ty::Closure { capabilities, .. }
         if capabilities.call == CallableCallMode::Read && !capabilities.clone)));
-    let output = check_source(&format!("{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move || socket.take(); f(); f(); }}"));
+    let output = check_source(&format!(
+        "{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move || socket.take(); f(); f(); }}"
+    ));
     assert!(
         output
             .errors
@@ -196,7 +206,9 @@ fn resource_capture_requires_move_and_body_consumption_requires_once() {
 
 #[test]
 fn consumption_in_a_diverging_arm_still_requires_once() {
-    let output = check_source("#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } fn main() { let socket = Socket { fd: 7 }; let f = move |finish: bool| { if finish { socket.close(); return; } }; }");
+    let output = check_source(
+        "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } fn main() { let socket = Socket { fd: 7 }; let f = move |finish: bool| { if finish { socket.close(); return; } }; }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
         capture(&output, "socket").consumption,
@@ -221,7 +233,9 @@ fn callable_coercions_only_weaken_guarantees() {
     ];
     for (from, actual) in modes.iter().enumerate() {
         for (to, expected) in modes.iter().enumerate() {
-            let source = format!("fn accept(f: fn{expected}() -> i64) {{}} fn forward(f: fn{actual}() -> i64) {{ accept(f); }}");
+            let source = format!(
+                "fn accept(f: fn{expected}() -> i64) {{}} fn forward(f: fn{actual}() -> i64) {{ accept(f); }}"
+            );
             let output = check_source(&source);
             let accepted = from / 2 <= to / 2 && (to % 2 == 0 || from % 2 == 1);
             assert_eq!(
@@ -269,13 +283,17 @@ fn explicit_erasure_controls_later_calls_and_clone() {
         !output.errors.is_empty(),
         "plain fn must not regain Clone through its initializer"
     );
-    let output = check_source("fn main() { let f: fn[clone]() -> i64 = || 1; let duplicate = clone f; f(); duplicate(); }");
+    let output = check_source(
+        "fn main() { let f: fn[clone]() -> i64 = || 1; let duplicate = clone f; f(); duplicate(); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
 fn lambda_arguments_cannot_hide_private_mutation() {
-    let output = check_source("fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(capture(var n) || { n = n + 1; n }); }");
+    let output = check_source(
+        "fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(capture(var n) || { n = n + 1; n }); }",
+    );
     assert!(
         !output.errors.is_empty(),
         "a var closure cannot satisfy a read-only function parameter"
@@ -290,7 +308,9 @@ fn callable_joins_forget_guarantees_independently_of_arm_order() {
         "match flag { true => a, false => b }",
         "match flag { true => b, false => a }",
     ] {
-        let source = format!("fn choose_callable(a: fn() -> i64, b: fn[once, clone]() -> i64, flag: bool) {{ let f = {choice}; f(); f(); }}");
+        let source = format!(
+            "fn choose_callable(a: fn() -> i64, b: fn[once, clone]() -> i64, flag: bool) {{ let f = {choice}; f(); f(); }}"
+        );
         let output = check_source(&source);
         assert!(
             output
@@ -350,14 +370,18 @@ fn callable_qualifiers_survive_aggregate_erasure() {
 #[test]
 fn once_callable_fields_allow_independent_owned_use() {
     for qualifier in ["once", "once, clone"] {
-        let declarations = format!("type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}");
+        let declarations = format!(
+            "type Callbacks {{ first: fn[{qualifier}]() -> i64, second: fn[{qualifier}]() -> i64 }}"
+        );
         for invocation in ["pair.first()", "(pair.first)()"] {
             let output = check_source(&format!(
                 "{declarations} fn invoke(consume pair: Callbacks) {{ {invocation}; }}"
             ));
             assert!(output.errors.is_empty(), "{:?}", output.errors);
         }
-        let output = check_source(&format!("{declarations} fn invoke(consume pair: Callbacks) {{ let Callbacks {{ first, second }} = pair; first(); second(); }}"));
+        let output = check_source(&format!(
+            "{declarations} fn invoke(consume pair: Callbacks) {{ let Callbacks {{ first, second }} = pair; first(); second(); }}"
+        ));
         assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
     let output = check_source(
@@ -378,14 +402,46 @@ const PARTIAL_JOB: &str = "type Job { done: fn[once]() -> i64, label: string }
     fn inspect(job: Job) { println(job.label); }";
 
 #[test]
+fn receive_parameters_own_their_affine_pattern_fields() {
+    let declarations = "#[resource] type Ticket { id: i64 }
+        impl Ticket { fn close(consume self) {} }";
+    let handler = check_source(&format!(
+        "{declarations}
+         actor Receiver {{
+             receive fn take(pair: (Ticket, string)) {{
+                 let (ticket, label) = pair;
+                 ticket.close(); println(label);
+             }}
+         }}"
+    ));
+    assert!(handler.errors.is_empty(), "{:?}", handler.errors);
+
+    let ordinary = check_source(&format!(
+        "{declarations}
+         fn take(pair: (Ticket, string)) {{
+             let (ticket, label) = pair;
+             ticket.close(); println(label);
+         }}"
+    ));
+    assert!(
+        ordinary
+            .errors
+            .iter()
+            .any(|error| { error.kind == TypeErrorKind::OwnConsumeBorrowed }),
+        "ordinary function parameters still borrow: {:?}",
+        ordinary.errors
+    );
+}
+
+#[test]
 fn affine_pattern_fields_preserve_siblings_and_reject_reuse() {
-    let declarations = r#"
+    let declarations = r"
         #[resource]
         type Ticket { id: i64 }
         impl Ticket { fn close(consume self) {} }
         type Booking { ticket: Ticket, label: string }
         fn inspect(booking: Booking) {}
-    "#;
+    ";
     for pattern in [
         "let Booking { ticket: t, label: _ } = booking;",
         "let Booking { ticket: t, .. } = booking;",
@@ -704,7 +760,9 @@ fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
 
 #[test]
 fn callable_erasure_cannot_discard_linear_capture_obligations() {
-    let output = check_source("#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consume self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }");
+    let output = check_source(
+        "#[linear] type Ticket { value: i64 } impl Ticket { fn finish(consume self) -> i64 { self.value } } fn erase(ticket: Ticket) -> fn[once]() -> i64 { move || ticket.finish() }",
+    );
     assert!(
         output
             .errors
@@ -717,8 +775,7 @@ fn callable_erasure_cannot_discard_linear_capture_obligations() {
 
 #[test]
 fn transferring_a_captured_owner_requires_once() {
-    let declarations =
-        "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } type Holder { socket: Socket } enum Envelope { Owned(Socket) }";
+    let declarations = "#[resource] type Socket { fd: i64 } impl Socket { fn close(consume self) {} } type Holder { socket: Socket } enum Envelope { Owned(Socket) }";
     for body in [
         "{ Holder { socket: socket } }",
         "Envelope.Owned(socket)",
@@ -730,7 +787,9 @@ fn transferring_a_captured_owner_requires_once() {
         "match flag { true => socket, false => socket }",
         "(socket, 7)",
     ] {
-        let source = format!("{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move |flag: bool| {body}; let owned = f(true); }}");
+        let source = format!(
+            "{declarations} fn main() {{ let socket = Socket {{ fd: 7 }}; let f = move |flag: bool| {body}; let owned = f(true); }}"
+        );
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
         assert_eq!(
@@ -789,7 +848,9 @@ fn inferred_lambda_returns_join_callable_guarantees() {
         "if flag { return a; } b",
         "if flag { return b; } a",
     ] {
-        let source = format!("fn choose(consume a: fn[clone]() -> i64, consume b: fn[once, clone]() -> i64) {{ let f = move |flag: bool| {{ {returns} }}; let result = f(true); result(); }}");
+        let source = format!(
+            "fn choose(consume a: fn[clone]() -> i64, consume b: fn[once, clone]() -> i64) {{ let f = move |flag: bool| {{ {returns} }}; let result = f(true); result(); }}"
+        );
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{returns}: {:?}", output.errors);
         assert!(output.expr_types.values().any(|ty| matches!(ty, Ty::Closure { ret, .. } if matches!(&**ret, Ty::Function { capabilities, .. } if capabilities.call == CallableCallMode::Once && capabilities.clone))), "{returns}");
@@ -855,8 +916,13 @@ fn callable_join_accepts_bare_alias_for_current_owner() {
 
 #[test]
 fn capture_syntax_composes_with_conditional_result_and_option_types() {
-    for body in ["if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }", "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None) }"] {
-        let source = format!("fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{ let count: i64 = 0; {body} }}");
+    for body in [
+        "if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }",
+        "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None) }",
+    ] {
+        let source = format!(
+            "fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{ let count: i64 = 0; {body} }}"
+        );
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
         assert_eq!(capture(&output, "count").access, ClosureCaptureAccess::Var);
@@ -890,7 +956,12 @@ fn generic_function_values_instantiate_each_reference() {
     ] {
         let output = check_source(source);
         assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
-        assert!(output.call_type_args.values().any(|args| args == &[Ty::I64]));
+        assert!(
+            output
+                .call_type_args
+                .values()
+                .any(|args| args == &[Ty::I64])
+        );
         assert!(output.direct_call_targets.values().any(|target|
             matches!(target, crate::CallTarget::User(declaration) if declaration.full_path() == "id")));
     }
@@ -907,7 +978,10 @@ fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
         "trait Allowed { fn ok(self) -> bool; } fn id<T: Allowed>(x: T) -> T { x } fn main() { let f = id<i64>; }",
     ] {
         let output = check_source(source);
-        assert!(!output.errors.is_empty(), "accepted invalid function value: {source}");
+        assert!(
+            !output.errors.is_empty(),
+            "accepted invalid function value: {source}"
+        );
     }
 }
 
@@ -960,7 +1034,9 @@ fn lambda_parameters_keep_the_ordinary_borrow_contract() {
 #[test]
 fn declared_consume_arguments_invalidate_cloneable_callables() {
     for call in ["take(f)", "take(f: f)"] {
-        let source = format!("fn take(consume f: fn[once, clone]() -> i64) {{ f(); }} fn main() {{ let f: fn[once, clone]() -> i64 = || 7; {call}; f(); }}");
+        let source = format!(
+            "fn take(consume f: fn[once, clone]() -> i64) {{ f(); }} fn main() {{ let f: fn[once, clone]() -> i64 = || 7; {call}; f(); }}"
+        );
         let output = check_source(&source);
         assert!(
             output
@@ -971,7 +1047,9 @@ fn declared_consume_arguments_invalidate_cloneable_callables() {
             output.errors
         );
     }
-    let output = check_source("fn take(consume f: fn[clone]() -> i64) {} fn main() { let f: fn[clone]() -> i64 = || 7; take(f); f(); }");
+    let output = check_source(
+        "fn take(consume f: fn[clone]() -> i64) {} fn main() { let f: fn[clone]() -> i64 = || 7; take(f); f(); }",
+    );
     assert!(
         output
             .errors
@@ -980,7 +1058,9 @@ fn declared_consume_arguments_invalidate_cloneable_callables() {
         "{:?}",
         output.errors
     );
-    let output = check_source("fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(f: fn[once, clone]() -> i64) { take(f); }");
+    let output = check_source(
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(f: fn[once, clone]() -> i64) { take(f); }",
+    );
     assert!(
         output
             .errors
@@ -989,7 +1069,9 @@ fn declared_consume_arguments_invalidate_cloneable_callables() {
         "{:?}",
         output.errors
     );
-    let output = check_source("fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); } fn main() { forward(|| 7); }");
+    let output = check_source(
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); } fn main() { forward(|| 7); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -1071,7 +1153,9 @@ fn borrowed_mutable_callable_loop_replacement_cannot_hide_zero_iterations() {
         "while flag { cb = fresh_owned(); cb(); } cb();",
         "for i in 0..n { cb = fresh_owned(); cb(); } cb();",
     ] {
-        let source = format!("{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool, n: i64) {{ {body} }}");
+        let source = format!(
+            "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64, flag: bool, n: i64) {{ {body} }}"
+        );
         let output = check_source(&source);
         assert!(
             output
@@ -1086,7 +1170,9 @@ fn borrowed_mutable_callable_loop_replacement_cannot_hide_zero_iterations() {
 
 #[test]
 fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
-    let output = check_source("type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
+    let output = check_source(
+        "type Holder { next: fn[var]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }",
+    );
     assert!(
         output
             .errors
@@ -1095,13 +1181,17 @@ fn borrowed_mutable_callable_field_uses_the_selected_guarantee() {
         "{:?}",
         output.errors
     );
-    let output = check_source("type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }");
+    let output = check_source(
+        "type Holder { next: fn[var, clone]() -> i64, shared: Vec<i64> } fn invoke(var holder: Holder) { holder.next(); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 #[test]
 fn borrowed_mutable_callable_shadowing_does_not_replace_the_parameter() {
-    let source = format!("{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64) {{ {{ var cb = fresh_owned(); cb(); }} cb(); }}");
+    let source = format!(
+        "{FRESH_MUTABLE_CALLBACK} fn invoke(var cb: fn[var]() -> i64) {{ {{ var cb = fresh_owned(); cb(); }} cb(); }}"
+    );
     let output = check_source(&source);
     assert_eq!(
         output
@@ -1152,9 +1242,13 @@ fn borrowed_once_callable_uses_the_same_replacement_provenance() {
 
 #[test]
 fn mutable_clone_parameter_owns_an_independent_once_copy() {
-    let output = check_source("fn invoke(var cb: fn[once, clone]() -> i64) -> i64 { cb() } fn main() { let cb: fn[once, clone]() -> i64 = || 7; invoke(cb); cb(); }");
+    let output = check_source(
+        "fn invoke(var cb: fn[once, clone]() -> i64) -> i64 { cb() } fn main() { let cb: fn[once, clone]() -> i64 = || 7; invoke(cb); cb(); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source("fn take(consume cb: fn[once, clone]() -> i64) { cb(); } fn forward(var cb: fn[once, clone]() -> i64) { take(cb); }");
+    let output = check_source(
+        "fn take(consume cb: fn[once, clone]() -> i64) { cb(); } fn forward(var cb: fn[once, clone]() -> i64) { take(cb); }",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let output = check_source("fn invoke(var cb: fn[once, clone]() -> i64) { cb(); cb(); }");
     assert!(

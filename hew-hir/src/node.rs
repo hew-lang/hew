@@ -1114,6 +1114,9 @@ pub struct HirStmt {
 pub struct HirDestructureField {
     pub selector: HirDestructureSelector,
     pub binding: Option<HirBinding>,
+    /// This binding carries a nested pattern's projection rather than naming
+    /// a source value. It traverses the existing field place when available.
+    pub nested: bool,
 }
 
 /// Typed aggregate field identity selected by an irrefutable pattern.

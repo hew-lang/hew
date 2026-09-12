@@ -1,0 +1,11 @@
+[[case]]
+id = "aggregate-cleanup-return"
+intent = "Resource owners in records, tuples, variants, collections and opaque wrappers close once across taken and untaken early returns."
+source = "cases/aggregate-cleanup-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "resource\nearly\nclose 1\n1\nlate\nclose 1\n2\nrecord\nearly\nclose 1\n1\nlate\nclose 1\n2\ntuple\nearly\nclose 1\n1\nlate\nclose 1\n2\noption\nearly\nclose 1\n1\nlate\nclose 1\n2\nresult\nearly\nclose 1\n1\nlate\nclose 1\n2\nenum_payload\nearly\nclose 1\n1\nlate\nclose 1\n2\nvec\nearly\nclose 1\n1\nlate\nclose 1\n2\nhashmap\nearly\nclose 1\n1\nlate\nclose 1\n2\nopaque\nearly\nclose 1\n1\nlate\nclose 1\n2\n"
+stderr = ""
+exit = 0

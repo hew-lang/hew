@@ -295,7 +295,7 @@ impl Checker {
         Some(joined)
     }
 
-    fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+    pub(super) fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
             Expr::FieldAccess { object, field } => {
@@ -1613,6 +1613,7 @@ impl Checker {
                     _ => self.synthesize(&target.0, &target.1),
                 };
                 self.place_write_depth -= 1;
+                self.reject_indexed_writable_borrow(target);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without

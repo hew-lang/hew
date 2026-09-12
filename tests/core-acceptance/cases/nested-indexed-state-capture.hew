@@ -1,0 +1,67 @@
+type Row {
+    label: string,
+    values: Vec<string>,
+}
+
+type Holder {
+    rows: Vec<Row>,
+    sibling: string,
+}
+
+actor Worker {
+    var state: Holder = Holder { rows: [Row { label: "initial".to_upper(), values: ["kept".to_upper()] }], sibling: "sibling".to_upper() },
+
+    receive fn change() {
+        state.rows[0].label = "changed".to_upper();
+        state.rows[0].values[0] = "updated".to_upper();
+        state.rows[0].values.push("added".to_upper());
+    }
+
+    receive fn fail() {
+        state.rows[9].label = "lost".to_upper();
+    }
+
+    receive fn get() -> string {
+        state.rows[0].label
+    }
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(state.rows[0].label == "CHANGED");
+        assert(state.rows[0].values[0] == "UPDATED");
+        assert(state.rows[0].values[1] == "ADDED");
+        assert(state.sibling == "SIBLING");
+        assert(info.code != 0);
+        println("state preserved");
+        CrashAction.Restart
+    }
+}
+
+supervisor Group {
+    intensity: 1 within 60s,
+
+    child worker: Worker,
+}
+
+fn main() {
+    let holder = Holder { rows: [Row { label: "capture".to_upper(), values: ["seed".to_upper()] }], sibling: "sibling".to_upper() };
+    let original = holder;
+    var update = capture(var holder) || {
+        holder.rows[0].label += "!";
+        holder.rows[0].values[0] += holder.rows[0].label;
+        holder.rows[0].values.push(holder.rows[0].label);
+        assert(holder.sibling == "SIBLING");
+        holder.rows[0].label
+    };
+    assert(update() == "CAPTURE!");
+    assert(update() == "CAPTURE!!");
+    assert(original.rows[0].label == "CAPTURE");
+    assert(original.rows[0].values[0] == "SEED");
+    let group = spawn Group;
+    group.worker.change().expect("change");
+    let _ = group.worker.fail();
+    let _ = await_restart group.worker;
+    assert(group.worker.get().expect("fresh") == "INITIAL");
+    close(group);
+    println("state and capture");
+}

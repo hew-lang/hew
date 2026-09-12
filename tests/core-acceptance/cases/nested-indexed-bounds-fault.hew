@@ -1,0 +1,5 @@
+fn main() {
+    var values = [["kept".to_upper()]];
+    let alias = values;
+    values[0][9] = alias[0][0] + "!";
+}

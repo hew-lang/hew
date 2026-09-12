@@ -18,6 +18,9 @@ use crate::{IntentKind, ValueClass};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// Checker-selected read/replacement contracts for indexed writable paths.
+    pub indexed_place_operations:
+        HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     pub items: Vec<HirItem>,
     /// Source-module attribution for non-root top-level HIR items, keyed by
     /// item id. Diagnostics emitted while verifying one of these items inherit

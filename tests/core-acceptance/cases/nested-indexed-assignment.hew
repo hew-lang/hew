@@ -1,0 +1,34 @@
+type Row { count: i64, label: string, values: HashMap<string, Vec<string>> }
+type Counter { count: i64 }
+fn outer() -> i64 { println("outer"); 0 }
+fn key() -> string { println("key"); "MAIN" }
+fn rhs() -> string { println("rhs"); "!" }
+fn main() {
+    var words: HashMap<string, string> = HashMap.new();
+    words["MAIN"] = "old".to_upper();
+    var groups = [words];
+    let groups_alias = groups;
+    groups[outer()][key()] += rhs();
+    assert(groups[0]["MAIN"] == "OLD!");
+    assert(groups_alias[0]["MAIN"] == "OLD");
+    var nested = [["old".to_upper()]];
+    let nested_alias = nested;
+    nested[outer()][outer()] = rhs();
+    assert(nested[0][0] == "!");
+    assert(nested_alias[0][0] == "OLD");
+    var values: HashMap<string, Vec<string>> = HashMap.new();
+    values["MAIN"] = ["kept".to_upper()];
+    var rows = [Row { count: 1, label: "row".to_upper(), values: values }];
+    let rows_alias = rows;
+    rows[outer()].values[key()][outer()] += rhs();
+    rows[outer()].label += rhs();
+    assert(rows[0].values["MAIN"][0] == "KEPT!");
+    assert(rows_alias[0].values["MAIN"][0] == "KEPT");
+    assert(rows[0].label == "ROW!");
+    var counters = [Counter { count: 1 }];
+    let counters_alias = counters;
+    counters[outer()].count += 3;
+    assert(counters[0].count == 4);
+    assert(counters_alias[0].count == 1);
+    println("nested");
+}

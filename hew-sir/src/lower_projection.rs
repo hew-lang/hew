@@ -129,6 +129,30 @@ impl Builder<'_, '_> {
         self.store_projected(root, value, provenance)
     }
 
+    pub(super) fn value_projection_place(
+        &mut self,
+        owner: ValueId,
+        ty: &ResolvedTy,
+        projections: &[super::AggregateSelection],
+    ) -> Result<PlaceId, String> {
+        let path = projections
+            .iter()
+            .map(|(_, shape, field)| {
+                u32::try_from(*field)
+                    .map(|field| (*shape, field))
+                    .map_err(|_| "aggregate field exceeds u32".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        declare_path(
+            &mut self.places,
+            PlaceBase::Value(owner),
+            ty,
+            &path,
+            &self.service.aggregate_shapes,
+            self.service.checked_facts.rows(),
+        )
+    }
+
     /// Replace one projected field inside an owning SSA value.
     ///
     /// The owner is not a place, so its selections are declared against the
@@ -141,22 +165,7 @@ impl Builder<'_, '_> {
         replacement: ValueId,
         provenance: Provenance,
     ) -> Result<(), String> {
-        let path = projections
-            .iter()
-            .map(|(_, shape, field)| {
-                u32::try_from(*field)
-                    .map(|field| (*shape, field))
-                    .map_err(|_| "aggregate field exceeds u32".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let leaf = declare_path(
-            &mut self.places,
-            PlaceBase::Value(owner),
-            owner_ty,
-            &path,
-            &self.service.aggregate_shapes,
-            self.service.checked_facts.rows(),
-        )?;
+        let leaf = self.value_projection_place(owner, owner_ty, projections)?;
         self.store_projected(leaf, replacement, provenance)
     }
 

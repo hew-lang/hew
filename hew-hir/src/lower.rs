@@ -6132,6 +6132,7 @@ pub fn lower_program_with_mono_cap(
     );
 
     let module = HirModule {
+        indexed_place_operations: ctx.indexed_place_operations,
         items,
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
@@ -7898,6 +7899,10 @@ struct LowerCtx {
         reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    checked_indexed_place_operations:
+        HashMap<SpanKey, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
+    indexed_place_operations:
+        HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     /// Checker-owned actor receive-handler guard policy keyed by receive span.
     actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Actor type names that participate in reference cycles, computed by the
@@ -8559,6 +8564,8 @@ impl LowerCtx {
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            checked_indexed_place_operations: tc_output.indexed_place_operations.clone(),
+            indexed_place_operations: HashMap::new(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
@@ -17162,7 +17169,7 @@ impl LowerCtx {
             return None;
         }
         let value_ty = self.resolved_expr_types.get(&key)?.clone();
-        let receiver = self.lower_expr(object, IntentKind::Read);
+        let mut receiver = self.lower_expr(object, IntentKind::Read);
         let index = self.lower_expr(index, IntentKind::Read);
         let replacement = self.lower_expr(value, IntentKind::Read);
         let mut statements = Vec::new();
@@ -17170,7 +17177,8 @@ impl LowerCtx {
             // The read and write share one evaluated key. The receiver remains
             // a place, taken by SIR only after argument evaluation succeeds.
             let (capture, read_key, key_ref) = self.capture_assignment_index(index);
-            let read_receiver = self.lower_expr(object, IntentKind::Read);
+            let mut read_receiver = self.lower_expr(object, IntentKind::Read);
+            self.capture_compound_place_indices(&mut read_receiver, &mut receiver, &mut statements);
             statements.push(capture);
             let read = self.make_expr(
                 HirExprKind::Index {
@@ -17626,6 +17634,12 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
+        if let Some(operations) = self
+            .checked_indexed_place_operations
+            .get(&self.mk_key(&span))
+        {
+            self.indexed_place_operations.insert(site, *operations);
+        }
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
@@ -24227,9 +24241,16 @@ impl LowerCtx {
         } else {
             ValueClass::of_ty(&ty, &self.type_classes)
         };
+        let site = self.ids.site();
+        if let Some(operations) = self
+            .checked_indexed_place_operations
+            .get(&self.mk_key(&span))
+        {
+            self.indexed_place_operations.insert(site, *operations);
+        }
         HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site,
             value_class,
             ty,
             intent,

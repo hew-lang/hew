@@ -7056,7 +7056,11 @@ impl Checker {
         description: &str,
         span: &Span,
     ) {
-        let place = self.expr_place(&receiver.0);
+        self.reject_indexed_writable_borrow(receiver);
+        let place = self.expr_place(&receiver.0).or_else(|| {
+            self.assignment_root_binding_name(&receiver.0)
+                .map(|root| (root.to_string(), Vec::new()))
+        });
         let root = place.as_ref().map(|(root, _)| root.as_str());
         if !root
             .and_then(|root| self.env.lookup_ref(root))

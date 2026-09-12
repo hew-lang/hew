@@ -1625,6 +1625,25 @@ impl Checker {
     /// ownership slot to attach a fact to, so nothing is recorded for them
     /// rather than a guess being recorded; element-of-collection places are the
     /// known remaining hole and belong to the MIR half of this family.
+    /// Indexed writes and mutating methods need a copy of every indexed parent.
+    pub(super) fn reject_indexed_writable_borrow(&mut self, target: &Spanned<Expr>) {
+        let mut parent = target;
+        loop {
+            if self
+                .borrowed_element_index_reads
+                .contains(&SpanKey::in_module(&parent.1, self.current_module_idx))
+            {
+                self.report_error(TypeErrorKind::OwnConsumeBorrowed, &parent.1,
+                    "cannot update through a borrowed affine collection element; indexed writeback requires a semantic copy".into());
+                return;
+            }
+            match &parent.0 {
+                Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => parent = object,
+                _ => return,
+            }
+        }
+    }
+
     pub(super) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
             Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
@@ -2846,6 +2865,13 @@ impl Checker {
                         None => return Ty::Error,
                     }
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Index),
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Set),
+                    ),
+                );
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);
                 }
@@ -2890,6 +2916,13 @@ impl Checker {
                 {
                     return Ty::Error;
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Index),
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Insert),
+                    ),
+                );
                 match ctx {
                     // Trapping bare-`V` read: no `.get` resolved call; MIR's
                     // `Index` node owns the `hew_hashmap_get_clone_layout` trap
@@ -2914,6 +2947,13 @@ impl Checker {
             // at byte offset, O(1), panic on OOB. Index is i64. MIR will
             // route to `hew_bytes_index`.
             Ty::Bytes => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::BytesIndex,
+                        crate::RuntimeCallFamily::BytesSet,
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 Ty::U8
             }
@@ -2972,6 +3012,13 @@ impl Checker {
                 Ty::Error
             }
             Ty::Array(elem, _) => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Index),
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Set),
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 if matches!(ctx, IndexContext::Read) {
                     match self.vec_iteration_element_mode(elem, span) {

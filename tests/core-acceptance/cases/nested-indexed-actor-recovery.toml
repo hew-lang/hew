@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-indexed-actor-recovery"
+intent = "A nested actor-state update publishes on success and preserves its last valid owner through a bounds failure and restart."
+source = "cases/nested-indexed-actor-recovery.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "CHANGED\nrecovered\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Worker.fail (actor 1): IndexOutOfBounds\n"
+exit = 0

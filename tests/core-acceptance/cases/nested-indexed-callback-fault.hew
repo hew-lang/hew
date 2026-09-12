@@ -1,0 +1,22 @@
+type Key { label: string, divisor: i64 }
+type Contents { values: HashMap<Key, Vec<string>>, sibling: Vec<string> }
+type Holder { contents: Contents, label: string }
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        let local = self.label.to_upper();
+        local.len() / self.divisor
+    }
+}
+fn main() -> i64 {
+    var holders = [Holder {
+        contents: Contents {
+            values: HashMap.new(),
+            sibling: ["sibling".to_upper()],
+        },
+        label: "outer".to_upper(),
+    }];
+    holders[0].contents.values[Key { label: "stored".to_upper(), divisor: 1 }] = ["stored".to_upper()];
+    let copy = holders;
+    holders[0].contents.values[Key { label: "fault".to_upper(), divisor: 0 }] = [copy[0].label];
+    0
+}

@@ -168,9 +168,9 @@ fn numeric_conversion_bounds_follow_requested_target() {
         if target == hew_hir::TargetArch::Wasm32 {
             checker.enable_wasm_target();
         }
-        let checked = checker.check_program(&parsed.program);
-        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
-        let output = lower_program(&parsed.program, &checked, &ResolutionCtx, target);
+        let facts = checker.check_program(&parsed.program);
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let output = lower_program(&parsed.program, &facts, &ResolutionCtx, target);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let HirItem::Function(function) = &output.module.items[0] else {
             panic!("checked function")
@@ -199,14 +199,14 @@ fn numeric_conversion_methods_reject_arguments_at_source_boundary() {
         let parsed = hew_parser::parse(&source);
         assert!(parsed.errors.is_empty());
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let checked = checker.check_program(&parsed.program);
+        let facts = checker.check_program(&parsed.program);
         assert!(
-            checked
+            facts
                 .errors
                 .iter()
                 .any(|error| error.kind == hew_types::error::TypeErrorKind::ArityMismatch),
             "{method}: {:?}",
-            checked.errors
+            facts.errors
         );
     }
 }

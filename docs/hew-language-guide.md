@@ -3907,18 +3907,20 @@ import std.text.unicode;
 
 fn main() {
     let s = "Aé!";
-    println(f"runes={unicode.rune_count(s)} bytes={s.len()}");   // runes=3 bytes=4
+    println(f"runes={unicode.rune_count(s)} bytes={s.byte_len()}");   // runes=3 bytes=4
     let runes = unicode.runes(s);
     for cp in runes {
         let up = unicode.is_upper(cp);
-        println(f"cp={cp} upper={up} width={unicode.rune_len(cp)}");
+        let width = unicode.rune_len(cp).expect("decoded codepoint is valid");
+        println(f"cp={cp} upper={up} width={width}");
     }
 }
 ```
 
-`rune_count(s)` counts codepoints (vs `s.len()` bytes); `runes(s)` decodes a
-string into a `Vec<i64>` of codepoints; `codepoint_at` / `try_codepoint_at` read
-one rune at a byte offset; `rune_len(cp)` is a rune's UTF-8 width. Classify a
+`rune_count(s)` and `s.len()` count codepoints; `s.byte_len()` counts UTF-8
+bytes. `runes(s)` decodes a string into a `Vec<i64>` of codepoints.
+`codepoint_at(s, i)` returns the codepoint at codepoint index `i` as a `Result`;
+`rune_len(cp)` returns a valid codepoint's UTF-8 width as a `Result`. Classify a
 codepoint with the predicates `is_upper` / `is_lower` / `is_digit` / `is_letter`
 / `is_space` / `is_punct` / `is_alnum` / `is_valid_rune`, and case-fold with
 `to_upper` / `to_lower` / `to_title` (all over `i64` codepoints). Dispatch with

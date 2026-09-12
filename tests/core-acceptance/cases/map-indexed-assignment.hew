@@ -3,6 +3,8 @@ type Holder {
     label: string,
 }
 
+type Row { count: i64, label: string }
+
 fn key() -> string {
     println("key");
     "main".to_upper()
@@ -56,5 +58,11 @@ fn main() {
     var raw = bytes[4];
     raw[position()] += 1;
     assert(raw[0] == 5);
+    var rows: Vec<Row> = [Row { count: 1, label: "row".to_upper() }];
+    let row_alias = rows;
+    rows[position()].count += increment();
+    assert(rows[0].count == 4);
+    assert(row_alias[0].count == 1);
+    assert(rows[0].label == "ROW");
     println("assigned");
 }

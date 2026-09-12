@@ -101,21 +101,8 @@ impl Checker {
         if !self.place_read_transfers_ownership(&ty) {
             return None;
         }
-        if let Expr::Index { object, .. } = expr {
-            let container = self.expr_types.get(&super::SpanKey::in_module(
-                &object.1,
-                self.current_module_idx,
-            ))?;
-            if matches!(
-                self.subst.resolve(container),
-                Ty::Named {
-                    builtin: Some(crate::BuiltinType::Vec | crate::BuiltinType::HashMap),
-                    ..
-                } | Ty::Array(_, _)
-                    | Ty::Slice(_)
-            ) {
-                return Some(span.clone());
-            }
+        if self.borrowed_element_index_reads.contains(&key) {
+            return Some(span.clone());
         }
         let (root, _) = self.expr_place(expr)?;
         self.env.lookup_ref(&root)?.collection_borrow.clone()

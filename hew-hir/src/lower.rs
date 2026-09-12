@@ -17224,8 +17224,17 @@ impl LowerCtx {
                 first_store: false,
             }
         };
+        Some(self.assignment_with_prelude(statements, assignment, span))
+    }
+
+    fn assignment_with_prelude(
+        &mut self,
+        mut statements: Vec<HirStmt>,
+        assignment: HirStmtKind,
+        span: &Span,
+    ) -> HirStmtKind {
         if statements.is_empty() {
-            return Some(assignment);
+            return assignment;
         }
         statements.push(HirStmt {
             node: self.ids.node(),
@@ -17240,12 +17249,12 @@ impl LowerCtx {
             ty: ResolvedTy::Unit,
             span: span.clone(),
         };
-        Some(HirStmtKind::Expr(self.make_expr(
+        HirStmtKind::Expr(self.make_expr(
             HirExprKind::Block(block),
             ResolvedTy::Unit,
             IntentKind::Read,
             span.clone(),
-        )))
+        ))
     }
 
     /// Bind a compound assignment's key once and return distinct HIR reads.
@@ -17277,9 +17286,11 @@ impl LowerCtx {
         span: &Span,
     ) -> HirStmtKind {
         let binary_op = Self::compound_assign_binary_op(op);
-        let target_read = self.lower_expr(target, IntentKind::Read);
+        let mut target_read = self.lower_expr(target, IntentKind::Read);
         let rhs = self.lower_expr(value, IntentKind::Read);
-        let target_write = self.lower_expr(target, IntentKind::Modify);
+        let mut target_write = self.lower_expr(target, IntentKind::Modify);
+        let mut prelude = Vec::new();
+        self.capture_compound_place_indices(&mut target_read, &mut target_write, &mut prelude);
         let value = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -17293,10 +17304,55 @@ impl LowerCtx {
             },
             span: span.clone(),
         };
-        HirStmtKind::Assign {
+        let assignment = HirStmtKind::Assign {
             target: target_write,
             value: Box::new(value),
             first_store: false,
+        };
+        self.assignment_with_prelude(prelude, assignment, span)
+    }
+
+    /// Stabilize the existing read/write projection pair without deciding
+    /// whether that place is writable; SIR retains that authority.
+    fn capture_compound_place_indices(
+        &mut self,
+        read: &mut HirExpr,
+        write: &mut HirExpr,
+        prelude: &mut Vec<HirStmt>,
+    ) {
+        match (&mut read.kind, &mut write.kind) {
+            (
+                HirExprKind::Index {
+                    container: read,
+                    index: read_index,
+                },
+                HirExprKind::Index {
+                    container: write,
+                    index: write_index,
+                },
+            ) => {
+                self.capture_compound_place_indices(read, write, prelude);
+                let (capture, key_read, key_write) =
+                    self.capture_assignment_index((**read_index).clone());
+                **read_index = key_read;
+                **write_index = key_write;
+                prelude.push(capture);
+            }
+            (
+                HirExprKind::FieldAccess { object: read, .. },
+                HirExprKind::FieldAccess { object: write, .. },
+            )
+            | (
+                HirExprKind::TupleIndex { tuple: read, .. },
+                HirExprKind::TupleIndex { tuple: write, .. },
+            )
+            | (
+                HirExprKind::SubsumedValue { source: read },
+                HirExprKind::SubsumedValue { source: write },
+            ) => {
+                self.capture_compound_place_indices(read, write, prelude);
+            }
+            _ => {}
         }
     }
 

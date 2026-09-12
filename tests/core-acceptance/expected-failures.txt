@@ -12,7 +12,6 @@
 
 # ── Documentation fences ────────────────────────────────────────────────
 guide-144626557  # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
-guide-797256300  # IMPL-GAP: `unicode.rune_count` type-checks but is not lowered (`E_SIR_UNSUPPORTED: ... extern hew_string_char_count` is named by `#[extern_symbol]` rather than an `extern` block), same gap as the std-text-unicode entries below
 spec-1607851950  # SNIPPET: bare `let` — fn-type/Rc illustration; Rc/Weak wording owned by feat/rc-physical-path, left untouched by this lane
 spec-3936244856  # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> ...` type-checks (discarding the completion result correctly raises `E_SEND_RESULT_DROPPED`) but SIR lowering of the ask/completion for such a handler is not implemented (`E_SIR_UNSUPPORTED: ... ask must return its complete checked Result`)
 std-arena-3714386937  # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
@@ -22,10 +21,6 @@ std-net-http-http-223475752  # SPEC-BUG: error: cannot consume `self.handle` sep
 # These programs assert the documented behaviour; current native execution
 # still disagrees. Source repairs removed old ABI and shared-mutation probes.
 
-string_slice_closed_prefix  # DEFECT: exits 2, spec byte length is 3
-string_slice_full  # DEFECT: exits 3, spec byte length is 4
-string_slice_multibyte  # DEFECT: exits 1, `é` is two bytes
-string_slice_open_right  # DEFECT: exits 4, spec byte length is 5
 std_net_dns_execution  # DEFECT: localhost resolution panics (UserPanic 212)
 
 # Affine ownership diagnostics exposed by fixing stale close declarations.

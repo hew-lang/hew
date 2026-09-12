@@ -339,9 +339,9 @@ pub fn codepoint_at(s: string, i: i64) -> Result<i64, string> {
 
 /// Return the number of Unicode codepoints (runes) in string `s`.
 ///
-/// For ASCII strings this equals `s.len()`. For strings containing multi-byte
-/// UTF-8 sequences (accented letters, CJK, emoji), the rune count is strictly
-/// less than the byte length.
+/// This equals `s.len()`: both count Unicode codepoints. Use `s.byte_len()`
+/// for the UTF-8 byte length. Strings containing multi-byte sequences
+/// (accented letters, CJK, emoji) have fewer codepoints than bytes.
 ///
 /// # Examples
 ///

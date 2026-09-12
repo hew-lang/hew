@@ -1,6 +1,6 @@
 [[case]]
 id = "string_slice_multibyte"
-intent = "A codepoint slice over multi-byte UTF-8 yields one rune, and `len()` reports its two bytes."
+intent = "A codepoint slice over multi-byte UTF-8 yields one rune, and `len()` reports one scalar and `byte_len()` reports its two encoded bytes."
 source = "../vertical-slice/accept/string_slice_multibyte.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

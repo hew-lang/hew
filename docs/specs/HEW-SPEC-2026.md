@@ -3406,6 +3406,7 @@ second name for any of them. A type renders itself through `Display`
 **Indexing and slicing (normative).** `string`, `bytes` and `Vec<T>` share one
 index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
 the `i`th byte of a `bytes` value, and the `i`th element of a vector.
+String `len()` counts Unicode scalars; `byte_len()` counts encoded UTF-8 bytes.
 `x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
 fresh owned string of codepoints, a bytes slice is an independent handle onto
 the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each

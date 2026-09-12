@@ -1001,11 +1001,6 @@ impl Checker {
                 let collection_borrow = value
                     .as_ref()
                     .and_then(|(expr, span)| self.collection_borrow_origin(expr, span));
-                if collection_borrow.is_none() {
-                    if let Some((value, span)) = value {
-                        self.record_value_transfer(value, span);
-                    }
-                }
                 self.pending_let_closure_name = prev_pending;
                 let val_ty = if ty.is_none() {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
@@ -1114,6 +1109,13 @@ impl Checker {
                     Pattern::Identifier(name) if !identifier_is_unit_variant => Some(name),
                     _ => None,
                 };
+                // Destructuring records selected field transfers in bind_pattern.
+                // Only a plain binding acquires the entire initializer.
+                if plain_identifier.is_some() && collection_borrow.is_none() {
+                    if let Some((value, span)) = value {
+                        self.record_value_transfer(value, span);
+                    }
+                }
                 if let Some(name) = plain_identifier {
                     if val_ty == Ty::Unit && value.is_some() && !name.starts_with('_') {
                         self.warnings.push(TypeError {

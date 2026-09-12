@@ -1,0 +1,13 @@
+[[case]]
+id = "string_slice_multibyte"
+intent = "W3 collections-sugar S2: codepoint slice over multi-byte UTF-8."
+source = "../vertical-slice/accept/string_slice_multibyte.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 1

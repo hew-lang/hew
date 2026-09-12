@@ -1,0 +1,13 @@
+[[case]]
+id = "for_in_generic_vec_collect"
+intent = "#1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type parameter."
+source = "../vertical-slice/accept/for_in_generic_vec_collect.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "60\n10\n"
+exit = 0

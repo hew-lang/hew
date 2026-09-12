@@ -1,0 +1,13 @@
+[[case]]
+id = "branch_join_select_use_after_join"
+intent = "`select` scoping, both directions in one file."
+source = "../vertical-slice/reject/branch_join_select_use_after_join.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 47
+column = 5
+message = "use of moved value `held`"

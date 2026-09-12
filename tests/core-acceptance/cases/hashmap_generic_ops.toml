@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_generic_ops"
+intent = "Accept fixture: HashMap<K, V> methods inside a generic function honor K bounds."
+source = "../vertical-slice/accept/hashmap_generic_ops.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 1

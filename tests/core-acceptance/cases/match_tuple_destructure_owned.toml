@@ -1,0 +1,13 @@
+[[case]]
+id = "match_tuple_destructure_owned"
+intent = "Non-BitCopy tuple match destructure — full extraction of `(string, i64)`."
+source = "../vertical-slice/accept/match_tuple_destructure_owned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

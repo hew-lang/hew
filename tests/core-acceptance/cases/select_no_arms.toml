@@ -1,0 +1,13 @@
+[[case]]
+id = "select_no_arms"
+intent = "Reject fixture: a `select` with no arms waits on nothing and can never complete."
+source = "../vertical-slice/reject/select_no_arms.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 10
+column = 9
+message = "a `select` needs at least one arm: a source arm (`name from source => body`), or an `after` timer arm"

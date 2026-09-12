@@ -1,0 +1,13 @@
+[[case]]
+id = "break_value_operand"
+intent = "Reject fixture: `break expr;` is E_BREAK_VALUE (User)."
+source = "../vertical-slice/reject/break_value_operand.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 15
+column = 15
+message = "E_BREAK_VALUE: `break` carries no operand; a loop never produces a value"

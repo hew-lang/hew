@@ -1,0 +1,13 @@
+[[case]]
+id = "implicit_int_widening"
+intent = "REJECT: implicit integer widening is not allowed."
+source = "../vertical-slice/reject/implicit_int_widening.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 6
+column = 18
+message = "cannot implicitly convert `i32` to `i64`; use an explicit `as i64` cast"

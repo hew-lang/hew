@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_record_swap_owned"
+intent = "Generic record swap that moves an owned string field across instantiations: `Pair<i64, string>` -> `Pair<string, i64>`."
+source = "../vertical-slice/accept/generic_record_swap_owned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "owned-value\n"
+exit = 0

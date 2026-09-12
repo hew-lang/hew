@@ -1,0 +1,13 @@
+[[case]]
+id = "defer_uses_moved_binding"
+intent = "Defer body that references a binding consumed before scope exit must be rejected by the move-checker (Q205-B fail-closed boundary)."
+source = "../vertical-slice/reject/defer_uses_moved_binding.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 11
+column = 1
+message = "process entry must return `()`, an integer, or `Result<(), E>`; found `string`"

@@ -1,0 +1,14 @@
+[[case]]
+id = "assert_eq_fail"
+intent = "The fixture runs to completion and exits 1."
+source = "../vertical-slice/accept/assert_eq_fail.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: 4\n  right: 5\n"
+exit = 1

@@ -1,0 +1,14 @@
+[[case]]
+id = "await_owned_string_crash_cleanup"
+intent = "A fresh owned reply becomes live only after the await resumes."
+source = "../vertical-slice/accept/await_owned_string_crash_cleanup.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "used=fresh-value\nhandled-crash\n"
+stderr = "hew: failure: UserPanic (212): handled crash after fresh string use\nhew: actor crash in CrashAfterUse (actor 2): UserPanic\n"
+exit = 1

@@ -1,0 +1,13 @@
+[[case]]
+id = "match_record_wildcard_all_owned_drops_once"
+intent = "Non-BitCopy record match destructure — ALL-wildcard owned aggregate."
+source = "../vertical-slice/accept/match_record_wildcard_all_owned_drops_once.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

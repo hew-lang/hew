@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_child_on_plain_actor"
+intent = "Reject fixture: field access on a plain actor handle, not a supervisor."
+source = "../vertical-slice/reject/supervisor_child_on_plain_actor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedField"
+line = 15
+column = 14
+message = "no field `child` on type `Worker`"

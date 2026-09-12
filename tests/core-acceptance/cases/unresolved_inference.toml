@@ -1,0 +1,13 @@
+[[case]]
+id = "unresolved_inference"
+intent = "The fixture is refused, and the refusal names UnresolvedInferenceVar."
+source = "../vertical-slice/reject/unresolved_inference.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UnresolvedInferenceVar"
+line = 2
+column = 10
+message = "E_HIR: inferred type reached resolved HIR boundary"

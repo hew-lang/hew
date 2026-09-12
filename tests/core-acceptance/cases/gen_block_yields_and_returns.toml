@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_block_yields_and_returns"
+intent = "Accept fixture: gen{} with both yield expressions and a tail-expression return."
+source = "../vertical-slice/accept/gen_block_yields_and_returns.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

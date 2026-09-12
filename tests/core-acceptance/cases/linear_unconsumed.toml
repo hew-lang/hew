@@ -1,0 +1,13 @@
+[[case]]
+id = "linear_unconsumed"
+intent = "A `#[linear]` binding that reaches an exit without being consumed is rejected (`MustConsume`)."
+source = "../vertical-slice/reject/linear_unconsumed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "semantic lowering of `__hew_fn_main` is not implemented: nested type `Tx` has no semantic value contract"

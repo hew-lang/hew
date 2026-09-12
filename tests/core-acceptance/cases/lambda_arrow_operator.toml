@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_arrow_operator"
+intent = "Reject fixture: E_OPERATOR_REMOVED The `<-` send operator was removed in v0.5."
+source = "../vertical-slice/reject/lambda_arrow_operator.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 9
+column = 13
+message = "E_OPERATOR_REMOVED: the `<-` send operator has been removed; use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"

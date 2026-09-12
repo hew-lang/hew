@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_capture_whole_value_return"
+intent = "The fixture is refused, and the refusal names E_SIR_UNSUPPORTED."
+source = "../vertical-slice/reject/gen_capture_whole_value_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "semantic lowering of `__hew_fn_main$closure$23` is not implemented: a divergent block cannot produce a SIR value"

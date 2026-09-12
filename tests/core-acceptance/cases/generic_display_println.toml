@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_display_println"
+intent = "#1565 / #1929 Stage 3: generic `println` / `print` / `to_string` of a value typed by a `T: Display` type parameter."
+source = "../vertical-slice/accept/generic_display_println.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\nhi\nColor\n7\nyo\n"
+exit = 0

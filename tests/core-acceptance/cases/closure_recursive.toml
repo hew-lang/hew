@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_recursive"
+intent = "Reject fixture: E_CLOSURE_RECURSIVE A closure that refers to its own let-binding name inside its body is rejected."
+source = "../vertical-slice/reject/closure_recursive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ClosureRecursive"
+line = 6
+column = 31
+message = "closure cannot call itself via binding `f` — recursive closures require a fixed-point surface that is not available in this version; use a named function instead"

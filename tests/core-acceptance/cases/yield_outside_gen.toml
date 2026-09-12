@@ -1,0 +1,13 @@
+[[case]]
+id = "yield_outside_gen"
+intent = "Reject fixture: bare `yield` at function scope (not inside gen{})."
+source = "../vertical-slice/reject/yield_outside_gen.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "YieldOutsideGenerator"
+line = 4
+column = 5
+message = "`yield` outside of generator function"

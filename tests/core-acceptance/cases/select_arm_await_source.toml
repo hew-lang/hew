@@ -1,0 +1,13 @@
+[[case]]
+id = "select_arm_await_source"
+intent = "Reject fixture: `await` is never written on a select arm source."
+source = "../vertical-slice/reject/select_arm_await_source.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 20
+column = 24
+message = "a select arm source never writes `await` - the `select` is what waits; delete `await`"

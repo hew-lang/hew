@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_contains"
+intent = "`bytes.contains(b)` linear-scans the active region."
+source = "../vertical-slice/accept/bytes_contains.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

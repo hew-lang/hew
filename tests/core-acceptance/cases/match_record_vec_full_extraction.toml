@@ -1,0 +1,13 @@
+[[case]]
+id = "match_record_vec_full_extraction"
+intent = "Non-BitCopy record match destructure — full extraction of an owned `Vec<i64>` field with a wildcarded `BitCopy` sibling."
+source = "../vertical-slice/accept/match_record_vec_full_extraction.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "32000\n"
+exit = 0

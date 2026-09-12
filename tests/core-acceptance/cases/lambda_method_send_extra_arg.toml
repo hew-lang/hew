@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_method_send_extra_arg"
+intent = "Reject: an anonymous actor's `send` accepts exactly one message argument."
+source = "../vertical-slice/reject/lambda_method_send_extra_arg.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ArityMismatch"
+line = 8
+column = 13
+message = "`send` on an actor handle expects one argument (the message), but 2 were supplied"

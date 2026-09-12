@@ -1,0 +1,13 @@
+[[case]]
+id = "capturing_closure_inline"
+intent = "Inline capturing closure: `base` is an untyped local integer binding."
+source = "../vertical-slice/accept/capturing_closure_inline.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n10\n"
+exit = 0

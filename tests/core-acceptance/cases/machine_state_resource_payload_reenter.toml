@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_state_resource_payload_reenter"
+intent = "A machine state payload may not hold a `#[resource]` value: the machine's tag-aware drop elaboration is a later slice, so a handle carried through a `reenter` has no wired release on transition or scope exit."
+source = "../vertical-slice/reject/machine_state_resource_payload_reenter.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 14
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

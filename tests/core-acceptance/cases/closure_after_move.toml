@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_after_move"
+intent = "Reject fixture: UseAfterMove for closures A binding moved into a closure cannot be used again after the closure literal."
+source = "../vertical-slice/reject/closure_after_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 7
+column = 18
+message = "use of moved value `s`"

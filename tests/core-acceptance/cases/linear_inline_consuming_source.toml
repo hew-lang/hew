@@ -1,0 +1,13 @@
+[[case]]
+id = "linear_inline_consuming_source"
+intent = "A `#[linear]` type that declares its `consume self` method inline in the type body is rejected (`LinearConsumingMethodSourceUnsupported`): the inline form is not lowered to a callable consume target."
+source = "../vertical-slice/reject/linear_inline_consuming_source.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "LinearConsumingMethodSourceUnsupported"
+line = 5
+column = 1
+message = "E_HIR: `#[linear]` types must declare their `consume self` method in a sibling inherent-impl block (`impl T { fn commit(consume self) { ... } }`); the inline `type T { fn commit(consume self) ... }` surface is not lowered to a callable consume target"

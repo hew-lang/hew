@@ -1,0 +1,13 @@
+[[case]]
+id = "value_tree_resources_use_after_close"
+intent = "TOML retains an independent resource API; released values cannot be used."
+source = "../vertical-slice/reject/value_tree_resources_use_after_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 7
+column = 13
+message = "use of moved value `value`"

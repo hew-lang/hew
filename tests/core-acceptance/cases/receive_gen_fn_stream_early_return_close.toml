@@ -1,0 +1,13 @@
+[[case]]
+id = "receive_gen_fn_stream_early_return_close"
+intent = "Returning from a for-await drain must close the synthetic stream cursor."
+source = "../vertical-slice/accept/receive_gen_fn_stream_early_return_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first=0\nping=99\n"
+exit = 0

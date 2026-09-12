@@ -1,0 +1,13 @@
+[[case]]
+id = "opaque_handle_field_access"
+intent = "Reject fixture: opaque_handle_field_access — an `#[opaque]` runtime handle is opaque to the surface: it has no fields, so any field access is rejected at the checker (field-access opacity is free — an empty body has no fields)."
+source = "../vertical-slice/reject/opaque_handle_field_access.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedField"
+line = 12
+column = 5
+message = "no field `x` on type `Handle`"

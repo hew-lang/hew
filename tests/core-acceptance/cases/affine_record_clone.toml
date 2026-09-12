@@ -1,0 +1,13 @@
+[[case]]
+id = "affine_record_clone"
+intent = "Structural record clone is a non-consuming read that creates a second owner."
+source = "../vertical-slice/reject/affine_record_clone.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 10
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

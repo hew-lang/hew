@@ -1,0 +1,13 @@
+[[case]]
+id = "match_param_field_payload_carrier"
+intent = "Destructuring an inline enum FIELD of a by-value parameter moves that payload into the arm binder."
+source = "../vertical-slice/accept/match_param_field_payload_carrier.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n3\n3\n15\n0\n0\n9\n"
+exit = 0

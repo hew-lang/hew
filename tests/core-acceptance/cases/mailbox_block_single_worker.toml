@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_block_single_worker"
+intent = "The sender is itself an actor handler."
+source = "../vertical-slice/accept/mailbox_block_single_worker.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "BLOCK_WORK_DELIVERED\n"
+exit = 42

@@ -1,0 +1,13 @@
+[[case]]
+id = "is_on_hashmap"
+intent = "`is` on `HashMap` is rejected for the same reason as `Vec` (D340)."
+source = "../vertical-slice/reject/is_on_hashmap.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 5
+column = 22
+message = "`is` compares identity, and `HashMap<string, i64>` is a value type (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` applies to handles: actor references"

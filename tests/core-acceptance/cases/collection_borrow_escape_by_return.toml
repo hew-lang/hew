@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_borrow_escape_by_return"
+intent = "A borrowed collection element (v[i] over a close-obligated element type) must not escape the frame: the collection is its single release authority, so a returned borrow would be read by the caller AFTER the collection closed it (use-after-close) and closed a second time by any downstream owner."
+source = "../vertical-slice/reject/collection_borrow_escape_by_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 11
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

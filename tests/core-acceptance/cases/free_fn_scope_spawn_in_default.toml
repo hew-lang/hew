@@ -1,0 +1,13 @@
+[[case]]
+id = "free_fn_scope_spawn_in_default"
+intent = "Reject fixture: free_fn_scope_spawn_in_default - top-level/default-callconv functions cannot fork a free function because there is no caller execution context to pass to the task wrapper."
+source = "../vertical-slice/reject/free_fn_scope_spawn_in_default.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "semantic lowering of `__hew_fn_main` is not implemented: a scope result cannot retain a scoped task handle"

@@ -1,0 +1,14 @@
+[[case]]
+id = "select_owned_string_crash_cleanup"
+intent = "The select winner edge deposits a fresh owned string directly into its binding."
+source = "../vertical-slice/accept/select_owned_string_crash_cleanup.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "selected=selected-value\nselect-handled-crash\n"
+stderr = "hew: failure: UserPanic (212): handled crash after select string use\nhew: actor crash in Selector.run (actor 2): UserPanic\n"
+exit = 1

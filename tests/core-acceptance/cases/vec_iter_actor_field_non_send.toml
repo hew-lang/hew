@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_iter_actor_field_non_send"
+intent = "Reject fixture: vec_iter_actor_field_non_send — a `VecIter<T>` cursor cannot be stored in actor state."
+source = "../vertical-slice/reject/vec_iter_actor_field_non_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 31
+column = 5
+message = "collection method `push` requires a mutable binding receiver; `v` is not declared with `var`"

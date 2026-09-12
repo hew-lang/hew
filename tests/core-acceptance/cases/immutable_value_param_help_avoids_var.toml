@@ -1,0 +1,13 @@
+[[case]]
+id = "immutable_value_param_help_avoids_var"
+intent = "#2810: the help text that created the trap."
+source = "../vertical-slice/reject/immutable_value_param_help_avoids_var.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 11
+column = 5
+message = "cannot assign to immutable variable `acc`"

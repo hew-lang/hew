@@ -1,0 +1,13 @@
+[[case]]
+id = "structural_equality_generic_instantiation"
+intent = "The fixture is refused, and the refusal names InvalidOperation."
+source = "../vertical-slice/reject/structural_equality_generic_instantiation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 10
+column = 11
+message = "`structural_equality_generic_instantiation.same` requires Eq for `Option<T>`; this instantiation `Option<HashMap<string, i64>>` has no selected Eq implementation"

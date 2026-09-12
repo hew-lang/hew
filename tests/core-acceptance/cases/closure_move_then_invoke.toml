@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_move_then_invoke"
+intent = "A rebind transfers closure-pair ownership to the new binding; invoking the source afterwards is a use-after-move."
+source = "../vertical-slice/reject/closure_move_then_invoke.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 11
+column = 13
+message = "use of moved value `f`"

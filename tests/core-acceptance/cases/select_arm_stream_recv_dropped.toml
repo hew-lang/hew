@@ -1,0 +1,13 @@
+[[case]]
+id = "select_arm_stream_recv_dropped"
+intent = "Reject fixture (SELECT ship-3): the stream-next arm `<id> from <stream>.recv()` over a `Stream<T>` is NOT one of the three sealed `select` forms in edition 2026 (HEW-SPEC-2026 §4.11.1: actor ask, channel `rx.recv()`, `after`)."
+source = "../vertical-slice/reject/select_arm_stream_recv_dropped.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 20
+column = 23
+message = "a select arm source is a task, an actor call, or a channel receive: `name from source => body`"

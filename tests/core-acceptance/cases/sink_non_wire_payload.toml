@@ -1,0 +1,13 @@
+[[case]]
+id = "sink_non_wire_payload"
+intent = "Reject fixture: Sink<T> / Stream<T> payload must implement Wire (Encode + Decode)."
+source = "../vertical-slice/reject/sink_non_wire_payload.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "SinkPayloadNotWire"
+line = 14
+column = 5
+message = "`Sink<Foo>` payload must implement Wire (Encode + Decode); the type does not satisfy the required marker traits"

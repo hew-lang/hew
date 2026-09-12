@@ -1,0 +1,13 @@
+[[case]]
+id = "ask_reply_non_send"
+intent = "Reject fixture: E_DUPLEX_NON_SEND on a declared-actor ask reply type."
+source = "../vertical-slice/reject/ask_reply_non_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 26
+column = 15
+message = "ask-shaped actor reply type `Rc<i64>` is not Send (E_DUPLEX_NON_SEND)"

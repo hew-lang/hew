@@ -1,0 +1,13 @@
+[[case]]
+id = "tls_active_attach"
+intent = "Acceptance fixture for TLS active-mode attach (Erlang-style active mode)."
+source = "../vertical-slice/accept/tls_active_attach.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "tls_active_attach: hew check OK\n"
+exit = 0

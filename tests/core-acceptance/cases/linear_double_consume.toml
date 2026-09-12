@@ -1,0 +1,13 @@
+[[case]]
+id = "linear_double_consume"
+intent = "Consuming a `#[linear]` binding twice is rejected (`UseAfterConsume`): the inherent consuming method moves the receiver, so a second consume reads a moved-out value."
+source = "../vertical-slice/reject/linear_double_consume.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterConsume"
+line = 13
+column = 5
+message = "UseAfterConsume: use of consumed linear value `t`"

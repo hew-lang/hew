@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_remove_stale_key"
+intent = "Arena<T>: remove returns the exact value once, then the key fails closed — double-remove, get, and contains all reject the stale key."
+source = "../vertical-slice/accept/arena_remove_stale_key.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\ntrue\ntrue\nfalse\n"
+exit = 0

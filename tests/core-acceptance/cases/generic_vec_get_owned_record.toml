@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_vec_get_owned_record"
+intent = "#1929 Stage 2 dogfood proof, updated for the Index-trait `Vec<T>.get(i)` model: `get` now returns `Option<T>` whose `Some` payload is an INDEPENDENT drop-safe clone of the element (the `hew_vec_get_clone` choke point), not a borrow into the live slot."
+source = "../vertical-slice/accept/generic_vec_get_owned_record.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "owned-ok\n42\nok\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_borrow_rebind"
+intent = "Reassigning a binding that holds a borrowed collection element crosses a generation boundary the flow-insensitive borrow fact cannot represent: the overwrite would release the collection-owned generation and the fresh generation would lose its release."
+source = "../vertical-slice/reject/collection_borrow_rebind.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 11
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

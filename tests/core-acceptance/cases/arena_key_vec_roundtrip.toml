@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_key_vec_roundtrip"
+intent = "A module-qualified generic record must keep the same nominal layout when it crosses a Vec element boundary."
+source = "../vertical-slice/accept/arena_key_vec_roundtrip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "through-vec\n"
+exit = 0

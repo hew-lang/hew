@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_borrow_explicit_close"
+intent = "Explicitly closing a borrowed collection element mints a second close authority over one context: the collection still closes it at scope exit."
+source = "../vertical-slice/reject/collection_borrow_explicit_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 9
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

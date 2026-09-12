@@ -1,0 +1,13 @@
+[[case]]
+id = "channel_vec_indirect_enum"
+intent = "Guard: `Channel<Vec<indirect-enum>>` stays rejected UPSTREAM by the channel element-layout witness, at both the send and the recv site."
+source = "../vertical-slice/reject/channel_vec_indirect_enum.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 20
+column = 5
+message = "collection method `push` requires a mutable binding receiver; `v` is not declared with `var`"

@@ -1,0 +1,14 @@
+[[case]]
+id = "vec_iter_free_fold_unwind"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_iter_free_fold_unwind.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "41\n"
+stderr = "hew: failure: UserPanic (212): free fold boom\n"
+exit = 1

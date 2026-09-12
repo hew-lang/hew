@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_close_early_return"
+intent = "W3.030 V2 — User resource closes on early-return exit path."
+source = "../vertical-slice/accept/user_resource_close_early_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "closing\n1\n42\n"
+exit = 0

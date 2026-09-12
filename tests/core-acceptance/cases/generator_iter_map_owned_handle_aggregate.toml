@@ -1,0 +1,13 @@
+[[case]]
+id = "generator_iter_map_owned_handle_aggregate"
+intent = "A `Generator` handle passed into a `std.iter` adapter: the adapter stores the owned handle in its own record (`Map { iter: I, f: fn(A) -> B }`) and the collected vector is released once."
+source = "../vertical-slice/accept/generator_iter_map_owned_handle_aggregate.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n"
+exit = 0

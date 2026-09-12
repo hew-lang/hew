@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_pop_round_trip"
+intent = "`bytes.pop()` removes and returns the last byte and shrinks the buffer."
+source = "../vertical-slice/accept/bytes_pop_round_trip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

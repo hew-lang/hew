@@ -1,0 +1,13 @@
+[[case]]
+id = "trait_sig_resource_param_missing_consume"
+intent = "Reject fixture: trait_sig_resource_param_missing_consume — a `#[resource]` handle passed by value as a NON-RECEIVER argument of a bodyless trait method signature must be declared `consume`."
+source = "../vertical-slice/reject/trait_sig_resource_param_missing_consume.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 26
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

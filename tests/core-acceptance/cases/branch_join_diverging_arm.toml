@@ -1,0 +1,13 @@
+[[case]]
+id = "branch_join_diverging_arm"
+intent = "A branch arm that never reaches the join — it returns — must not leave its consume behind for the fall-through path."
+source = "../vertical-slice/accept/branch_join_diverging_arm.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10 closed\n10\n10 closed\n10\n11 closed\n1\n11 closed\n0\n12 closed\n7\n12 closed\n-1\n13 closed\n13\n13 closed\n100\n13 closed\n13\n"
+exit = 0

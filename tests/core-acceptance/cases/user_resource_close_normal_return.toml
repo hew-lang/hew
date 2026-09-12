@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_close_normal_return"
+intent = "W3.030 V1 — User resource closes implicitly on normal return."
+source = "../vertical-slice/accept/user_resource_close_normal_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "work\n7\n"
+exit = 0

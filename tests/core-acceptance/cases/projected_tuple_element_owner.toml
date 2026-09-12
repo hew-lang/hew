@@ -1,0 +1,13 @@
+[[case]]
+id = "projected_tuple_element_owner"
+intent = "Moving an owned leaf out of a TUPLE element of a live record transfers that leaf's cleanup to the binder, exactly as a record-field projection does."
+source = "../vertical-slice/accept/projected_tuple_element_owner.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "32\n1\n7\n32\n8\n32\n"
+exit = 0

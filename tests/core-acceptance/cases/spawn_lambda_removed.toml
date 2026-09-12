@@ -1,0 +1,13 @@
+[[case]]
+id = "spawn_lambda_removed"
+intent = "Reject fixture: E_SPAWN_LAMBDA_SYNTAX_REMOVED The `spawn (params) => body` lambda-actor syntax was removed in v0.5."
+source = "../vertical-slice/reject/spawn_lambda_removed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 6
+column = 13
+message = "E_SPAWN_LAMBDA_SYNTAX_REMOVED: `spawn (...) => ...` has been removed; use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"

@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_bounded_drop_new"
+intent = "A declared `mailbox N overflow drop_new;` clause must genuinely bound the actor's mailbox."
+source = "../vertical-slice/accept/mailbox_bounded_drop_new.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 1

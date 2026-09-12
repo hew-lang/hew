@@ -49,10 +49,11 @@ impl Stepper for Countdown {
     }
 }
 
-fn main() -> Option<i64> {
+fn step() -> Option<i64> {
     var cd = Countdown { n: 1 };
     cd.next()
 }
+fn main() {}
 ";
 
 #[test]
@@ -87,7 +88,7 @@ fn concrete_var_self_next_lowers_to_writeback_call() {
         .expect("var self body must carry its receiver binding");
     assert_receiver_return(method, method.body.tail.as_ref().unwrap());
     assert!(output.module.items.iter().any(|item| matches!(item,
-        HirItem::Function(function) if function.name == "main" && function.var_self_receiver.is_none())));
+        HirItem::Function(function) if function.name == "step" && function.var_self_receiver.is_none())));
 }
 
 #[test]
@@ -180,7 +181,7 @@ fn var_self_verifier_rejects_stale_receiver_bindings_and_types() {
 #[test]
 fn projected_var_self_receiver_preserves_the_writeback_place() {
     let source = COUNTDOWN_SOURCE
-        .replace("fn main()", "type Holder { counter: Countdown }\nfn main()")
+        .replace("fn step()", "type Holder { counter: Countdown }\nfn step()")
         .replace(
             "var cd = Countdown { n: 1 };",
             "var owner = Holder { counter: Countdown { n: 1 } };",
@@ -193,7 +194,7 @@ fn projected_var_self_receiver_preserves_the_writeback_place() {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(function) if function.name == "main" => Some(function),
+            HirItem::Function(function) if function.name == "step" => Some(function),
             _ => None,
         })
         .unwrap();
@@ -225,7 +226,7 @@ fn var_self_verifier_rejects_an_endpoint_without_a_declaration_target() {
         .items
         .iter_mut()
         .find_map(|item| match item {
-            HirItem::Function(function) if function.name == "main" => Some(function),
+            HirItem::Function(function) if function.name == "step" => Some(function),
             _ => None,
         })
         .unwrap();

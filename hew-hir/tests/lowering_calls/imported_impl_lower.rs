@@ -75,11 +75,11 @@ pub enum Choice { Named { value: i64 } }
     for root_src in [
         r"
 import m.{ Choice };
-fn main() -> Choice { Choice.Named { value: 7 } }
+fn value() -> Choice { Choice.Named { value: 7 } } fn main() {}
 ",
         r"
 import m;
-fn main() -> m.Choice { m.Choice.Named { value: 7 } }
+fn value() -> m.Choice { m.Choice.Named { value: 7 } } fn main() {}
 ",
     ] {
         let program =

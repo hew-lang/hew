@@ -23,7 +23,7 @@
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_parser::ast::{Expr, Item, Stmt};
 use hew_types::ty::TypeVar;
-use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker, DefId, SpanKey, Ty};
+use hew_types::{module_registry::ModuleRegistry, Checker, SpanKey, Ty};
 
 /// `foo()` in a function body, with the call-site `expr_types` entry
 /// poisoned as an unresolved inference variable, must produce
@@ -33,7 +33,7 @@ use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker, DefId, Spa
 fn poisoned_expr_types_emits_checker_boundary_violation() {
     // Source: a single call expression statement so there's exactly one
     // Expr::Call span to locate.
-    let source = "fn main() -> i64 { foo(); return 0; }";
+    let source = "fn main() -> i64 { foo(); return 0; } fn foo() -> i64 { 42 }";
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -70,14 +70,8 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     // W4.015: behavior pin — hand-poison expr_types with an unresolved
     // TypeVar to cover the permanent CheckerBoundaryViolation path.
     let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    tc.insert_expr_type(span_key.clone(), Ty::Var(TypeVar(0)));
-    // Ordinary calls now require a checker-selected structured target before
-    // HIR may lower them.  Keep that independent authority intact so this
-    // fixture reaches the poisoned-result-type boundary it is designed to
-    // exercise.  The DefId is the diagnostic identity; it is not reconstructed
-    // from the source spelling by the lowerer.
-    tc.direct_call_targets
-        .insert(span_key, CallTarget::User(DefId::for_test("foo")));
+    assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+    tc.insert_expr_type(span_key, Ty::Var(TypeVar(0)));
 
     let lower_output = lower_program(
         &parsed.program,

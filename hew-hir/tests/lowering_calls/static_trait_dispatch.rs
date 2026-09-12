@@ -382,7 +382,7 @@ impl Show for Point {
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
-fn main() -> string {
+fn example() -> string {
     let p = Point { x: 1, y: 2 };
     display(p)
 }
@@ -443,7 +443,7 @@ impl Size for Box {
 fn describe<T: Show + Size>(item: T) -> string {
     item.show()
 }
-fn main() -> string {
+fn example() -> string {
     describe(Box { w: 3, h: 4 })
 }
 "#;
@@ -481,7 +481,7 @@ impl Extended for Widget {
 fn get_name<T: Extended>(item: T) -> string {
     item.name()
 }
-fn main() -> string {
+fn example() -> string {
     get_name(Widget { label: "ok" })
 }
 "#;
@@ -744,7 +744,7 @@ impl Formattable for Doc {
 fn render<T: Formattable>(item: T) -> string {
     item.print_str()
 }
-fn main() -> string {
+fn example() -> string {
     render(Doc { content: "hello" })
 }
 "#;
@@ -781,7 +781,7 @@ impl<U> Show for Wrapper<U> {
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
-fn main() -> string {
+fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }
 "#;
@@ -827,7 +827,7 @@ impl<U> Show for Wrapper<U> {
 fn display<T: Show>(item: T) -> string {
     item.show()
 }
-fn main() -> string {
+fn example() -> string {
     display(Wrapper<i64> { inner: 7 })
 }
 "#;

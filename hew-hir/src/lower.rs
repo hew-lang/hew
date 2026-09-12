@@ -14045,6 +14045,10 @@ impl LowerCtx {
         Some(self.lower_type_decl_with_identity(decl, span, declaration))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declaration lowering keeps checker classification, scoped fields and variants together"
+    )]
     fn lower_type_decl_with_identity(
         &mut self,
         decl: &TypeDecl,
@@ -33878,6 +33882,10 @@ impl Widget {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one identity precedence matrix covers exact source, builtin and importer bindings"
+    )]
     fn imported_opaque_identity_precedes_short_builtin_fallback() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),

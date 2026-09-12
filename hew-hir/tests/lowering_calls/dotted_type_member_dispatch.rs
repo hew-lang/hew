@@ -17,7 +17,7 @@ fn main() -> i64 {
     let running: Lifecycle = Lifecycle.Running { value: 42 };
     let some: Option<i64> = Option.Some(5);
     let ok: Result<i64, string> = Result.Ok(6);
-    let set: HashSet<i64> = HashSet<i64>.new();
+    var set: HashSet<i64> = HashSet<i64>.new();
     let explicit: Option<i64> = Option<i64>.Some(7);
     set.insert(8);
     some.expect("some is present") + ok.expect("ok succeeds") + explicit.expect("explicit is present") + set.len()

@@ -275,7 +275,7 @@ fn main() -> i64 {
 #[test]
 fn verifier_catches_arity_mismatch() {
     // Source: tuple literal with 2 elements.
-    let source = "fn main() -> (i64, i64) { (1, 2) }";
+    let source = "fn pair() -> (i64, i64) { (1, 2) } fn main() {}";
     let parsed = parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -303,6 +303,7 @@ fn verifier_catches_arity_mismatch() {
         module_idx: 0,
     };
     let mut tc = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(tc.errors.is_empty(), "{:?}", tc.errors);
     tc.insert_expr_type(
         span_key,
         Ty::Tuple(vec![Ty::I64, Ty::I64, Ty::I64]), // 3-tuple, mismatched

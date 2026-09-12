@@ -582,7 +582,7 @@ fn method_call_receiver_kinds_record_handle_dispatch() {
         r"
 import std.net;
 
-fn close_conn(conn: net.Connection) {
+fn close_conn(consume conn: net.Connection) {
     conn.close()
 }
 ",
@@ -2699,11 +2699,11 @@ fn net_resource_close_uses_source_impl_not_raw_fallback() {
         r"
         import std.net;
 
-        fn close_listener(listener: net.Listener) {
+        fn close_listener(consume listener: net.Listener) {
             listener.close()
         }
 
-        fn close_connection(connection: net.Connection) {
+        fn close_connection(consume connection: net.Connection) {
             connection.close()
         }
         ",
@@ -2730,7 +2730,7 @@ fn http_request_close_dispatches_through_resource_impl() {
         r"
         import std.net.http;
 
-        fn release(req: http.Request) {
+        fn release(consume req: http.Request) {
             req.close();
         }
         ",
@@ -2766,7 +2766,7 @@ fn registry_loaded_resource_close_moves_receiver() {
         r"
         import std.net.http;
 
-        fn release(req: http.Request) {
+        fn release(consume req: http.Request) {
             req.close();
             req.path();
         }

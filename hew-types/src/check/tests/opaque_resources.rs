@@ -104,7 +104,7 @@ fn resource_close_discharges_and_moves_the_receiver() {
             fn status(self) -> i64 { self.fd }
         }
 
-        fn probe(socket: Socket) -> i64 {
+        fn probe(consume socket: Socket) -> i64 {
             socket.close();
             socket.status()
         }
@@ -134,7 +134,7 @@ fn non_close_consuming_method_moves_the_receiver() {
             fn status(self) -> i64 { self.fd }
         }
 
-        fn probe(socket: Socket) -> i64 {
+        fn probe(consume socket: Socket) -> i64 {
             let _ = socket.detach();
             socket.status()
         }
@@ -166,7 +166,7 @@ fn resource_close_discharge_rejects_a_second_close() {
             fn close(consume self) {}
         }
 
-        fn bad(socket: Socket) {
+        fn bad(consume socket: Socket) {
             socket.close();
             socket.close();
         }

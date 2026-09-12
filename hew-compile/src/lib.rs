@@ -5764,7 +5764,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "main.hew",
             "import helper;\n\
              import std.net.{Connection};\n\n\
-             fn close_connection(conn: Connection) { conn.close(); }\n\
+             fn close_connection(consume conn: Connection) { conn.close(); }\n\
              fn main() { let _ = helper.marker(); }\n",
         );
 

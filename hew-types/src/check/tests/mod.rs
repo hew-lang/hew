@@ -548,7 +548,7 @@ fn freshen_inner_recurses_into_trait_object_bound_args() {
 fn cancellation_token_local_and_is_cancelled_typecheck() {
     let output = check_source(
         r"
-        fn observe(token: CancellationToken) -> bool {
+        fn observe(consume token: CancellationToken) -> bool {
             let t: CancellationToken = token;
             return t.is_cancelled();
         }
@@ -573,7 +573,7 @@ fn cancellation_token_local_and_is_cancelled_typecheck() {
 fn cancellation_token_has_no_cancel_method() {
     let output = check_source(
         r"
-        fn observe(token: CancellationToken) {
+        fn observe(consume token: CancellationToken) {
             token.cancel();
         }
         ",

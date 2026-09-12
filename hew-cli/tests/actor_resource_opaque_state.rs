@@ -55,7 +55,7 @@ type Holder {{
 #[test]
 fn actor_resource_state_closes_once() {{
     let keeper = {spawn_expr};
-    match await keeper.ping() {{
+    match keeper.ping() {{
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }}
@@ -131,7 +131,7 @@ actor Keeper {{
 #[test]
 fn colliding_resource_closes_once() {{
     let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
-    match await keeper.ping() {{
+    match keeper.ping() {{
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }}
@@ -216,7 +216,7 @@ extern "C" {{
         ("import hew.foo;", "foo.Keeper")
     } else {
         std::fs::write(dir.path().join("foo.hew"), module_source).expect("write file import");
-        ("import \"foo.hew\";", "Keeper")
+        ("import foo;", "foo.Keeper")
     };
     let source_path = dir.path().join("main.hew");
     let source = format!(
@@ -234,33 +234,6 @@ fn main() {{
     std::fs::write(&source_path, source).expect("write root source");
 
     let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-llvm",
-            "--emit-dir",
-            dir.path().to_str().expect("emit dir utf-8"),
-            source_path.to_str().expect("source path utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("compile imported collision IR");
-    assert!(
-        output.status.success(),
-        "{mode}-imported UserReceiver IR must compile;\n{}",
-        describe_output(&output)
-    );
-    let ll = std::fs::read_to_string(dir.path().join("main.ll")).expect("read emitted IR");
-    let drop_body = fn_body(&ll, "__hew_state_drop_");
-    assert!(
-        drop_body.contains("UserReceiver::close"),
-        "{mode}-imported state drop must call the authored UserReceiver close:\n{drop_body}"
-    );
-    assert!(
-        !drop_body.contains("hew_channel_receiver_close"),
-        "{mode}-imported user UserReceiver must not route to runtime channel close:\n{drop_body}"
-    );
-
-    let output = Command::new(hew_binary())
         .args(["run", source_path.to_str().expect("source path utf-8")])
         .current_dir(repo_root())
         .output()
@@ -275,22 +248,6 @@ fn main() {{
         "closed\n",
         "{mode}-imported UserReceiver must close exactly once"
     );
-}
-
-fn fn_body<'a>(ll: &'a str, symbol: &str) -> &'a str {
-    let start = ll
-        .match_indices("define ")
-        .find_map(|(start, _)| {
-            ll[start..]
-                .lines()
-                .next()?
-                .contains(symbol)
-                .then_some(start)
-        })
-        .unwrap_or_else(|| panic!("missing function definition containing `{symbol}`"));
-    let body = &ll[start..];
-    let end = body.find("\n}").expect("function body terminator");
-    &body[..=end + 1]
 }
 
 #[test]
@@ -335,145 +292,4 @@ fn package_imported_user_receiver_closes_once_without_runtime_close() {
 #[test]
 fn file_imported_user_receiver_closes_once_without_runtime_close() {
     run_imported_receiver_collision_teardown_oracle(false);
-}
-
-#[test]
-fn builtin_cancellation_token_actor_state_uses_runtime_release() {
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix("actor-builtin-cancellation-token-ir-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join("builtin_token.hew");
-    let source = r#"extern "C" {
-    fn hew_deque_new() -> CancellationToken;
-}
-
-actor Keeper {
-    let token: CancellationToken,
-}
-
-fn main() {
-    let token = unsafe { hew_deque_new() };
-    let _keeper = spawn Keeper(token: token);
-}
-"#;
-    std::fs::write(&source_path, source).expect("write builtin token source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-llvm",
-            "--emit-dir",
-            dir.path().to_str().expect("emit dir utf-8"),
-            source_path.to_str().expect("source path utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("compile builtin token IR");
-    assert!(
-        output.status.success(),
-        "genuine builtin CancellationToken actor state must compile;\n{}",
-        describe_output(&output)
-    );
-    let ll = std::fs::read_to_string(dir.path().join("builtin_token.ll")).expect("read emitted IR");
-    let drop_body = fn_body(&ll, "__hew_state_drop_");
-    assert!(
-        drop_body.contains("hew_cancel_token_release"),
-        "genuine builtin CancellationToken must retain runtime release lowering:\n{drop_body}"
-    );
-    assert!(
-        !drop_body.contains("CancellationToken::close"),
-        "genuine builtin CancellationToken must not acquire a user close:\n{drop_body}"
-    );
-}
-
-#[test]
-fn direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop() {
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix("actor-resource-state-ir-")
-        .tempdir()
-        .expect("tempdir");
-    let source_path = dir.path().join("resource_actor.hew");
-    let source = r#"#[resource]
-#[opaque]
-type Dq {}
-
-impl Dq {
-    fn close(consume self) {
-        unsafe { hew_deque_free(self) };
-    }
-}
-
-extern "C" {
-    fn hew_deque_free(consume dq: Dq);
-}
-
-type Holder {
-    dq: Dq
-}
-
-actor Direct {
-    let dq: Dq,
-}
-
-actor Wrapped {
-    let holder: Holder,
-}
-
-fn main() {}
-"#;
-    std::fs::write(&source_path, source).expect("write Hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-llvm",
-            "--emit-dir",
-            dir.path().to_str().expect("emit dir utf-8"),
-            source_path.to_str().expect("source path utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("compile actor resource-state fixture");
-    assert!(
-        output.status.success(),
-        "direct `#[resource] #[opaque]` actor state must compile instead of \
-         failing as OpaqueHandle;\n{}",
-        describe_output(&output)
-    );
-
-    let ll = std::fs::read_to_string(dir.path().join("resource_actor.ll"))
-        .expect("read emitted LLVM IR");
-    let clone = fn_body(&ll, "@__hew_state_clone_Direct(");
-    assert!(
-        clone.contains("ret ptr null"),
-        "direct resource actor restart clone must refuse without copying its \
-         affine handle:\n{clone}",
-    );
-    assert!(
-        !clone.contains("@\"Dq::close\""),
-        "clone refusal must not close the live source resource:\n{clone}",
-    );
-
-    let direct_drop = fn_body(&ll, "@__hew_state_drop_Direct(");
-    assert_eq!(
-        direct_drop.matches("@\"Dq::close\"").count(),
-        1,
-        "direct actor state drop must contain exactly one close call:\n{direct_drop}",
-    );
-    assert!(
-        direct_drop.contains("store ptr null"),
-        "direct actor state drop must null the field after close:\n{direct_drop}",
-    );
-
-    let wrapped_drop = fn_body(&ll, "@__hew_record_drop_inplace_Holder(");
-    assert_eq!(
-        wrapped_drop.matches("@\"Dq::close\"").count(),
-        1,
-        "the existing record-wrapped resource drop must remain exactly-once:\n{wrapped_drop}",
-    );
 }

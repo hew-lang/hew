@@ -39,7 +39,7 @@ fn main_fn(out: &hew_hir::LowerOutput) -> &hew_hir::HirFn {
 fn lowers_cancellation_token_local_and_is_cancelled_intrinsic() {
     let out = lower(
         r"
-        fn observe(token: CancellationToken) -> bool {
+        fn observe(consume token: CancellationToken) -> bool {
             let t: CancellationToken = token;
             return t.is_cancelled();
         }

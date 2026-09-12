@@ -35409,16 +35409,16 @@ impl Widget {
                 fn finish(consume self) -> i64 { self.value }
             }
 
-            fn touch_twice<T: Fluent>(value: T) {
+            fn touch_twice<T: Fluent>(consume value: T) {
                 value.touch();
                 value.touch();
             }
 
-            fn transfer<T: Fluent>(value: T) -> T {
+            fn transfer<T: Fluent>(consume value: T) -> T {
                 value.touch()
             }
 
-            fn finish_dyn(value: dyn Finish) -> i64 {
+            fn finish_dyn(consume value: dyn Finish) -> i64 {
                 value.finish()
             }
             ",

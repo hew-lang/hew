@@ -1,20 +1,17 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
 linux,macos,windows	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
-linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 feat/generators-adaptors: lowers a direct call to std.pipeline.run
 macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states
-linux,macos	failure	hew-cli::actor_resource_opaque_state	builtin_cancellation_token_actor_state_uses_runtime_release	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	file_imported_user_receiver_closes_once_without_runtime_close	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	package_imported_user_receiver_closes_once_without_runtime_close	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	user_monitor_ref_resource_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	user_receiver_resource_shadow_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
-linux,macos	failure	hew-cli::actor_resource_opaque_state	wrapped_resource_actor_state_still_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	direct_resource_actor_state_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	file_imported_user_receiver_closes_once_without_runtime_close	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	package_imported_user_receiver_closes_once_without_runtime_close	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	user_monitor_ref_resource_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	user_receiver_resource_shadow_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
+macos	failure	hew-cli::actor_resource_opaque_state	wrapped_resource_actor_state_still_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_state_resource_field_leak_oracle	actor_state_resource_reassign_refused	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::actor_state_resource_field_leak_oracle	positive_control_ir_single_close_in_state_drop	#3370 gives every type the checker admits a SIR value contract
 linux,macos	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
 linux,macos	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
-linux,macos	failure	hew-cli::affine_resource_carrier_boundaries	resource_parameter_reuse_after_collection_transfer_is_rejected	#3377 fix/collections-final-path: reports a use-after-consume as a source diagnostic
+macos	failure	hew-cli::affine_resource_carrier_boundaries	resource_parameter_reuse_after_collection_transfer_is_rejected	#3377 fix/collections-final-path: reports a use-after-consume as a source diagnostic
 macos	failure	hew-cli::arena_stdlib_leak_oracle	stdlib_arena_holder_insert_remove_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
 macos,windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 macos,windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
@@ -58,9 +55,6 @@ macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_stream_freed_exa
 macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_stream_leak_slope_below_tolerance	#3104 removes stale suspension cleanup after owned yields
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
 linux,macos,windows	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section
-linux,macos,windows	failure	hew-cli::diagnostic_source_e2e	imported_hir_diagnostic_rendered_with_imported_source_context	#3384 renders every compiler limitation with a source span
-linux,macos,windows	failure	hew-cli::diagnostic_source_e2e	mixed_dep_warning_remains_attributed_to_dep_before_deep_gate_failure	#3384 renders every compiler limitation with a source span
-linux,macos,windows	failure	hew-cli::diagnostic_source_e2e	root_hir_diagnostic_rendered_with_source_context	#3384 renders every compiler limitation with a source span
 linux,macos,windows	failure	hew-cli::distributed_two_process_e2e	authenticated_v2_handshake_rejects_wrong_credential_pin	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows	failure	hew-cli::distributed_two_process_e2e	captured_remote_ref_survives_name_repoint	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows	failure	hew-cli::distributed_two_process_e2e	carried_remote_pid_rejected_after_same_key_restart	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
@@ -103,7 +97,6 @@ macos	failure	hew-cli::enum_callee_consume_drop_leak_oracle	move_out_via_let_sha
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	projected_resource_close_then_crash_releases_source_snapshot_once	#3070 closes composite resource fields exactly once
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3070 closes composite resource fields exactly once
 macos	failure	hew-cli::escaped_sibling_field_drop_leak_oracle	escaped_field_not_dropped_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
-linux	failure	hew-cli::eval_e2e	eval_unsupervised_actor_crash_reports_dotted_handler_label	#3396 links the actor-name registry into every Hew binary regardless of the profiler feature
 linux,macos,windows	failure	hew-cli::eval_e2e	eval_wasm_file_runtime_failure_preserves_pre_failure_stdout	#3368 implements sandbox emission on the physical path
 linux,macos,windows	failure	hew-cli::eval_e2e	eval_wasm_file_succeeds	#3368 implements sandbox emission on the physical path
 linux,macos,windows	failure	hew-cli::eval_e2e	eval_wasm_hashmap_record_key_uses_thunk_values_correctly	#3368 implements sandbox emission on the physical path

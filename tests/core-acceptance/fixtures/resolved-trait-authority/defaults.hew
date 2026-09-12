@@ -1,0 +1,32 @@
+import trait_authority.origin.{Describe};
+
+import trait_authority.conflict.{Badge, decorate};
+
+type Item {
+    text: string,
+}
+
+impl Describe for Item {
+    fn base(self) -> string {
+        self.text
+    }
+}
+
+fn make_tag(value: i64) -> string {
+    f"ROOT:{value}"
+}
+
+fn describe<T: Describe>(value: T) -> string {
+    value.describe()
+}
+
+fn main() {
+    let item = Item { text: "sentinel" };
+    let badge = Badge { code: 4 };
+    println(badge.code);
+    println(make_tag(5));
+    println(decorate("root"));
+    println(item.describe());
+    println(describe(item));
+    println(item.base());
+}

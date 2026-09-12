@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-trait-authority-inheritance"
+intent = "An aliased supertrait keeps its declaring method identity through a generic bound despite an unrelated same-name trait in the caller."
+source = "fixtures/resolved-trait-authority/inheritance.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "inherited\n7\ntrue\n"
+exit = 0

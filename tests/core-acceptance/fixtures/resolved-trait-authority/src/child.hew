@@ -1,0 +1,5 @@
+import trait_authority.parent.{Base as Parent};
+
+pub trait Child: Parent {
+    fn tag(self) -> i64;
+}

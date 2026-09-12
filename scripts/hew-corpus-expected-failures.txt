@@ -66,8 +66,6 @@ examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 
 # final-path-limitation: ordinary machine evaluation does not admit const
 # parameters or composite states yet
-examples/machine/connection_lifecycle.hew
-examples/machine/run_connection_lifecycle.hew
 
 # final-path-limitation: the distributed Node surface has no ownership-SIR
 # operation contract on the final path yet
@@ -107,7 +105,6 @@ hew-lsp/tests/fixtures/v05_record_tuple_literal.hew E_HIR
 # deferred-nyi / stale-syntax: LSP fixtures covering surfaces the checker no
 # longer admits or has not built; the LSP tests parse them, they are not compiled
 hew-lsp/tests/fixtures/v05_async_await.hew E_NO_ASYNC_FN
-hew-lsp/tests/fixtures/v05_composite_machine.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
 hew-lsp/tests/fixtures/v05_machine_methods.hew
@@ -204,10 +201,12 @@ tests/core-acceptance/cases/actor-handle-legacy-types-refused.hew E_ACTOR_HANDLE
 tests/core-acceptance/cases/check-actor-field-deferred-spawn-arg.hew E_ACTOR_FIELD_DEFERRED
 tests/core-acceptance/cases/check-actor-field-uninitialized-read.hew E_ACTOR_FIELD_UNINITIALIZED
 tests/core-acceptance/cases/check-rc-not-send.hew
+tests/core-acceptance/cases/check-partial-move-field-read-refused.hew
 tests/core-acceptance/cases/check-select-no-arms.hew
 tests/core-acceptance/cases/listener-accept-loop-return.hew E_OWN_CONSUME_BORROWED
 tests/core-acceptance/cases/loan-ends-at-last-use.hew E_ELEMENT_NO_COPY
 tests/core-acceptance/cases/loaned-payload-projection.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/machine-legacy-forms-refused.hew
 tests/core-acceptance/cases/resource-missing-close.hew E_HIR
 tests/core-acceptance/cases/spread-parse-refusals.hew
@@ -231,6 +230,12 @@ tests/core-acceptance/fixtures/module-identity-dual-spelling/src/mid.hew
 
 # requires-file-import-program: a directory module's leaf source
 tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
+
+# ── tests/ownership-balance/ ────────────────────────────────────────────────
+
+# deliberate refusal: the ownership-balance corpus's one hard refusal reads a
+# `#[resource]` field after a consuming call moved it (`UseAfterMove`).
+tests/ownership-balance/retained_hard_refusal.hew
 
 # ── tests/pkg-import/ ───────────────────────────────────────────────────────────
 

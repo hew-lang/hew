@@ -1,0 +1,10 @@
+[[case]]
+id = "map-indexed-assignment"
+intent = "Plain and compound indexed mutation evaluate their key and RHS once, snapshot overlapping reads and preserve independent nested map/vector aliases."
+source = "cases/map-indexed-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "key\nreplacement\nkey\nsuffix\nposition\nincrement\nposition\nincrement\nposition\nassigned\n"
+exit = 0

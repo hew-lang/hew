@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-exact-conversions"
+intent = "Execute checked numeric boundaries and preserve source values across conversion branches."
+source = "cases/numeric-exact-conversions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "numeric:exact\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-width-normalization"
+intent = "Normalize mixed-width range bounds and branch values to the checker-selected common numeric type."
+source = "../vertical-slice/accept/for_range_mixed_width_normalization.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "-2\n-1\n0\n1\n-1\n0\n1\n2\n1\n0\n-1\n-2\n2\n1\n0\n-1\n65534\n65535\n65536\n-2\n65534\n-2\n-2\n"
+exit = 0

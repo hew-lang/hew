@@ -459,6 +459,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             value,
             from_ty,
             to_ty,
+            ..
         } => {
             writeln!(
                 out,
@@ -474,6 +475,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             from_ty,
             to_ty,
             kind,
+            ..
         } => {
             writeln!(
                 out,

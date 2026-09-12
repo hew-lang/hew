@@ -350,6 +350,7 @@ impl Verifier {
                 value,
                 from_ty,
                 to_ty,
+                ..
             }
             | HirExprKind::TryWidthCast {
                 value,

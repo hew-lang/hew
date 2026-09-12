@@ -45,6 +45,9 @@ mod select;
 #[path = "lower_match.rs"]
 mod match_lowering;
 
+#[path = "lower_numeric.rs"]
+mod numeric;
+
 #[path = "lower_loops.rs"]
 mod loops;
 
@@ -3978,6 +3981,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if crate::call_boundary_types_match(&source, target) {
             return Ok(value);
         }
+        if source.can_implicitly_numeric_normalize_to(target) {
+            return self.emit_typed(
+                provenance,
+                target,
+                SemOpKind::Cast {
+                    value: Operand { value },
+                    to: target.clone(),
+                },
+            );
+        }
         self.service.require_type_facts(target)?;
         crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())
             .map_err(|reason| {
@@ -4102,6 +4115,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn bind_source_value(&mut self, binding: &HirBinding, value: ValueId) -> Result<(), String> {
+        if binding.mutable && self.value_own_kind(value) == Some(OwnKind::Guaranteed) {
+            // Like an affine borrowed parameter, the incoming loan remains the
+            // readable value; only a replacement initializes this local owner.
+            let ty = self.value_ty(value).ok_or("borrowed binding has no type")?;
+            let place = self.allocate_local(ty)?;
+            self.bind_source_target(binding, BindingTarget::Place(place))?;
+            self.bindings
+                .insert(binding.id, BindingTarget::Value(value));
+            return Ok(());
+        }
         let target = if binding.mutable {
             self.acquire_local_target(value)?
         } else {
@@ -4394,6 +4417,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let loan_floor = self.scope_loans.len();
         let value = value
             .map(|expr| {
+                if !binding.is_consume {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source),
+                        ..
+                    } = &expr.kind
+                    {
+                        if let BindingTarget::Value(source) = self.binding_target(*source)? {
+                            let ty = self.ty(&expr.ty);
+                            self.service.require_type_facts(&ty)?;
+                            if self.value_own_kind(source) == Some(OwnKind::Guaranteed)
+                                && self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
+                                    == hew_types::CloneKind::None
+                            {
+                                return self
+                                    .lower_expr_with_binding_use(expr, OwnedBindingUse::Probe);
+                            }
+                        }
+                    }
+                }
                 lower_initial_value_transfer(
                     self,
                     expr,
@@ -5554,6 +5596,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
                 }
             }
+            HirExprKind::SaturatingWidthCast { .. } => self.lower_saturating_cast(expr),
+            HirExprKind::TryWidthCast { .. } => self.lower_try_cast(expr),
             HirExprKind::NumericCast { value, to_ty, .. } => {
                 let value = self.lower_read_operand(value, "cast operand")?;
                 self.emit(

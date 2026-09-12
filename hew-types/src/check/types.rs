@@ -2136,6 +2136,10 @@ pub struct WidthCastLowering {
     pub to_ty: Ty,
     /// Whether this is a wrapping or saturating conversion.
     pub kind: WidthCastKind,
+    /// Integer bounds from the requested compilation target; `None` for floats.
+    pub from_range: Option<(i128, i128)>,
+    /// Integer bounds from the requested compilation target; `None` for floats.
+    pub to_range: Option<(i128, i128)>,
 }
 
 /// Discriminator for `.try_to_<W>()` exact numeric conversions.
@@ -2160,6 +2164,10 @@ pub struct TryWidthCastLowering {
     pub to_ty: Ty,
     /// Numeric source/target class selected by the checker.
     pub kind: TryConversionKind,
+    /// Integer bounds from the requested compilation target; `None` for floats.
+    pub from_range: Option<(i128, i128)>,
+    /// Integer bounds from the requested compilation target; `None` for floats.
+    pub to_range: Option<(i128, i128)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

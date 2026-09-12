@@ -1264,6 +1264,9 @@ pub enum HirExprKind {
         value: Box<HirExpr>,
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
+        /// Target-resolved integer bounds selected by the checker.
+        from_range: Option<(i128, i128)>,
+        to_range: Option<(i128, i128)>,
     },
     /// Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
     ///
@@ -1275,6 +1278,9 @@ pub enum HirExprKind {
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
         kind: TryConversionKind,
+        /// Target-resolved integer bounds selected by the checker.
+        from_range: Option<(i128, i128)>,
+        to_range: Option<(i128, i128)>,
     },
     /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
     ///

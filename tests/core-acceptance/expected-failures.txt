@@ -12,11 +12,8 @@
 
 # ── Documentation fences ────────────────────────────────────────────────
 guide-144626557  # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
-guide-232405810  # IMPL-GAP: `.try_to_u8()`/`.try_to_u32()`/`.try_to_f32()` type-check but are not lowered (`E_SIR_UNSUPPORTED: ... unsupported HIR expression kind TryWidthCast`), same gap as spec-3559603183
 guide-797256300  # IMPL-GAP: `unicode.rune_count` type-checks but is not lowered (`E_SIR_UNSUPPORTED: ... extern hew_string_char_count` is named by `#[extern_symbol]` rather than an `extern` block), same gap as the std-text-unicode entries below
 spec-1607851950  # SNIPPET: bare `let` — fn-type/Rc illustration; Rc/Weak wording owned by feat/rc-physical-path, left untouched by this lane
-spec-3414934173  # IMPL-GAP: `m[k] = v` HashMap index-assignment sugar type-checks but is not yet lowered (`E_SIR_UNSUPPORTED: ... assignment requires a resolved local binding target`); bracket reads and `.insert` both work
-spec-3559603183  # IMPL-GAP: `.try_to_i32()`/`.try_to_f32()` etc. type-check but are not lowered (`E_SIR_UNSUPPORTED: ... unsupported HIR expression kind TryWidthCast`)
 spec-3936244856  # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> ...` type-checks (discarding the completion result correctly raises `E_SEND_RESULT_DROPPED`) but SIR lowering of the ask/completion for such a handler is not implemented (`E_SIR_UNSUPPORTED: ... ask must return its complete checked Result`)
 std-arena-3714386937  # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
 std-net-http-http-223475752  # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
@@ -33,9 +30,3 @@ string_slice_open_right  # DEFECT: exits 4, spec byte length is 5
 std_net_dns_execution  # DEFECT: localhost resolution panics (UserPanic 212)
 
 # Affine ownership diagnostics exposed by fixing stale close declarations.
-collection-borrow-rebind  # DEFECT: SIR consumes a guaranteed element on local reassignment instead of dropping only the replacement owner
-collection_borrow_transfer  # DEFECT: borrowed affine ingress reaches E_SIR_UNSUPPORTED instead of source E_OWN_CONSUME_BORROWED
-collection_borrow_explicit_close  # DEFECT: borrowed affine close reaches E_SIR_UNSUPPORTED instead of source E_OWN_CONSUME_BORROWED
-collection_borrow_escape_by_return  # DEFECT: borrowed affine return reaches E_SIR_UNSUPPORTED instead of source E_OWN_CONSUME_BORROWED
-move_into_tuple_resource  # DEFECT: moved resource field read reaches SIR PlaceLifetime verification instead of UseAfterMove
-move_into_record_resource  # DEFECT: moved resource field read reaches SIR PlaceLifetime verification instead of UseAfterMove

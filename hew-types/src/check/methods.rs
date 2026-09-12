@@ -6207,7 +6207,7 @@ impl Checker {
             // A value with no copy operation enters the collection by
             // transfer: the slot becomes its only owner, so a later use of the
             // source binding is a use after the move.
-            self.record_callable_value_transfer(expr, arg_span);
+            self.record_value_transfer(expr, arg_span);
         }
 
         let elem_ty = type_args
@@ -7951,6 +7951,17 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(target) = target_opt {
+                    if !self.check_arity(args, 0, method, span) {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        return Ty::Error;
+                    }
+                    let resolved = resolved.materialize_literal_defaults();
+                    let from_range =
+                        super::util::integer_type_range(&resolved, self.pointer_width());
+                    let to_range = super::util::integer_type_range(&target, self.pointer_width());
                     let kind = match (resolved.is_integer(), target.is_integer()) {
                         (true, true) => TryConversionKind::IntToInt,
                         (false, true) => TryConversionKind::FloatToInt,
@@ -7961,6 +7972,8 @@ impl Checker {
                         SpanKey::in_module(span, self.current_module_idx),
                         TryWidthCastLowering {
                             from_ty: resolved.clone(),
+                            from_range,
+                            to_range,
                             to_ty: target.clone(),
                             kind,
                         },
@@ -8006,10 +8019,23 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(target) = target_opt {
+                    if !self.check_arity(args, 0, method, span) {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        return Ty::Error;
+                    }
+                    let resolved = resolved.materialize_literal_defaults();
+                    let from_range =
+                        super::util::integer_type_range(&resolved, self.pointer_width());
+                    let to_range = super::util::integer_type_range(&target, self.pointer_width());
                     self.width_cast_lowerings.insert(
                         SpanKey::in_module(span, self.current_module_idx),
                         WidthCastLowering {
                             from_ty: resolved.clone(),
+                            from_range,
+                            to_range,
                             to_ty: target.clone(),
                             kind: WidthCastKind::Wrapping,
                         },
@@ -8055,10 +8081,23 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(target) = target_opt {
+                    if !self.check_arity(args, 0, method, span) {
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        return Ty::Error;
+                    }
+                    let resolved = resolved.materialize_literal_defaults();
+                    let from_range =
+                        super::util::integer_type_range(&resolved, self.pointer_width());
+                    let to_range = super::util::integer_type_range(&target, self.pointer_width());
                     self.width_cast_lowerings.insert(
                         SpanKey::in_module(span, self.current_module_idx),
                         WidthCastLowering {
                             from_ty: resolved.clone(),
+                            from_range,
+                            to_range,
                             to_ty: target.clone(),
                             kind: WidthCastKind::Saturating,
                         },
@@ -9433,7 +9472,9 @@ impl Checker {
                         let discharges_resource = self.named_type_inherent_close_consumes_receiver(
                             name, *builtin, method, &sig,
                         );
-                        if discharges_resource {
+                        let borrowed_refused =
+                            self.reject_borrowed_consumption(&receiver.0, &receiver.1);
+                        if discharges_resource && !borrowed_refused {
                             self.method_call_discharges_receiver
                                 .insert(SpanKey::in_module(span, self.current_module_idx));
                             if let Expr::Identifier(receiver_name) = &receiver.0 {
@@ -9476,7 +9517,7 @@ impl Checker {
                                     &resolved_recv,
                                 );
                             }
-                        } else {
+                        } else if !borrowed_refused {
                             self.mark_expr_moved_if_non_copy(
                                 &receiver.0,
                                 &receiver.1,

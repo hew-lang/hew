@@ -7885,15 +7885,7 @@ struct LowerCtx {
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///
-    /// Passive pass-through: `Stmt::Assign` is fully lowered in HIR and MIR,
-    /// but neither simple-assign nor compound-assign lowering consults this map
-    /// yet.  Future consumer: compound-assignment signedness dispatch in codegen
-    /// and Machine Lane B actor-field write classification.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
-    )]
+    /// Selects indexed-write lowering before consuming the resolved mutation.
     assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     /// Checker-resolved assignment target type-shape metadata (signedness flag)
     /// keyed by the target expression span.  Populated alongside
@@ -16296,7 +16288,9 @@ impl LowerCtx {
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Assign { target, op, value } => {
-                if let Some(op) = op {
+                if let Some(assignment) = self.lower_index_assignment(target, *op, value, &span) {
+                    assignment
+                } else if let Some(op) = op {
                     self.lower_compound_assignment(target, *op, value, &span)
                 } else {
                     let first_store = self
@@ -17138,6 +17132,141 @@ impl LowerCtx {
             kind,
             span: span.clone(),
         })
+    }
+
+    /// An indexed write is the mutation selected by the checker at its target
+    /// span. Reuse ordinary collection-call lowering so replacement ownership
+    /// and argument evaluation agree with the method spelling.
+    fn lower_index_assignment(
+        &mut self,
+        target: &Spanned<Expr>,
+        op: Option<CompoundAssignOp>,
+        value: &Spanned<Expr>,
+        span: &Span,
+    ) -> Option<HirStmtKind> {
+        let key = self.mk_key(&target.1);
+        if self.assign_target_kinds.get(&key) != Some(&AssignTargetKind::Index) {
+            return None;
+        }
+        let Expr::Index { object, index } = &target.0 else {
+            return None;
+        };
+        let family = self
+            .resolved_calls
+            .get(&key)
+            .and_then(|resolved| match resolved.target {
+                CallTarget::RuntimeCollection(method) => Self::semantic_collection_method(method),
+                _ => None,
+            });
+        if family.is_none() && op.is_none() {
+            return None;
+        }
+        let value_ty = self.resolved_expr_types.get(&key)?.clone();
+        let receiver = self.lower_expr(object, IntentKind::Read);
+        let index = self.lower_expr(index, IntentKind::Read);
+        let replacement = self.lower_expr(value, IntentKind::Read);
+        let mut statements = Vec::new();
+        let (index, replacement) = if let Some(op) = op {
+            // The read and write share one evaluated key. The receiver remains
+            // a place, taken by SIR only after argument evaluation succeeds.
+            let (capture, read_key, key_ref) = self.capture_assignment_index(index);
+            let read_receiver = self.lower_expr(object, IntentKind::Read);
+            statements.push(capture);
+            let read = self.make_expr(
+                HirExprKind::Index {
+                    container: Box::new(read_receiver),
+                    index: Box::new(read_key),
+                },
+                value_ty.clone(),
+                IntentKind::Read,
+                target.1.clone(),
+            );
+            let updated = self.make_expr(
+                HirExprKind::Binary {
+                    op: Self::compound_assign_binary_op(op),
+                    left: Box::new(read),
+                    right: Box::new(replacement),
+                },
+                value_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            );
+            (key_ref, updated)
+        } else {
+            (index, replacement)
+        };
+        let assignment = if let Some(family) = family {
+            let kind = self.collection_call_kind(
+                family,
+                vec![receiver, index, replacement],
+                &ResolvedTy::Unit,
+                span,
+            );
+            HirStmtKind::Expr(self.make_expr(
+                kind,
+                ResolvedTy::Unit,
+                IntentKind::Read,
+                span.clone(),
+            ))
+        } else {
+            let target = self.make_expr(
+                HirExprKind::Index {
+                    container: Box::new(receiver),
+                    index: Box::new(index),
+                },
+                value_ty,
+                IntentKind::Modify,
+                target.1.clone(),
+            );
+            HirStmtKind::Assign {
+                target,
+                value: Box::new(replacement),
+                first_store: false,
+            }
+        };
+        if statements.is_empty() {
+            return Some(assignment);
+        }
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: assignment,
+            span: span.clone(),
+        });
+        let block = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements,
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span: span.clone(),
+        };
+        Some(HirStmtKind::Expr(self.make_expr(
+            HirExprKind::Block(block),
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        )))
+    }
+
+    /// Bind a compound assignment's key once and return distinct HIR reads.
+    fn capture_assignment_index(&mut self, index: HirExpr) -> (HirStmt, HirExpr, HirExpr) {
+        self.push_scope();
+        let name = format!("__hew_assignment_key_{}", self.ids.binding().0);
+        let binding = self.bind(name.clone(), index.ty.clone(), false, index.span.clone());
+        self.pop_scope();
+        let read = self.binding_ref_expr(
+            name.clone(),
+            binding.id,
+            binding.ty.clone(),
+            index.span.clone(),
+        );
+        let write = self.binding_ref_expr(name, binding.id, binding.ty.clone(), index.span.clone());
+        let statement = HirStmt {
+            node: self.ids.node(),
+            span: index.span.clone(),
+            kind: HirStmtKind::Let(binding, Some(index)),
+        };
+        (statement, read, write)
     }
 
     fn lower_compound_assignment(
@@ -26373,6 +26502,8 @@ impl LowerCtx {
                 hew_types::WidthCastKind::Saturating => (
                     HirExprKind::SaturatingWidthCast {
                         value: Box::new(lowered_receiver),
+                        from_range: lowering.from_range,
+                        to_range: lowering.to_range,
                         from_ty,
                         to_ty: to_ty.clone(),
                     },
@@ -26428,6 +26559,8 @@ impl LowerCtx {
             return (
                 HirExprKind::TryWidthCast {
                     value: Box::new(lowered_receiver),
+                    from_range: lowering.from_range,
+                    to_range: lowering.to_range,
                     from_ty,
                     to_ty,
                     kind: lowering.kind,

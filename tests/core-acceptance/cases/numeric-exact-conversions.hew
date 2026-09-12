@@ -1,0 +1,69 @@
+import std.math;
+
+fn integer_rounding(signed: i64, unsigned: u64) {
+    assert(signed.try_to_f64().is_none());
+    assert(unsigned.try_to_f64().is_none());
+    assert(signed.try_to_f32().is_none());
+    assert(unsigned.try_to_f32().is_none());
+    let exact: i64 = 16777216;
+    let rounded: i64 = 16777217;
+    assert(exact.try_to_f32().expect("exact f32") == 16777216.0);
+    assert(rounded.try_to_f32().is_none());
+    let min: i64 = -9223372036854775808;
+    assert(min.try_to_f32().is_some());
+    assert(min.try_to_f64().is_some());
+}
+
+fn float_boundaries(upper_signed: f64, upper_unsigned: f64) {
+    assert(upper_signed.try_to_i64().is_none());
+    assert(upper_unsigned.try_to_u64().is_none());
+    let signed_inside: f64 = 9223372036854774784.0;
+    let unsigned_inside: f64 = 18446744073709549568.0;
+    assert(signed_inside.try_to_i64().expect("inside signed") == 9223372036854774784);
+    assert(unsigned_inside.try_to_u64().expect("inside unsigned") == 18446744073709549568);
+    let minimum: f64 = -9223372036854775808.0;
+    assert(minimum.try_to_i64().expect("signed minimum") == -9223372036854775808);
+    let fraction: f64 = 3.5;
+    let negative: f64 = -1.0;
+    let negative_zero: f64 = -0.0;
+    assert(fraction.try_to_i32().is_none());
+    assert(negative.try_to_u64().is_none());
+    assert(negative_zero.try_to_u8().expect("negative zero") == 0);
+    let f32_exact: f32 = 128.0;
+    assert(f32_exact.try_to_i8().is_none());
+    assert(f32_exact.try_to_u8().expect("f32 to u8") == 128);
+    assert(f32_exact.try_to_f64().expect("float widening") == 128.0);
+}
+
+fn special(value: f64) {
+    assert(value.try_to_i64().is_none());
+    assert(value.try_to_u64().is_none());
+    assert(value.try_to_f32().is_none());
+    assert(value.try_to_f64().is_none());
+}
+
+fn main() {
+    // An owned value survives all failing and successful conversion joins.
+    let label = "numeric:" + "exact";
+    integer_rounding(9223372036854775807, 18446744073709551615);
+    float_boundaries(9223372036854775808.0, 18446744073709551616.0);
+    let nan = math.from_bits(9221120237041090560);
+    let inf = math.from_bits(9218868437227405312);
+    special(nan);
+    special(inf);
+    special(-inf);
+    let inferred = 3.5;
+    assert(inferred.try_to_i8().is_none());
+    let exact: f64 = 1.5;
+    let inexact: f64 = 0.1;
+    let tiny: f64 = 1.0e-50;
+    assert(exact.try_to_f32().expect("float narrowing") == 1.5);
+    assert(inexact.try_to_f32().is_none());
+    assert(tiny.try_to_f32().is_none());
+    assert(nan as i64 == 0);
+    assert(inf as i64 == 9223372036854775807);
+    assert((-inf) as i64 == -9223372036854775808);
+    assert(inf as u64 == 18446744073709551615);
+    assert((-inf) as u64 == 0);
+    println(label);
+}

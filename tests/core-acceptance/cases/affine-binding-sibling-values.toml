@@ -1,0 +1,10 @@
+[[case]]
+id = "affine-binding-sibling-values"
+intent = "Move affine fields through tuple and record bindings while preserving untouched sibling owners and implicit string copies."
+source = "cases/affine-binding-sibling-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "SHARED\n2\nSHARED\n1\nclose 1\nclose 2\n"
+exit = 0

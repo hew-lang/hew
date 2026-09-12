@@ -1,0 +1,12 @@
+[[case]]
+id = "collection-borrow-branch-transfer-reject"
+intent = "A replacement on only one branch cannot make a collection loan transferable on the other branch."
+source = "cases/collection-borrow-branch-transfer-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 17
+column = 12

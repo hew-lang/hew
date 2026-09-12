@@ -1,0 +1,8 @@
+import "left.hew";
+
+import "right.hew";
+
+fn main() {
+    println(left_value());
+    println(right_value());
+}

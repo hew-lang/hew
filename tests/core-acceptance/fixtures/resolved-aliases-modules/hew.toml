@@ -1,0 +1,4 @@
+[package]
+name = "aliases"
+edition = "2026"
+version = "0.1.0"

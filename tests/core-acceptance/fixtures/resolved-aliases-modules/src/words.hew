@@ -1,0 +1,11 @@
+pub type Value = string;
+
+pub type Pair<T> = (T, T);
+
+pub type Names = Pair<Value>;
+
+type Hidden = bool;
+
+pub fn names() -> Names {
+    ("module".to_upper(), "alias".to_upper())
+}

@@ -1,0 +1,21 @@
+import std.arena;
+fn main() {
+    var store: arena.Arena<string> = arena.new();
+    var other: arena.Arena<string> = arena.new();
+    let key = store.insert("first".to_upper());
+    let second = store.insert("second".to_upper());
+    let foreign = other.insert("foreign".to_upper());
+    let snapshot = store.get(key).expect("first");
+    assert(store.get(foreign).is_none());
+    assert(other.remove(key).is_none());
+    assert(store.remove(key).expect("removed") == "FIRST");
+    assert(store.remove(key).is_none());
+    let replacement = store.insert("replacement".to_upper());
+    assert(store.get(key).is_none());
+    assert(store.get(replacement).expect("reused") == "REPLACEMENT");
+    assert(store.get(second).expect("unrelated") == "SECOND");
+    assert(snapshot == "FIRST");
+    assert(store.len() == 2);
+    assert(other.get(foreign).expect("foreign owner") == "FOREIGN");
+    println("arena keys and values");
+}

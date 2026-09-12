@@ -3850,6 +3850,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
         }
+        let loan_floor = self.scope_loans.len();
         let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         // A loan of a clone-free value has no owned copy to make: the binding
         // holds the loan and the wall against consuming it is the loan itself.
@@ -3857,12 +3858,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             && !movable_owner
             && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
         {
-            self.emit(
+            let copy = self.emit(
                 expr,
                 SemOpKind::CopyValue {
                     source: Operand { value: source },
                 },
-            )
+            )?;
+            // This snapshot owns its contents. Loans created only to evaluate
+            // the read no longer support a live result; keeping them would
+            // falsely tie the snapshot to its collection across branches.
+            // Loans that existed before this expression still belong to their
+            // original binding or enclosing read and remain live.
+            self.end_expression_loans(loan_floor)?;
+            Ok(copy)
         } else {
             Ok(source)
         }
@@ -5171,6 +5179,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.lower_expr_with_binding_use(expr, OwnedBindingUse::Copy)
     }
 
+    /// A value result owns its contents or copies its bits. Only a Guaranteed
+    /// result carries a loan across the expression boundary. This also covers
+    /// projections and aggregate construction over borrowed collection reads.
+    fn lower_expr_with_binding_use(
+        &mut self,
+        expr: &HirExpr,
+        binding_use: OwnedBindingUse,
+    ) -> Result<ValueId, String> {
+        let loan_floor = self.scope_loans.len();
+        let value = self.lower_expr_inner(expr, binding_use)?;
+        if self.is_open()
+            && matches!(
+                self.value_own_kind(value),
+                Some(OwnKind::Owned | OwnKind::None)
+            )
+        {
+            self.end_expression_loans(loan_floor)?;
+        }
+        Ok(value)
+    }
+
+    fn end_expression_loans(&mut self, floor: usize) -> Result<(), String> {
+        let interior = self.scope_loans.split_off(floor);
+        self.end_call_loans(&interior)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
@@ -5179,7 +5213,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         deprecated,
         reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
     )]
-    fn lower_expr_with_binding_use(
+    fn lower_expr_inner(
         &mut self,
         expr: &HirExpr,
         binding_use: OwnedBindingUse,

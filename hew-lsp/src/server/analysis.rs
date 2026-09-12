@@ -399,10 +399,19 @@ fn diagnostic_target(
     root_source: &str,
     root_line_offsets: &[usize],
 ) -> DiagnosticTarget {
-    let uri = filename
+    let mut uri = filename
         .map(std::path::Path::new)
         .and_then(Url::from_file_path)
         .unwrap_or_else(|| root_uri.clone());
+    if uri != *root_uri
+        && filename
+            .zip(root_uri.to_file_path())
+            .is_some_and(|(filename, root)| {
+                hew_compile::paths_name_same_file(std::path::Path::new(filename), &root)
+            })
+    {
+        uri = root_uri.clone();
+    }
     match text {
         Some(text) if uri != *root_uri => DiagnosticTarget {
             uri,
@@ -1786,6 +1795,23 @@ pub(super) mod tests {
 
     fn messages(diagnostics: &[Diagnostic]) -> Vec<&str> {
         diagnostics.iter().map(|d| d.message.as_str()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_import_diagnostics_preserve_open_symlink_uri() {
+        let source = "import missing.widgets;\nfn main() {}\n";
+        let root = make_temp_workspace_dir(&[("main.hew", source)]);
+        let alias = root.join("open.hew");
+        std::os::unix::fs::symlink(root.join("main.hew"), &alias).unwrap();
+        let uri = Url::from_file_path(&alias).unwrap();
+        let diagnostics = published_for(&uri, source, &[]);
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("not found")),
+            "the editor must receive the missing import on its open URI: {:?}",
+            messages(&diagnostics)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// A dotted import that resolves to more than one module fails closed in

@@ -2,7 +2,7 @@
 
 use crate::coro_state::CoroStatus;
 use crate::timer_wheel::{
-    hew_timer_wheel_remove, hew_timer_wheel_schedule_handle, HewTimerHandle, HewTimerWheel,
+    hew_timer_wheel_remove, timer_wheel_schedule_at_handle, HewTimerHandle, HewTimerWheel,
 };
 use crate::wake::{HewWaker, OwnedWaker};
 use std::ffi::c_void;
@@ -67,6 +67,7 @@ impl Drop for HewCoroSleep {
 
 unsafe fn start_on_wheel(
     duration_ns: i64,
+    now_ms: u64,
     waker: &HewWaker,
     wheel: *mut HewTimerWheel,
 ) -> *mut HewCoroSleep {
@@ -87,12 +88,16 @@ unsafe fn start_on_wheel(
                 .store(CoroStatus::Fault as i32, Ordering::Release);
         } else {
             let callback = Arc::into_raw(ready.clone()).cast_mut().cast();
-            // Positive ns round up to the existing timer wheel's resolution.
-            let delay_ms = duration_ns.cast_unsigned().div_ceil(1_000_000);
+            // The wheel cursor may lag behind the caller's clock while its
+            // ticker is parked. Anchor the delay to the sampled clock, not
+            // that cursor, so catching up cannot complete a new sleep early.
+            let deadline_ms =
+                now_ms.saturating_add(duration_ns.cast_unsigned().div_ceil(1_000_000));
             // SAFETY: the caller supplies a live wheel. The callback owns the
             // transferred Arc even if the timer fires before this call returns.
-            timer =
-                unsafe { hew_timer_wheel_schedule_handle(wheel, delay_ms, timer_ready, callback) };
+            timer = unsafe {
+                timer_wheel_schedule_at_handle(wheel, deadline_ms, timer_ready, callback)
+            };
             if timer.entry.is_null() {
                 // SAFETY: failed registration did not accept the payload.
                 drop(unsafe { Arc::from_raw(callback.cast::<SleepReady>()) });
@@ -127,8 +132,9 @@ pub unsafe extern "C" fn hew_coro_sleep_new(
     } else {
         std::ptr::null_mut()
     };
-    // SAFETY: global wheel is runtime-owned; caller provides a valid descriptor.
-    unsafe { start_on_wheel(duration_ns, &*waker, wheel) }
+    // SAFETY: the clock has no preconditions, the wheel is runtime-owned and
+    // the caller provides a valid descriptor.
+    unsafe { start_on_wheel(duration_ns, crate::io_time::hew_now_ms(), &*waker, wheel) }
 }
 
 /// Start a nonblocking sleep that ends at a monotonic `instant`.
@@ -192,7 +198,12 @@ mod tests {
         // SAFETY: the test owns its wheel and drops all operations before it.
         unsafe {
             let wheel = hew_timer_wheel_new();
-            let sleep = start_on_wheel(10_000_000, waker.descriptor(), wheel);
+            let sleep = start_on_wheel(
+                10_000_000,
+                timer_wheel_cursor_ms(wheel),
+                waker.descriptor(),
+                wheel,
+            );
             let status = (*sleep).ready.clone();
             hew_coro_sleep_free(sleep);
             timer_wheel_tick_to(wheel, timer_wheel_cursor_ms(wheel) + 20);
@@ -212,7 +223,7 @@ mod tests {
         // SAFETY: the test owns its wheel and operation until explicit teardown.
         unsafe {
             let wheel = hew_timer_wheel_new();
-            let sleep = start_on_wheel(1, waker.descriptor(), wheel);
+            let sleep = start_on_wheel(1, timer_wheel_cursor_ms(wheel), waker.descriptor(), wheel);
             assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Pending as i32);
             timer_wheel_tick_to(wheel, timer_wheel_cursor_ms(wheel) + 2);
             assert!(ready.take_ready());
@@ -221,5 +232,25 @@ mod tests {
             hew_timer_wheel_free(wheel);
         }
         assert_eq!(Arc::strong_count(&ready), 2);
+    }
+
+    #[test]
+    fn sleep_waits_from_the_callers_clock_when_the_wheel_lags() {
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the test exclusively owns the wheel and operation. Explicit
+        // clock samples and ticks exercise a stale cursor without wall time.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let now = timer_wheel_cursor_ms(wheel) + 100;
+            let sleep = start_on_wheel(50_000_001, now, waker.descriptor(), wheel);
+            timer_wheel_tick_to(wheel, now + 50);
+            assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Pending as i32);
+            assert!(!ready.take_ready());
+            timer_wheel_tick_to(wheel, now + 51);
+            assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Complete as i32);
+            assert!(ready.take_ready());
+            hew_coro_sleep_free(sleep);
+            hew_timer_wheel_free(wheel);
+        }
     }
 }

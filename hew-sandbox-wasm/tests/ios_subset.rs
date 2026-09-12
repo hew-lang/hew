@@ -30,7 +30,7 @@ const DEFAULT_TEMPLATE: &str = r#"// Hew: safe concurrency with actors
 // Try the examples or tutorials to learn more!
 
 actor Counter {
-    let count: i64,
+    var count: i64,
 
     receive fn increment(n: i64) -> i64 {
         count = count + n;
@@ -40,9 +40,9 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    await c.increment(5);
-    await c.increment(3);
-    match await c.increment(12) {
+    c.increment(5);
+    c.increment(3);
+    match c.increment(12) {
         .Ok(total) => println(f"Total: {total}"),
         .Err(_) => println("send failed"),
     }

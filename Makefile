@@ -679,13 +679,17 @@ ci-preflight: preflight
 	@:
 
 .PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling compiler-measurements lint-rust lint-source
-ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
+# Production Wasm lifecycle qualification remains in release-gate.yml until
+# emission from verified semantics is implemented (#3368). Its native Rust
+# lifecycle tests already run in the workspace suite; source ownership cases
+# run through core acceptance and safety.
+ci-shard-1: observe-functional-test test-cabi \
 	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
 	test-doc-examples test-migrate-corpus \
 	o2-differential-selftest playground-verify
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
-	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
+	test-leak-oracle-selftest \
 	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \

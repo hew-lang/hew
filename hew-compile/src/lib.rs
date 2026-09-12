@@ -913,7 +913,8 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
     }
 }
 
-fn paths_name_same_file(left: &Path, right: &Path) -> bool {
+/// Compare source paths across canonical and editor-provided spellings.
+pub fn paths_name_same_file(left: &Path, right: &Path) -> bool {
     left == right
         || match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
             (Ok(left), Ok(right)) => left == right,

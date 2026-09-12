@@ -164,7 +164,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "actor spawn + receive + mutable state",
-        probe: "actor Counter {\n    var count: i64,\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
+        probe: "actor Counter {\n    var count: i64,\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("counter_actor"),
     },
     Construct {
@@ -177,8 +177,8 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
-        id: "actor ask via await + Ok/Err reply match",
-        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match await e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
+        id: "actor call + Ok/Err reply match",
+        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("actor_pipeline"),
     },
     Construct {
@@ -186,7 +186,7 @@ const CONSTRUCTS: &[Construct] = &[
         // Probed only at parity-name level; the real supervisor case lives in
         // parity.rs (a minimal inline supervisor needs more scaffolding than a
         // probe warrants). The exit-0 cross-check uses the simpler actor probe.
-        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match await w.ping() { .Ok(v) => v, .Err(_e) => 0 });\n}\n",
+        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match w.ping() { .Ok(v) => v, .Err(_e) => 0 });\n}\n",
         coverage: Coverage::Parity("supervisor"),
     },
     Construct {
@@ -1204,7 +1204,7 @@ mod ast_surface {
             Expr::Cast { .. } => Some("numeric cast (`as`)"),
             Expr::PostfixTry(_) => Some("postfix-try (`?`)"),
             Expr::Range { .. } => Some("recursive call + expr-if + range-for + interpolation"),
-            Expr::Await(_) => Some("actor ask via await + Ok/Err reply match"),
+            Expr::Await(_) => Some("actor call + Ok/Err reply match"),
             // `await_restart` suspends on the native supervisor restart observer
             // — a reserved_runtime_feature in the sandbox VM (see profile.rs); no
             // parity corpus entry.

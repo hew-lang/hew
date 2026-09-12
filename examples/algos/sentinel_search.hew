@@ -1,9 +1,8 @@
 // Sentinel Search - place target at end to eliminate bounds check in loop
 //
 // `arr` is this function's own copy, so writing the sentinel into it cannot
-// disturb the caller's vector and nothing has to travel back by return value.
-// The restore below keeps the algorithm's invariant explicit even though the
-// copy is dropped when the search returns.
+// disturb the caller's vector, and the copy is dropped when the search
+// returns, so nothing has to be restored.
 fn sentinel_search(var arr: Vec<i64>, target: i64) -> i64 {
     let n = arr.len();
     if n == 0 {
@@ -16,8 +15,6 @@ fn sentinel_search(var arr: Vec<i64>, target: i64) -> i64 {
     while arr[i] != target {
         i = i + 1;
     }
-    // Restore original last element
-    arr.set(n - 1, last);
     if i < n - 1 {
         return i;
     }

@@ -258,8 +258,11 @@ NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" -
 NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
 NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --filterset '$(NEXTEST_WORKSPACE_FILTER)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
 endif
-NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
-NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
+# nextest keeps its store under the workspace's `target/nextest`, not under
+# `CARGO_TARGET_DIR`, so an out-of-tree build still reports here.
+NEXTEST_STORE := target/nextest
+NEXTEST_JUNIT := $(NEXTEST_STORE)/ci/junit.xml
+NEXTEST_RATCHET_JUNIT := $(NEXTEST_STORE)/ci/ratchet.xml
 NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
 RATCHET_STRICT_RECOVERIES ?= 0
 RATCHET_STRICT_RECOVERIES_ARG := $(if $(filter 1 true yes,$(RATCHET_STRICT_RECOVERIES)),--strict-recoveries,)

@@ -7290,10 +7290,15 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         assert_eq!(inner.code, "E_IMPORT_CYCLE");
         // Primary location: the first edge, at `a.hew`'s `import "b.hew";`.
-        assert_eq!(
-            failure.diagnostics[0].filename.as_deref(),
-            Some(input.as_str())
-        );
+        assert!(paths_name_same_file(
+            Path::new(
+                failure.diagnostics[0]
+                    .filename
+                    .as_deref()
+                    .expect("cycle source filename")
+            ),
+            Path::new(&input),
+        ));
         let primary_span = inner
             .span
             .clone()

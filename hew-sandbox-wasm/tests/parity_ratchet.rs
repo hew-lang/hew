@@ -92,10 +92,12 @@ enum Coverage {
         /// The expected `Diagnostic::kind` the profile emits for this construct.
         diagnostic_kind: &'static str,
     },
-    /// The parser rejects this surface before the sandbox profile sees an AST.
-    RejectedByParser {
-        /// The expected stable parser diagnostic code.
-        diagnostic_code: &'static str,
+    /// Parsing or type checking rejects this surface before profile admission.
+    RejectedBeforeProfile {
+        /// The front-end phase responsible for rejection.
+        phase: &'static str,
+        /// A distinguishing substring of the parser diagnostic.
+        diagnostic_message: &'static str,
     },
 }
 
@@ -629,21 +631,16 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "break-with-value",
         probe: "fn main() {\n    var i = 0;\n    loop {\n        i = i + 1;\n        break i;\n    }\n    println(i);\n}\n",
-        coverage: Coverage::RejectedByParser {
-            diagnostic_code: "E_BREAK_VALUE",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "parse",
+            diagnostic_message: "E_BREAK_VALUE",
         },
     },
     Construct {
         id: "closure / lambda value",
-        // The profile rejects `Expr::Lambda { .. }` structurally, before walking
-        // the body — so EVERY closure form is fail-closed-rejected for sandbox
-        // export, including the capturing / nested / type-parameterised /
-        // write-back forms the C7 lane newly admits on native. The probe
-        // captures an outer `var` and reassigns it (the most permissive native
-        // form, #1') to pin that even a mutable capture produces no bytecode:
-        // the sandbox stays strictly more conservative than native, never the
-        // reverse (`native-wasm-parity`).
-        probe: "fn main() {\n    var total = 0;\n    let acc = |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
+        // A valid private mutable capture reaches the sandbox's structural
+        // lambda rejection instead of failing native capture checking first.
+        probe: "fn main() {\n    let total = 0;\n    var acc = capture(var total) |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -662,8 +659,9 @@ const CONSTRUCTS: &[Construct] = &[
         // Value-shaped operands are rejected by the checker before the sandbox
         // profile sees the identity-comparison expression.
         probe: "type Point { x: i64, }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
-        coverage: Coverage::RejectedByParser {
-            diagnostic_code: "E_IS_VALUE_TYPE",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "typecheck",
+            diagnostic_message: "E_IS_VALUE_TYPE",
         },
     },
     Construct {
@@ -755,8 +753,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
-        id: "Option.unwrap / unwrap_or",
-        probe: "fn main() {\n    let s = Some(5);\n    println(s.unwrap());\n    let n: Option<i64> = None;\n    println(n.unwrap_or(9));\n}\n",
+        id: "Option.expect / unwrap_or",
+        probe: "fn main() {\n    let s = Some(5);\n    println(s.expect(\"known value\"));\n    let n: Option<i64> = None;\n    println(n.unwrap_or(9));\n}\n",
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
@@ -765,8 +763,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
-        id: "Result.unwrap / unwrap_or",
-        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(7);\n    println(ok.unwrap());\n    let err: Result<i64, string> = Err(\"e\");\n    println(err.unwrap_or(0));\n}\n",
+        id: "Result.expect / unwrap_or",
+        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(7);\n    println(ok.expect(\"known value\"));\n    let err: Result<i64, string> = Err(\"e\");\n    println(err.unwrap_or(0));\n}\n",
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
@@ -801,21 +799,22 @@ const CONSTRUCTS: &[Construct] = &[
         // old declaration surface rather than silently admitting it.
         id: "#[wire] struct declaration (legacy, redirected to type)",
         probe: "#[wire]\nstruct Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "Other",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "parse",
+            diagnostic_message: "unexpected 'struct'",
         },
     },
     Construct {
         // Vec<T>::contains: linear equality scan via canonical comparison.
         // Emits `vector.contains` opcode (added in this parity sweep).
         id: "Vec<T>::contains",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
         // v[start..end] exclusive range slice: emits `vector.range_slice` opcode.
         id: "Vec<T> range slice v[start..end]",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
@@ -823,7 +822,7 @@ const CONSTRUCTS: &[Construct] = &[
         // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
         // End element is included in the result slice.
         id: "Vec<T> inclusive range slice v[start..=end]",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
         coverage: Coverage::Parity("vec_inclusive_slice"),
     },
     Construct {
@@ -850,7 +849,7 @@ const CONSTRUCTS: &[Construct] = &[
         // three compared equal (silent wrong-result).  valuesEqual fixes this
         // by routing f64 pairs through JS === (OEQ) instead of canonicalComparable.
         id: "Vec<f64>::contains with NaN / +-Infinity (fcmp-OEQ semantics)",
-        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
+        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    var nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    var nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
         coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
     },
     Construct {
@@ -862,7 +861,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Option::clone`/`Result::clone` (checker reports `UndefinedMethod`),
         // so no valid program can reach the emitter with one.
         id: "Vec/String/Array/Slice method `clone()`",
-        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
+        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
         coverage: Coverage::Parity("method_clone"),
     },
     Construct {
@@ -980,8 +979,11 @@ fn live_gate_matches_declared_coverage() {
             Coverage::RejectedByProfile { diagnostic_kind } => {
                 assert_rejected_by_profile(construct, &compiled, diagnostic_kind);
             }
-            Coverage::RejectedByParser { diagnostic_code } => {
-                assert_rejected_by_parser(construct, &compiled, diagnostic_code);
+            Coverage::RejectedBeforeProfile {
+                phase,
+                diagnostic_message,
+            } => {
+                assert_rejected_before_profile(construct, &compiled, phase, diagnostic_message);
             }
         }
     }
@@ -1079,7 +1081,7 @@ fn assert_rejected_by_profile(
         compiled
             .diagnostics
             .iter()
-            .any(|d| d.severity == "error" && d.kind == diagnostic_kind),
+            .any(|d| d.severity == "error" && d.phase == "profile" && d.kind == diagnostic_kind),
         "construct `{}` is classified RejectedByProfile({diagnostic_kind}), but no error diagnostic \
          of that kind was emitted; the profile rejection path changed.\ndiagnostics:\n{}",
         construct.id,
@@ -1087,17 +1089,20 @@ fn assert_rejected_by_profile(
     );
 }
 
-fn assert_rejected_by_parser(
+fn assert_rejected_before_profile(
     construct: &Construct,
     compiled: &CompileOutput,
-    diagnostic_code: &str,
+    phase: &str,
+    diagnostic_message: &str,
 ) {
     assert!(
         compiled.bytecode.is_none()
             && compiled.diagnostics.iter().any(|diagnostic| {
-                diagnostic.severity == "error" && diagnostic.message.contains(diagnostic_code)
+                diagnostic.severity == "error"
+                    && diagnostic.phase == phase
+                    && diagnostic.message.contains(diagnostic_message)
             }),
-        "construct `{}` is classified RejectedByParser({diagnostic_code}), but the parser did not \
+        "construct `{}` is classified RejectedBeforeProfile({diagnostic_message}), but {phase} did not \
          emit that error without bytecode.\ndiagnostics:\n{}",
         construct.id,
         diagnostics_dump(compiled)

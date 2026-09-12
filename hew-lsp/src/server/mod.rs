@@ -4798,10 +4798,18 @@ machine Traffic {
                 "import \"main.hew\";\npub fn exported() -> i32 { 1 }\n",
             ),
         ]);
+        #[cfg(unix)]
+        let editor_root = {
+            let alias = root.join("editor");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            alias
+        };
+        #[cfg(not(unix))]
+        let editor_root = root.clone();
         let main_url =
-            Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
+            Url::from_file_path(editor_root.join("main.hew")).expect("workspace path is absolute");
         let foo_url =
-            Url::from_file_path(root.join("foo.hew")).expect("workspace path is absolute");
+            Url::from_file_path(editor_root.join("foo.hew")).expect("workspace path is absolute");
         let main_source = std::fs::read_to_string(root.join("main.hew")).expect("read main.hew");
         let foo_source = std::fs::read_to_string(root.join("foo.hew")).expect("read foo.hew");
 
@@ -4828,6 +4836,67 @@ machine Traffic {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_open_import_preserves_related_locations_and_refreshes_dependents() {
+        let main_source = "import \"dep.hew\";\nfn main() -> i64 { dep.dup() }\n";
+        let disk_source = "pub fn dup() -> i64 { 1 }\n";
+        let duplicate_source = "pub fn dup() -> i64 { 1 }\npub fn dup() -> i64 { 2 }\n";
+        let root = make_temp_workspace_dir(&[("main.hew", main_source), ("dep.hew", disk_source)]);
+        let alias = root.join("editor");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let main_uri = Url::from_file_path(alias.join("main.hew")).unwrap();
+        let dep_uri = Url::from_file_path(alias.join("dep.hew")).unwrap();
+        let documents = DashMap::new();
+        refresh_document_and_dependents(&dep_uri, duplicate_source, &documents, &[]);
+        let published = refresh_document_and_dependents(&main_uri, main_source, &documents, &[]);
+        let diagnostic = published
+            .iter()
+            .find(|(uri, _)| *uri == dep_uri)
+            .and_then(|(_, diagnostics)| {
+                diagnostics.iter().find(|diagnostic| {
+                    diagnostic.source.as_deref() == Some("hew-types")
+                        && diagnostic
+                            .related_information
+                            .as_ref()
+                            .is_some_and(|notes| !notes.is_empty())
+                })
+            })
+            .expect("the imported unsaved duplicate must be diagnosed on its open URI");
+        let note = &diagnostic.related_information.as_ref().unwrap()[0];
+        assert_eq!(note.location.uri, dep_uri);
+        assert_ne!(diagnostic.range.start.line, note.location.range.start.line);
+
+        let changed = "pub fn dup() -> bool { true }\n";
+        let published = refresh_document_and_dependents(&dep_uri, changed, &documents, &[]);
+        let main_diagnostics = &published
+            .iter()
+            .find(|(uri, _)| *uri == main_uri)
+            .expect("editing an aliased dependency must refresh its importer")
+            .1;
+        assert!(
+            main_diagnostics.iter().any(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+            }),
+            "the importer must observe the unsaved return type: {main_diagnostics:?}"
+        );
+
+        let published = close_document_and_dependents(&dep_uri, &documents, &[]);
+        let main_diagnostics = &published
+            .iter()
+            .find(|(uri, _)| *uri == main_uri)
+            .expect("closing an aliased dependency must refresh its importer from disk")
+            .1;
+        assert!(
+            main_diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Some(DiagnosticSeverity::ERROR)),
+            "the on-disk integer return must restore the importer: {main_diagnostics:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // ── Transitive-refresh regression tests ──────────────────────────────

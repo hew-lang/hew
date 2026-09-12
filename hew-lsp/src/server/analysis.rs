@@ -13,12 +13,26 @@ use tower_lsp_server::lsp_types::{
     NumberOrString, Uri as Url,
 };
 
-use super::uri::FileUriExt;
+use super::uri::{same_source_file, source_file_key, FileUriExt};
 #[cfg(test)]
 use super::UriParse;
 use super::{DiagnosticMap, DiagnosticSource, DocumentState};
 
 // ── In-memory module resolution ──────────────────────────────────────
+
+/// Keep the URI under which the editor opened a source, even when the compiler
+/// reports its canonical filesystem path. Exact spellings take precedence.
+fn open_document_uri(uri: &Url, documents: &DashMap<Url, DocumentState>) -> Url {
+    if documents.contains_key(uri) {
+        return uri.clone();
+    }
+    documents
+        .iter()
+        .filter(|entry| same_source_file(uri, entry.key()))
+        .map(|entry| entry.key().clone())
+        .min_by(|left, right| left.as_str().cmp(right.as_str()))
+        .unwrap_or_else(|| uri.clone())
+}
 
 /// Return the source text for a file, preferring open editor buffers over disk.
 ///
@@ -31,7 +45,7 @@ pub(super) fn source_for_path(
 ) -> Option<String> {
     // Prefer in-memory content if the file is currently open in the editor.
     if let Some(url) = Url::from_file_path(path) {
-        if let Some(doc) = documents.get(&url) {
+        if let Some(doc) = documents.get(&open_document_uri(&url, documents)) {
             return Some(doc.source.clone());
         }
     }
@@ -67,7 +81,7 @@ pub(super) fn build_module_source_map(
         module_sources.insert(
             module_id.path.join("."),
             DiagnosticSource {
-                uri,
+                uri: open_document_uri(&uri, documents),
                 line_offsets: compute_line_offsets(&source),
                 source,
             },
@@ -240,13 +254,38 @@ pub(super) fn analyze_document(
         }
     }
 
+    // Apply editor identity after all compiler stages, including their related
+    // locations, so source provenance stays intact while publication uses the
+    // same URI as the open buffer.
+    let editor_uri = |target: &Url| {
+        if same_source_file(target, uri) {
+            uri.clone()
+        } else {
+            open_document_uri(target, documents)
+        }
+    };
+    let mut editor_diagnostics = DiagnosticMap::new();
+    for (target, mut diagnostics) in diagnostics_by_uri {
+        for diagnostic in &mut diagnostics {
+            if let Some(notes) = &mut diagnostic.related_information {
+                for note in notes {
+                    note.location.uri = editor_uri(&note.location.uri);
+                }
+            }
+        }
+        editor_diagnostics
+            .entry(editor_uri(&target))
+            .or_default()
+            .extend(diagnostics);
+    }
+
     DocumentState {
         source: source.to_string(),
         line_offsets,
         parse_result,
         type_output,
         dependency_uris: dependency_uris(&state.program),
-        diagnostics_by_uri,
+        diagnostics_by_uri: editor_diagnostics,
     }
 }
 
@@ -259,12 +298,14 @@ fn build_reverse_importer_index(documents: &DashMap<Url, DocumentState>) -> Hash
         let Some(dependencies) = entry.value().dependency_uris.as_ref() else {
             continue;
         };
+        let importer_key = source_file_key(&importer_uri);
         for dependency_uri in dependencies {
-            if *dependency_uri == importer_uri {
+            let dependency_key = source_file_key(dependency_uri);
+            if dependency_key == importer_key {
                 continue;
             }
             index
-                .entry(dependency_uri.clone())
+                .entry(dependency_key)
                 .or_default()
                 .push(importer_uri.clone());
         }
@@ -297,7 +338,7 @@ pub(super) fn refresh_open_importers(
 
     while let Some(current) = queue.pop_front() {
         let dependents: Vec<_> = reverse_importer_index
-            .get(&current)
+            .get(&source_file_key(&current))
             .into_iter()
             .flat_map(|uris| uris.iter())
             .cloned()
@@ -403,13 +444,7 @@ fn diagnostic_target(
         .map(std::path::Path::new)
         .and_then(Url::from_file_path)
         .unwrap_or_else(|| root_uri.clone());
-    if uri != *root_uri
-        && filename
-            .zip(root_uri.to_file_path())
-            .is_some_and(|(filename, root)| {
-                hew_compile::paths_name_same_file(std::path::Path::new(filename), &root)
-            })
-    {
+    if same_source_file(&uri, root_uri) {
         uri = root_uri.clone();
     }
     match text {

@@ -28,6 +28,24 @@ impl FileUriExt for Uri {
     }
 }
 
+/// Use a canonical file URI for dependency keys, retaining non-file URIs and
+/// paths that do not yet exist so unsaved documents can still be indexed.
+pub(super) fn source_file_key(uri: &Uri) -> Uri {
+    uri.to_file_path()
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .and_then(Uri::from_file_path)
+        .unwrap_or_else(|| uri.clone())
+}
+
+/// Compare editor URIs using the frontend's source-file identity rule.
+pub(super) fn same_source_file(left: &Uri, right: &Uri) -> bool {
+    left == right
+        || left
+            .to_file_path()
+            .zip(right.to_file_path())
+            .is_some_and(|(left, right)| hew_compile::paths_name_same_file(&left, &right))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

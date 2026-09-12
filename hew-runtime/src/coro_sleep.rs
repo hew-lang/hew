@@ -151,12 +151,24 @@ pub unsafe extern "C" fn hew_coro_sleep_until_new(
     deadline_ns: i64,
     waker: *const HewWaker,
 ) -> *mut HewCoroSleep {
+    if waker.is_null() {
+        return std::ptr::null_mut();
+    }
     // SAFETY: hew_instant_now has no preconditions.
     let now_ns = unsafe { crate::io_time::hew_instant_now() };
     let remaining_ns = deadline_ns.saturating_sub(now_ns);
-    // SAFETY: the caller's descriptor contract is unchanged by the deadline
-    // arithmetic; a non-positive remainder completes without a timer.
-    unsafe { hew_coro_sleep_new(remaining_ns, waker) }
+    let wheel = if remaining_ns > 0 {
+        crate::timer_periodic::global_wheel()
+    } else {
+        std::ptr::null_mut()
+    };
+    // Keep the original sample: re-sampling after computing the remainder
+    // would extend the deadline by any time spent preparing the operation.
+    // hew_instant_now is a non-negative millisecond clock expressed in ns.
+    let now_ms = now_ns.cast_unsigned() / 1_000_000;
+    // SAFETY: the wheel is runtime-owned and the caller keeps its descriptor
+    // live. A non-positive remainder completes without registering a timer.
+    unsafe { start_on_wheel(remaining_ns, now_ms, &*waker, wheel) }
 }
 
 /// Poll sleep completion without blocking an actor worker.
@@ -188,7 +200,8 @@ pub unsafe extern "C" fn hew_coro_sleep_free(sleep: *mut HewCoroSleep) {
 mod tests {
     use super::*;
     use crate::timer_wheel::{
-        hew_timer_wheel_free, hew_timer_wheel_new, timer_wheel_cursor_ms, timer_wheel_tick_to,
+        hew_timer_wheel_free, hew_timer_wheel_new, timer_wheel_advance_cursor_for_test,
+        timer_wheel_cursor_ms, timer_wheel_tick_to,
     };
     use crate::wake::blocking::Readiness;
 
@@ -247,6 +260,24 @@ mod tests {
             assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Pending as i32);
             assert!(!ready.take_ready());
             timer_wheel_tick_to(wheel, now + 51);
+            assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Complete as i32);
+            assert!(ready.take_ready());
+            hew_coro_sleep_free(sleep);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn delayed_registration_does_not_extend_the_sampled_deadline() {
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the test exclusively owns the wheel and operation. Advance
+        // the wheel to model preemption after the caller sampled its clock.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let sampled_now = timer_wheel_cursor_ms(wheel);
+            timer_wheel_advance_cursor_for_test(wheel, 100);
+            let sleep = start_on_wheel(50_000_000, sampled_now, waker.descriptor(), wheel);
+            timer_wheel_tick_to(wheel, sampled_now + 100);
             assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Complete as i32);
             assert!(ready.take_ready());
             hew_coro_sleep_free(sleep);

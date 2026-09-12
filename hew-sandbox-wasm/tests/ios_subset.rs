@@ -40,8 +40,14 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.increment(5);
-    c.increment(3);
+    match c.increment(5) {
+        .Ok(_) => {},
+        .Err(_) => { println("send failed"); return; },
+    }
+    match c.increment(3) {
+        .Ok(_) => {},
+        .Err(_) => { println("send failed"); return; },
+    }
     match c.increment(12) {
         .Ok(total) => println(f"Total: {total}"),
         .Err(_) => println("send failed"),
@@ -72,7 +78,6 @@ struct QuickReferenceFixture {
 enum Expectation {
     Parity,
     FailClosedProfile(&'static str),
-    FailClosedTypecheck,
 }
 
 #[derive(Debug)]
@@ -112,7 +117,7 @@ fn load_cases() -> Vec<IosCase> {
     let mut cases = vec![IosCase {
         id: "default-template".to_owned(),
         source: DEFAULT_TEMPLATE.to_owned(),
-        expectation: Expectation::FailClosedTypecheck,
+        expectation: Expectation::Parity,
     }];
     let examples: Vec<ExampleFixture> =
         serde_json::from_str(include_str!("fixtures/ios/examples.json"))
@@ -253,28 +258,6 @@ fn assert_case(case: &IosCase) {
                         && diagnostic.phase == "profile"
                         && diagnostic.kind == diagnostic_kind),
                 "{} must fail closed with profile diagnostic {diagnostic_kind:?}; got:\n{}",
-                case.id,
-                diagnostics_dump(&compiled.diagnostics)
-            );
-        }
-        Expectation::FailClosedTypecheck => {
-            assert!(
-                !native.status.success(),
-                "{} is expected to be invalid in current native Hew",
-                case.id
-            );
-            assert!(
-                compiled.bytecode.is_none(),
-                "{} must not emit sandbox bytecode after typecheck failure",
-                case.id
-            );
-            assert!(
-                compiled
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.severity == "error"
-                        && diagnostic.phase == "typecheck"),
-                "{} must fail closed with a typecheck diagnostic; got:\n{}",
                 case.id,
                 diagnostics_dump(&compiled.diagnostics)
             );

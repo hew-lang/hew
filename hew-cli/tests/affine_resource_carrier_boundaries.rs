@@ -249,9 +249,9 @@ type Buf {
 }
 
 impl Buf {
-    fn close(b: Buf) {
-        println(f"CLOSE {b.id}");
-        let _len = b.data.len();
+    fn close(consume self) {
+        println(f"CLOSE {self.id}");
+        let _len = self.data.len();
     }
 }
 
@@ -264,7 +264,7 @@ fn make(id: i64) -> Buf {
 fn main() {
     for i in 0 .. 4 {
         let b = make(i);
-        if i == -1 {
+        if i % 2 == 0 {
             b.close();
         }
     }

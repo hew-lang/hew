@@ -199,23 +199,36 @@ fn main() {
     );
 }
 
+/// A deadline drains the joined task frames before the parent's defer runs.
+/// Owned witness arguments also cover tasks cancelled before their bodies start.
+/// Actor handlers are independent of their callers' ask tasks; explicitly close
+/// the actors after recovery without imposing an order on their own cleanup.
 #[test]
 fn an_outer_deadline_drains_join_tasks_before_parent_cleanup() {
-    run_join(r#"
+    run_join(
+        r#"
+#[resource]
+type TaskFrame { id: i64 }
+impl TaskFrame {
+    fn close(consume self) { println("task cleanup"); }
+}
 actor Slow {
     receive fn echo(value: string) -> string {
-        println("receiver started");
-        defer println("receiver cleanup");
         sleep(100ms);
         value.to_upper()
     }
+}
+fn request(receiver: Slow, value: string, consume frame: TaskFrame) -> string {
+    let reply = receiver.echo(value).expect("reply");
+    assert(frame.id > 0);
+    reply
 }
 fn main() {
     let first = spawn Slow();
     let second = spawn Slow();
     scope within 20ms {
         defer println("parent cleanup");
-        let _result = await fork (first.echo("one"), second.echo("two"));
+        let _result = await fork (request(first, "one", TaskFrame { id: 1 }), request(second, "two", TaskFrame { id: 2 }));
         println("missed deadline");
     } handle failure {
         match failure {
@@ -223,6 +236,13 @@ fn main() {
             .Fault { message } => panic(message),
         }
     };
+    close(first);
+    close(second);
+    println("actors closed");
 }
-"#, "receiver started\nreceiver started\nparent cleanup\ndeadline recovered\nreceiver cleanup\nreceiver cleanup\n", 0, "");
+"#,
+        "task cleanup\ntask cleanup\nparent cleanup\ndeadline recovered\nactors closed\n",
+        0,
+        "",
+    );
 }

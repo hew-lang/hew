@@ -1,0 +1,12 @@
+[[case]]
+id = "resource-vector-binding-use-after-move"
+intent = "Rebinding a vector of non-cloneable resources transfers the vector owner; the original binding cannot be read."
+source = "cases/resource-vector-binding-use-after-move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 12
+column = 13

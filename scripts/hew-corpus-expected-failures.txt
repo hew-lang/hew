@@ -172,7 +172,6 @@ repros/ladder/bytes_clone.hew
 repros/ladder/cap_move.hew
 repros/ladder/closure_mut_share.hew
 repros/ladder/cond_init.hew E_SIR_UNSUPPORTED
-repros/ladder/gen_rebind.hew E_SIR_VERIFY
 repros/ladder/lambda_send_twice.hew E_SEND_RESULT_DROPPED
 repros/ladder/let_field_mut.hew
 repros/ladder/linear_actor_field.hew E_SIR_UNSUPPORTED
@@ -183,7 +182,6 @@ repros/ladder/resource_send2.hew
 repros/ladder/state_reinit.hew E_SIR_UNSUPPORTED
 repros/ladder/state_resource_mut.hew E_SIR_VERIFY
 repros/ladder/state_resource_trait.hew E_SIR_VERIFY
-repros/ladder/vec_resource.hew E_SIR_VERIFY
 
 # ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 

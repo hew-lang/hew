@@ -1,0 +1,12 @@
+[[case]]
+id = "generator-binding-use-after-move"
+intent = "Rebinding a generator transfers its unique owner; the original binding cannot be resumed."
+source = "cases/generator-binding-use-after-move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 5
+column = 11

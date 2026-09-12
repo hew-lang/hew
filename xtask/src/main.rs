@@ -89,7 +89,11 @@ fn runtime_declarations(args: &[String]) -> Result<()> {
         "--check" => {
             let actual = fs::read_to_string(&path)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
-            if actual == generated {
+            let actual: toml::Value =
+                toml::from_str(&actual).map_err(|error| format!("{}: {error}", path.display()))?;
+            let expected: toml::Value = toml::from_str(generated)
+                .map_err(|error| format!("invalid generated runtime metadata: {error}"))?;
+            if actual == expected {
                 Ok(())
             } else {
                 Err("runtime declaration metadata is stale; run make cabi-surface".to_string())

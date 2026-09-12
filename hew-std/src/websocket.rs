@@ -11,7 +11,9 @@ use hew_cabi::string::{string_as_str, string_from_str, string_from_utf8, HewStri
 use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 #[cfg(test)]
 use std::ffi::c_void;
-use std::io::{self, Read, Write};
+use std::io;
+#[cfg(test)]
+use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -79,9 +81,9 @@ struct HewWsConnInner {
     /// Plain-TCP split-framer serialization gate.
     ///
     /// LOCK ORDER: acquire a framer mutex (`ws` / `write_ws`) before this gate;
-    /// tungstenite may then acquire `SharedPlainWsStream::write_stream` inside
-    /// its `Write` calls. This gate is held across the complete tungstenite
-    /// operation (`send` or `read` auto-flush) so short socket writes cannot
+    /// this gate covers writes through both socket handles. It is held across
+    /// the complete tungstenite operation (`send` or `read` auto-flush), so
+    /// short socket writes cannot
     /// allow another framer to splice control-frame bytes into a data frame.
     write_operation_gate: Option<WriteOperationGate>,
     shutdown_stream: Option<TcpStream>,
@@ -90,84 +92,9 @@ struct HewWsConnInner {
     active_recvs: AtomicUsize,
 }
 
-type HewWs = WebSocket<HewWsStream>;
+type HewWs = WebSocket<MaybeTlsStream<TcpStream>>;
 type WriteOperationGate = Arc<PlMutex<()>>;
 type PreparedWebsockets = (HewWs, Option<HewWs>, Option<WriteOperationGate>);
-
-/// Stream type used by Hew's websocket wrapper after connection setup.
-///
-/// Plain TCP can be split into independent tungstenite framers for attached
-/// mode. TLS remains a single stream because two independently-created TLS
-/// contexts cannot safely share one socket.
-#[derive(Debug)]
-enum HewWsStream {
-    Plain(TcpStream),
-    SplitPlain(SharedPlainWsStream),
-    Tls(MaybeTlsStream<TcpStream>),
-}
-
-/// Plain-TCP attached-mode stream with a shared socket write half.
-///
-/// LOCK ORDER: Hew code may acquire a framer mutex (`inner.ws` or
-/// `inner.write_ws`), then `write_operation_gate`, and then tungstenite may
-/// call this stream's `Write` implementation, which briefly locks
-/// `write_stream`. No Hew code may lock `write_stream` and then acquire the
-/// operation gate or a framer mutex.
-///
-/// SERIALIZATION INVARIANT: `write_stream` is only the shared-fd ownership
-/// mutex. Frame/operation atomicity comes from `write_operation_gate`, which is
-/// held above tungstenite `send` and `read` auto-flush operations. That outer
-/// gate is what prevents a short blocking `TcpStream::write` from letting a
-/// competing framer splice Pong bytes into the middle of a data frame.
-#[derive(Debug)]
-struct SharedPlainWsStream {
-    read_stream: TcpStream,
-    write_stream: Arc<PlMutex<TcpStream>>,
-}
-
-impl Read for SharedPlainWsStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read_stream.read(buf)
-    }
-}
-
-impl Write for SharedPlainWsStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        pl_lock(&self.write_stream).write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        pl_lock(&self.write_stream).flush()
-    }
-}
-
-impl Read for HewWsStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buf),
-            Self::SplitPlain(stream) => stream.read(buf),
-            Self::Tls(stream) => stream.read(buf),
-        }
-    }
-}
-
-impl Write for HewWsStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buf),
-            Self::SplitPlain(stream) => stream.write(buf),
-            Self::Tls(stream) => stream.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::SplitPlain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct ReaderControl {
@@ -402,87 +329,21 @@ fn clone_shutdown_stream(ws: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<Tc
     }
 }
 
-/// Convert tungstenite's handshake stream into Hew's post-handshake stream(s).
-///
-/// Plain TCP uses Strategy A from #1632: both the read-side framer and the
-/// write-side framer share one mutex-protected TCP write half. This preserves
-/// #1324's attached-mode latency fix while closing the byte-interleave race
-/// between user sends, explicit Pongs, and tungstenite 0.29's auto-Pong flush
-/// on `read()`. If cloning fails, Hew falls back to a single plain stream: safe
-/// (one framer mutex) but with the pre-#1324 attached-send stall.
-fn prepare_websockets(ws: WebSocket<MaybeTlsStream<TcpStream>>, role: Role) -> PreparedWebsockets {
-    let config = *ws.get_config();
-    match ws.into_inner() {
-        MaybeTlsStream::Plain(stream) => split_plain_websockets(stream, role, config)
-            .unwrap_or_else(|stream| {
-                (
-                    WebSocket::from_raw_socket(HewWsStream::Plain(stream), role, Some(config)),
-                    None,
-                    None,
-                )
-            }),
-        stream => (
-            WebSocket::from_raw_socket(HewWsStream::Tls(stream), role, Some(config)),
-            None,
-            None,
-        ),
-    }
-}
-
-/// Attempt to create independent read/write WebSocket framers over plain TCP
-/// with a single serialized write half.
-///
-/// Only succeeds for plain (non-TLS) connections. TLS connections cannot be split
-/// because the TLS record layer is stateful and not safe to share across two
-/// independently-created contexts writing to the same underlying file descriptor.
-///
-/// WHY: Fixes the reader-framer mutex stall in attached mode (issue #1324)
-///      while preserving frame integrity (issue #1632). With a split write
-///      WebSocket, sends acquire an independent framer mutex; the separate
-///      `write_operation_gate` is only for complete-operation serialization
-///      against read-side auto-Pong flushes.
-/// #1632 note: the two framers must not write through dup-cloned fds without
-/// operation-granularity serialization. tungstenite 0.29 queues auto-Pongs
-/// during `read()` and flushes them through the read-side stream on a later
-/// read entry, so routing only Hew's explicit Pong through `write_ws` would
-/// leave the race open. `write_operation_gate` is held across complete
-/// tungstenite `send` and `read` operations so short socket writes cannot
-/// interleave frames from the sibling framer.
-///
-/// WHEN: Extend to TLS once a thread-safe TLS write-half abstraction is available.
-/// WHAT: TLS split would require sharing a single `TlsStream` write half under a
-///       mutex between both the read-context and the write-context.
-fn split_plain_websockets(
-    stream: TcpStream,
-    role: Role,
-    config: WebSocketConfig,
-) -> Result<PreparedWebsockets, TcpStream> {
-    let Ok(write_stream) = stream.try_clone() else {
-        return Err(stream);
-    };
-    let Ok(write_read_stream) = stream.try_clone() else {
-        return Err(stream);
-    };
-
-    let shared_write = Arc::new(PlMutex::new(write_stream));
-    let write_operation_gate = Arc::new(PlMutex::new(()));
-    let read_ws = WebSocket::from_raw_socket(
-        HewWsStream::SplitPlain(SharedPlainWsStream {
-            read_stream: stream,
-            write_stream: Arc::clone(&shared_write),
+/// Preserve the handshake framer, including bytes read beyond the HTTP upgrade.
+/// A peer may send its first frame together with the handshake response; rebuilding
+/// the reader from `into_inner()` would silently discard those buffered bytes.
+/// Plain TCP gets an independent write framer over a cloned socket. The operation
+/// gate serializes its complete frames against the reader's automatic control
+/// replies, including short writes. TLS retains its single stateful framer.
+fn prepare_websockets(ws: HewWs, role: Role) -> PreparedWebsockets {
+    let write_ws = match ws.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream.try_clone().ok().map(|stream| {
+            WebSocket::from_raw_socket(MaybeTlsStream::Plain(stream), role, Some(*ws.get_config()))
         }),
-        role,
-        Some(config),
-    );
-    let write_ws = WebSocket::from_raw_socket(
-        HewWsStream::SplitPlain(SharedPlainWsStream {
-            read_stream: write_read_stream,
-            write_stream: shared_write,
-        }),
-        role,
-        Some(config),
-    );
-    Ok((read_ws, Some(write_ws), Some(write_operation_gate)))
+        _ => None,
+    };
+    let gate = write_ws.as_ref().map(|_| Arc::new(PlMutex::new(())));
+    (ws, write_ws, gate)
 }
 
 #[allow(
@@ -494,23 +355,19 @@ fn with_tcp_stream<R>(
     f: impl FnOnce(&mut TcpStream) -> io::Result<R>,
 ) -> io::Result<R> {
     match ws.get_mut() {
-        HewWsStream::Plain(stream) => f(stream),
-        HewWsStream::SplitPlain(stream) => f(&mut stream.read_stream),
-        HewWsStream::Tls(stream) => match stream {
-            MaybeTlsStream::Plain(stream) => f(stream),
-            #[cfg(feature = "native-tls")]
-            MaybeTlsStream::NativeTls(stream) => f(stream.get_mut()),
-            #[cfg(feature = "__rustls-tls")]
-            MaybeTlsStream::Rustls(stream) => f(&mut stream.sock),
-            #[allow(
-                unreachable_patterns,
-                reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
-            )]
-            _ => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "unsupported websocket stream kind",
-            )),
-        },
+        MaybeTlsStream::Plain(stream) => f(stream),
+        #[cfg(feature = "native-tls")]
+        MaybeTlsStream::NativeTls(stream) => f(stream.get_mut()),
+        #[cfg(feature = "__rustls-tls")]
+        MaybeTlsStream::Rustls(stream) => f(&mut stream.sock),
+        #[allow(
+            unreachable_patterns,
+            reason = "MaybeTlsStream is non-exhaustive and TLS variants depend on tungstenite features"
+        )]
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported websocket stream kind",
+        )),
     }
 }
 
@@ -998,7 +855,7 @@ fn ws_io_errno(err: &io::Error) -> i64 {
 /// writes cannot let bytes from user sends, explicit Pongs, or tungstenite
 /// auto-Pong flushes interleave. For TLS connections `write_ws` is absent and
 /// sends fall back to the shared `ws` mutex (the 250 ms stall persists for TLS;
-/// see `split_plain_websockets` for details).
+/// see `prepare_websockets` for details).
 fn send_ws_message(
     inner: &Arc<HewWsConnInner>,
     message: Message,
@@ -1815,6 +1672,30 @@ mod tests {
         // SAFETY: pointer came from hew_ws_last_error.
         unsafe { hew_cabi::string::string_release(ptr) };
         text
+    }
+
+    #[test]
+    fn prepared_reader_preserves_frame_buffered_during_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
+        let peer = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+        let (stream, _) = listener.accept().expect("accept");
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("read deadline");
+        // This is the framer state produced when an HTTP upgrade and the first
+        // server text frame arrive in one read. The peer sends no further bytes.
+        let ws = WebSocket::from_partially_read(
+            MaybeTlsStream::Plain(stream),
+            b"\x81\x05ready".to_vec(),
+            Role::Client,
+            None,
+        );
+        let (mut reader, _, _) = prepare_websockets(ws, Role::Client);
+        assert_eq!(
+            reader.read().expect("buffered frame"),
+            Message::Text("ready".into())
+        );
+        drop(peer);
     }
 
     #[test]

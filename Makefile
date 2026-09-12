@@ -1780,13 +1780,14 @@ verify-extern-string-abi:
 test-verify-ffi:
 	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
 
-# Python only; no artifacts.
-
+# Generate declaration-owned metadata before projecting the complete C ABI.
 cabi-surface:
+	cargo run -p xtask -- runtime-declarations --write
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
 cabi-surface-check:
+	cargo run -p xtask -- runtime-declarations --check
 	$(PYTHON) scripts/generate-cabi-surface.py --check
 
 # Python only; no artifacts.

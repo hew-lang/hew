@@ -8082,6 +8082,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         };
         match target {
+            CallTarget::DeclaredRuntime {
+                family,
+                actor_endpoints: Some(endpoints),
+                ..
+            } => {
+                self.lower_actor_attachment_runtime(expr, *family, endpoints, args, value_required)
+            }
             CallTarget::Builtin { endpoint } if endpoint == "assert" => {
                 self.lower_assert(expr, args)?;
                 Ok(None)
@@ -8105,7 +8112,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 };
                 self.lower_supervisor_stop(handle)
             }
-            CallTarget::Runtime(family) => self.lower_runtime_operation(
+            CallTarget::Runtime(family)
+            | CallTarget::DeclaredRuntime {
+                family,
+                actor_endpoints: None,
+                ..
+            } => self.lower_runtime_operation(
                 expr,
                 *family,
                 &args.iter().collect::<Vec<_>>(),
@@ -8134,6 +8146,56 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
+    fn lower_actor_attachment_runtime(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        endpoints: &hew_types::check::dispatch::ResolvedActorEndpoints,
+        args: &[HirExpr],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let [receiver, handler] = args else {
+            return Err("actor attachment requires its receiver and handler".into());
+        };
+        let handler_ty = self.ty(&handler.ty);
+        if handler_ty
+            .actor_handle_instance()
+            .is_none_or(|instance| instance.nominal.declaration() != &endpoints.actor)
+        {
+            return Err("actor ingress target differs from its resolved declaration".into());
+        }
+        let actor = self.service.require_actor(&handler_ty)?;
+        let pointer_ty = crate::ActorIngressAdapter::pointer_type();
+        let mut adapters = Vec::new();
+        for (index, endpoint) in [&endpoints.data, &endpoints.close].into_iter().enumerate() {
+            let adapter = crate::ActorIngressAdapter {
+                actor,
+                message: endpoint.msg_id,
+            };
+            let selected = adapter.handler(&self.service.actors)?;
+            if selected.declaration != endpoint.handler {
+                return Err("actor ingress endpoint differs from its resolved declaration".into());
+            }
+            if selected.params.is_empty() != (index == 1) {
+                return Err(
+                    "actor ingress data and close endpoints have incompatible payloads".into(),
+                );
+            }
+            adapters.push(self.emit_typed(
+                Provenance::Site(expr.site),
+                &pointer_ty,
+                SemOpKind::ActorIngressAdapter(adapter),
+            )?);
+        }
+        self.lower_runtime_operation_with(
+            expr,
+            family,
+            &[receiver, handler],
+            value_required,
+            &[(2, adapters[0]), (3, adapters[1])],
+        )
+    }
+
     fn lower_runtime_operation(
         &mut self,
         expr: &HirExpr,
@@ -8145,10 +8207,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// As [`Self::lower_runtime_operation`], with `prelowered` naming argument
-    /// positions whose owning value this body already produced. The named
+    /// positions whose value this body already produced. The named
     /// argument is transferred as it stands instead of being lowered from its
     /// expression, so an element rebuilt in place reaches the set entry rather
     /// than a second read of the slot it is replacing.
+    /// Positions beyond `args` append synthesized semantic operands such as
+    /// actor ingress adapters, whose existing value carries its exact type.
     #[allow(
         clippy::too_many_lines,
         reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
@@ -8236,14 +8300,41 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;
-        let source_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
+        let argument_count = args.len().max(
+            prelowered
+                .iter()
+                .map(|(index, _)| index + 1)
+                .max()
+                .unwrap_or(0),
+        );
+        let source_types = (0..argument_count)
+            .map(|index| {
+                if let Some((_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
+                    self.value_ty(*value)
+                        .ok_or_else(|| "runtime operand lacks its semantic value type".to_string())
+                } else {
+                    args.get(index).map(|arg| self.ty(&arg.ty)).ok_or_else(|| {
+                        "runtime operand position has no source or semantic value".to_string()
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let instantiated = contract
             .resolve_types(&source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         let parameter_types = &instantiated.arguments;
         for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
-            self.service.require_type_facts(source)?;
-            self.service.require_type_facts(target)?;
+            if prelowered.iter().any(|(at, _)| *at == index)
+                && *source == crate::ActorIngressAdapter::pointer_type()
+                && source == target
+            {
+                // An adapter address is synthesized at this foreign boundary;
+                // it is not a source-language raw-pointer value or aggregate.
+                require_type_facts(&mut self.service.checked_facts, source)?;
+            } else {
+                self.service.require_type_facts(source)?;
+                self.service.require_type_facts(target)?;
+            }
             if source != target {
                 if contract.arguments[index].effect != RuntimeArgumentEffect::Value {
                     return Err(format!(
@@ -8282,7 +8373,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut transformed_place = None;
-        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut lowered_args = Vec::with_capacity(argument_count);
         let mut loans = Vec::new();
         let effects = contract
             .arguments
@@ -8311,7 +8402,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
         let argument_loan_depth = self.argument_receiver_loans.len();
-        for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
+        for (index, effect) in effects.into_iter().enumerate() {
             if let Some(&(_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
                 let decision = match effect {
                     RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
@@ -8326,6 +8417,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 });
                 continue;
             }
+            let arg = args[index];
             let loan_floor = loans.len();
             let (value, decision) = if source_types[index] == parameter_types[index] {
                 match effect {
@@ -9200,7 +9292,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         let value = self.fresh_value();
-        self.service.require_type_facts(result_ty)?;
+        if matches!(kind, SemOpKind::ActorIngressAdapter(_)) {
+            require_type_facts(&mut self.service.checked_facts, result_ty)?;
+        } else {
+            self.service.require_type_facts(result_ty)?;
+        }
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
         let own = if let Some(parent) = kind.borrow_parent() {
             self.borrow_parents.insert(value, parent);

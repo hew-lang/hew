@@ -621,7 +621,9 @@ impl Checker {
                 .get(&EffectBody::Declaration(id.clone()))
                 .copied()
                 .unwrap_or(true),
-            Some(CallTarget::Runtime(family)) => family.is_async_suspending().is_some(),
+            Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
+                family.is_async_suspending().is_some()
+            }
             Some(
                 CallTarget::Extern { .. }
                 | CallTarget::Builtin { .. }

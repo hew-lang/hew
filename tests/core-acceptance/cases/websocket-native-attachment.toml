@@ -1,0 +1,13 @@
+[[case]]
+id = "websocket-native-attachment"
+intent = "WebSocket attachment preserves UTF-8 and NUL text, remote close and outbound usability."
+source = "cases/websocket-native-attachment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "websocket attached text and outbound reply\n"
+exit = 0

@@ -3921,6 +3921,28 @@ pub(crate) unsafe fn try_submit_native_request(
     envelope: *mut crate::mailbox::HewMsgEnvelope,
     reply: *mut c_void,
 ) -> crate::mailbox::SendOutcome {
+    // SAFETY: forwards the uniquely owned request and its optional reply.
+    unsafe { submit_native_request(token, message, envelope, reply, false) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn submit_native_terminal(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+) -> crate::mailbox::SendOutcome {
+    // SAFETY: the caller uniquely owns this terminal event envelope.
+    unsafe { submit_native_request(token, message, envelope, std::ptr::null_mut(), true) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn submit_native_request(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut crate::mailbox::HewMsgEnvelope,
+    reply: *mut c_void,
+    terminal: bool,
+) -> crate::mailbox::SendOutcome {
     let Some(actor_id) = crate::lifetime::local_handles::resolve_current_actor(token) else {
         return mailbox::SendOutcome::Closed;
     };
@@ -3932,7 +3954,11 @@ pub(crate) unsafe fn try_submit_native_request(
         }
         // SAFETY: the pinned mailbox consumes only an admitted envelope.
         let outcome = unsafe {
-            mailbox::try_admit_native_request(&*a.mailbox.cast(), message, envelope, reply)
+            if terminal {
+                mailbox::admit_native_terminal(&*a.mailbox.cast(), message, envelope)
+            } else {
+                mailbox::try_admit_native_request(&*a.mailbox.cast(), message, envelope, reply)
+            }
         };
         if matches!(outcome, mailbox::SendOutcome::Enqueued) {
             // SAFETY: a message reached the live, pinned actor's mailbox.
@@ -4636,66 +4662,6 @@ pub unsafe extern "C" fn hew_actor_try_send(
 
     // SAFETY: Mailbox is valid for the actor's lifetime.
     let result = unsafe { mailbox::hew_mailbox_try_send(mb, msg_type, data, size) };
-    if result != 0 {
-        return result;
-    }
-
-    // SAFETY: this producer fully linked a node and still owns actor lifetime.
-    unsafe { finish_mailbox_enqueue(actor, a) };
-
-    0
-}
-
-/// Guaranteed (non-blocking, non-dropping) send for a terminal/out-of-band
-/// event that must survive a full mailbox under data backpressure.
-///
-/// Unlike [`hew_actor_try_send`], the enqueue **bypasses the bounded-capacity
-/// overflow policy** ([`mailbox::hew_mailbox_send_guaranteed`]): the message is
-/// appended to the tail of the user queue even when the mailbox is at capacity,
-/// so it is never silently dropped. It is still **non-blocking** — it never
-/// waits on the mailbox condvar — so the calling thread (the single active-mode
-/// reactor thread) is never stalled and can never deadlock with the synchronous
-/// actor-teardown path that spin-waits on the in-flight-delivery guard.
-///
-/// FIFO is preserved: the event lands behind every already-queued message
-/// (the user queue, not the priority system queue), so a terminal `on_close`
-/// never overtakes buffered `on_data`.
-///
-/// Returns `0` on success. A non-zero return means the mailbox is closed or
-/// allocation failed — for a terminal event both mean the actor is already
-/// gone, so there is nothing left to deliver.
-///
-/// # Safety
-///
-/// Same requirements as [`hew_actor_try_send`].
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn hew_actor_send_guaranteed(
-    actor: *mut HewActor,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> i32 {
-    if actor.is_null() {
-        return HewError::ErrActorStopped as i32;
-    }
-    // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &*actor };
-    // Fail closed on a cross-runtime pointer (never fires single-runtime).
-    if !actor_runtime_matches(a) {
-        return HewError::ErrForeignRuntime as i32;
-    }
-    // Terminal-state send gate (see `actor_send_is_terminal`): a terminal actor
-    // is already gone, so the out-of-band terminal event is moot. Reject before
-    // the mailbox even if it is not yet closed, matching the closed-mailbox
-    // outcome ("nothing left to deliver") and closing the trap's
-    // terminal-CAS-before-mailbox-close window.
-    if actor_send_is_terminal(a) {
-        return HewError::ErrActorStopped as i32;
-    }
-    let mb = a.mailbox.cast::<HewMailbox>();
-
-    // SAFETY: Mailbox is valid for the actor's lifetime.
-    let result = unsafe { mailbox::hew_mailbox_send_guaranteed(mb, msg_type, data, size) };
     if result != 0 {
         return result;
     }
@@ -12028,14 +11994,6 @@ mod tests {
             "try_send to a foreign-runtime actor must fail closed"
         );
 
-        // SAFETY: as above.
-        let guaranteed_rc = unsafe { hew_actor_send_guaranteed(actor, 1, ptr::null_mut(), 0) };
-        assert_eq!(
-            guaranteed_rc,
-            HewError::ErrForeignRuntime as i32,
-            "send_guaranteed to a foreign-runtime actor must fail closed"
-        );
-
         // The fire-and-forget result path (used by `hew_actor_send`) also
         // refuses; assert on the result-returning internal it delegates to.
         // SAFETY: as above.
@@ -14629,15 +14587,6 @@ mod tests {
                 send_rc,
                 HewError::ErrActorStopped as i32,
                 "send into a {terminal:?} actor must be rejected by the terminal gate"
-            );
-
-            // The guaranteed (out-of-band terminal-event) path.
-            // SAFETY: as above.
-            let guaranteed_rc = unsafe { hew_actor_send_guaranteed(actor, 1, ptr::null_mut(), 0) };
-            assert_eq!(
-                guaranteed_rc,
-                HewError::ErrActorStopped as i32,
-                "send_guaranteed into a {terminal:?} actor must be rejected by the terminal gate"
             );
 
             // No path enqueued: nothing reached the (still-open) mailbox.

@@ -179,6 +179,35 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     policy: i32,
 ) -> i32 {
+    // SAFETY: forwards the unpublished wrapper and typed ownership contract.
+    unsafe { submit_native(token, message, payload, size, drop_payload, policy, false) }
+}
+
+/// Submit an attachment close event after queued data without capacity refusal.
+///
+/// # Safety
+/// The wrapper is uniquely owned, with the same contract as native submission.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_submit_native_terminal(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    payload: *mut std::ffi::c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+) -> i32 {
+    // SAFETY: forwards the unpublished wrapper and typed ownership contract.
+    unsafe { submit_native(token, message, payload, size, drop_payload, 0, true) }
+}
+
+unsafe fn submit_native(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    payload: *mut std::ffi::c_void,
+    size: usize,
+    drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
+    policy: i32,
+    terminal: bool,
+) -> i32 {
     if payload.is_null() {
         return 3;
     }
@@ -193,7 +222,13 @@ pub unsafe extern "C" fn hew_actor_submit_native(
         return 3;
     }
     // SAFETY: the envelope is unpublished and transfers only on admission.
-    let outcome = unsafe { crate::actor::try_submit_native_envelope(token, message, envelope) };
+    let outcome = unsafe {
+        if terminal {
+            crate::actor::submit_native_terminal(token, message, envelope)
+        } else {
+            crate::actor::try_submit_native_envelope(token, message, envelope)
+        }
+    };
     let status = match outcome {
         crate::mailbox::SendOutcome::Enqueued => return 0,
         crate::mailbox::SendOutcome::Failed if policy == 2 => {

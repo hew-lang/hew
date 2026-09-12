@@ -10,6 +10,7 @@ const CLASSIFIED_BLOCKS: &[&str] = &[
     "stable = [",
     "stable-stdlib = [",
     "non-declarable = [",
+    "non-declarable-stdlib = [",
     "public-host = [",
     "public-host-stdlib = [",
 ];
@@ -58,8 +59,16 @@ pub fn stable_symbols() -> &'static HashSet<&'static str> {
 #[must_use]
 pub fn is_classified_hew_ffi_symbol(symbol: &str) -> bool {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, CLASSIFIED_BLOCKS))
-        .contains(symbol)
+    SET.get_or_init(|| {
+        let mut symbols =
+            parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, CLASSIFIED_BLOCKS);
+        symbols.extend(parse_symbol_blocks(
+            crate::runtime_call::DECLARED_RUNTIME_EXPORTS_TOML,
+            CLASSIFIED_BLOCKS,
+        ));
+        symbols
+    })
+    .contains(symbol)
 }
 
 #[cfg(test)]

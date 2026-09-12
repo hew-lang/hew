@@ -1,0 +1,50 @@
+import std.net;
+
+import std.channel;
+
+actor AttachedInput {
+    let ready: channel.Sender<i64>,
+    receive fn on_close() {}
+    receive fn on_data(data: bytes) {
+        ready.send(data.len());
+        // The parent observes readiness before closing this actor. The input
+        // remains live across suspension, so termination must clean its owner.
+        sleep(30s);
+        assert(data.len() > 0);
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        .Ok(value) => value,
+        .Err(_) => panic("channel failed"),
+    };
+    let listener = match net.listen("127.0.0.1:0") {
+        .Ok(value) => value,
+        .Err(_) => panic("listen failed"),
+    };
+    let client = match net.connect(f"127.0.0.1:{listener.local_port()}") {
+        .Ok(value) => value,
+        .Err(_) => panic("connect failed"),
+    };
+    let receiver = spawn AttachedInput(ready: tx);
+    let server = listener.accept();
+    match server.attach(receiver) {
+        .Ok(()) => {},
+        .Err(_) => panic("attach refused"),
+    }
+    match client.write_string("owned\0input") {
+        .Ok(()) => {},
+        .Err(_) => panic("write failed"),
+    }
+    match rx.recv() {
+        .Some(size) => assert(size > 0),
+        .None => panic("actor never received input"),
+    }
+    let _ = client.write_string("pending\0input");
+    close(receiver);
+    client.close();
+    listener.close();
+    rx.close();
+    println("attached input released on actor close");
+}

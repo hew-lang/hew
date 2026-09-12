@@ -1773,7 +1773,24 @@ impl<'a> Formatter<'a> {
                         AttributeArg::KeyValue { key, value } => {
                             self.write(key);
                             self.write(" = ");
-                            self.write(value);
+                            // Attribute values retain literal contents in the
+                            // AST. Emit them bare only when lexing preserves a
+                            // single identifier or the same integer value.
+                            let tokens = hew_lexer::lex(value);
+                            let bare = match tokens.as_slice() {
+                                [(hew_lexer::Token::Identifier(name), _)] => *name == value,
+                                [(hew_lexer::Token::Integer(integer), _)] => {
+                                    integer.to_string() == *value
+                                }
+                                _ => false,
+                            };
+                            if bare {
+                                self.write(value);
+                            } else {
+                                self.write("\"");
+                                self.write(value);
+                                self.write("\"");
+                            }
                         }
                         AttributeArg::Duration(ns) => self.write(&format_duration_ns(*ns)),
                     }
@@ -4350,6 +4367,40 @@ mod tests {
             result.errors
         );
         format_program(&result.program)
+    }
+
+    #[test]
+    fn runtime_attribute_values_survive_formatting() {
+        let source = r#"
+            impl Connection {
+                #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native,
+                    lowering = actor_ingress, target = native,
+                    classification = "non-declarable-stdlib", receiver = connection,
+                    data = on_data, close = on_close, result = status_result,
+                    error_type = "std.net.AttachError", error_variant = Refused)]
+                fn attach() {}
+            }
+        "#;
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let formatted = format_program(&parsed.program);
+        let reparsed = parse(&formatted);
+        assert!(
+            reparsed.errors.is_empty(),
+            "{:?}\n{formatted}",
+            reparsed.errors
+        );
+        let Item::Impl(before) = &parsed.program.items[0].0 else {
+            panic!("expected original implementation");
+        };
+        let Item::Impl(after) = &reparsed.program.items[0].0 else {
+            panic!("expected formatted implementation");
+        };
+        assert_eq!(
+            before.methods[0].attributes[0].args,
+            after.methods[0].attributes[0].args
+        );
+        assert_eq!(format_program(&reparsed.program), formatted);
     }
 
     #[test]

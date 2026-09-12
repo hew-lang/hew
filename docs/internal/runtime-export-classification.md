@@ -8,9 +8,14 @@ code or AOT runtime support.
 
 ## Source of truth
 
-The source of truth lives in `scripts/runtime-export-classification.toml`.
+Runtime methods marked `#[runtime(...)]` in the stdlib own their operation,
+export classification and FFI ownership contracts. The compiler derives these
+facts during its build; `make cabi-surface` writes the same projection to
+`scripts/generated-runtime-declarations.toml` for the Python tooling. Remaining
+exports and contracts are owned by `scripts/runtime-export-classification.toml`.
+The two sources must not duplicate a symbol.
 
-The reviewed classification file feeds these consumers:
+The combined classification feeds these consumers:
 
 - `scripts/verify-ffi-symbols.py --classify …`
 - the required CI lint gate (`make verify-ffi`, which runs `--classify stable --validate`)
@@ -30,7 +35,10 @@ in Hew source code may name. Generated-code hosts expose these symbols. The type
 enforces this boundary: a symbol named in an `extern "rt"` block must occur in
 `stable` or `stable-stdlib`.
 
-### `non-declarable`
+### `non-declarable` and `non-declarable-stdlib`
+
+The suffix identifies exports implemented in `hew-std`; both tiers have the
+same restriction on source declarations.
 
 Every runtime export that user source cannot name through `extern "rt"`. This
 tier combines compiler-emitted protocol functions such as safepoints,

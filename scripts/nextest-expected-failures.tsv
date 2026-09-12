@@ -1,5 +1,4 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
-linux,macos,windows	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 reachable TCP attachment exposes missing TcpAttachLocal ownership-SIR contract
 linux,macos,windows	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
 linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 feat/generators-adaptors: lowers a direct call to std.pipeline.run
 macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states

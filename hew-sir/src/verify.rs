@@ -659,23 +659,7 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
                 )),
             ));
         }
-        for operation in function.blocks.iter().flat_map(|block| &block.ops) {
-            let missing = match operation.kind {
-                SemOpKind::ConstStr(id) => !module.string_literals.contains_key(&id),
-                SemOpKind::ConstBytes(id) => !module.bytes_literals.contains_key(&id),
-                _ => false,
-            };
-            if missing {
-                diagnostics.push(diag(
-                    function,
-                    SirDiagnosticKind::InvalidOperation {
-                        op: operation.id,
-                        reason: "literal operation references a missing module pool entry"
-                            .to_string(),
-                    },
-                ));
-            }
-        }
+        verify_constant_references(module, function, &mut diagnostics);
         let (function_diagnostics, analysis) = check_function_with_context(
             function,
             Some(&callables),
@@ -692,6 +676,41 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         Ok(CheckedModule { module, functions })
     } else {
         Err(diagnostics)
+    }
+}
+
+/// Constant references name module-owned literals or selected actor protocols.
+fn verify_constant_references(
+    module: &SemModule,
+    function: &SemFunction,
+    diagnostics: &mut Vec<SirDiagnostic>,
+) {
+    for operation in function.blocks.iter().flat_map(|block| &block.ops) {
+        if let SemOpKind::ActorIngressAdapter(adapter) = operation.kind {
+            if let Err(reason) = adapter.handler(&module.actors) {
+                diagnostics.push(diag(
+                    function,
+                    SirDiagnosticKind::InvalidOperation {
+                        op: operation.id,
+                        reason,
+                    },
+                ));
+            }
+        }
+        let missing = match operation.kind {
+            SemOpKind::ConstStr(id) => !module.string_literals.contains_key(&id),
+            SemOpKind::ConstBytes(id) => !module.bytes_literals.contains_key(&id),
+            _ => false,
+        };
+        if missing {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidOperation {
+                    op: operation.id,
+                    reason: "literal operation references a missing module pool entry".to_string(),
+                },
+            ));
+        }
     }
 }
 
@@ -2945,6 +2964,18 @@ fn verify_operation_shape(
                 },
             ));
         }
+        SemOpKind::ActorIngressAdapter(_)
+            if result.ty != crate::ActorIngressAdapter::pointer_type() =>
+        {
+            diagnostics.push(diag(
+                function,
+                SirDiagnosticKind::InvalidConstType {
+                    op: operation.id,
+                    expected: "actor ingress callback pointer",
+                    actual: result.ty.user_facing().to_string(),
+                },
+            ));
+        }
         SemOpKind::ConstBool(_) if result.ty != ResolvedTy::Bool => diagnostics.push(diag(
             function,
             SirDiagnosticKind::InvalidConstType {
@@ -3607,6 +3638,7 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::ConstInteger(_)
+        | SemOpKind::ActorIngressAdapter(_)
         | SemOpKind::ConstBool(_)
         | SemOpKind::ConstFloat(_)
         | SemOpKind::ConstChar(_)

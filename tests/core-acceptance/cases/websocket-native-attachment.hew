@@ -1,0 +1,62 @@
+import std.net.websocket;
+
+actor Receiver {
+    var valid: bool = false,
+    var ended: bool = false,
+
+    receive fn on_close() {
+        ended = true;
+    }
+
+    receive fn result() -> (bool, bool) {
+        (valid, ended)
+    }
+
+    receive fn on_message(text: string) {
+        valid = text == "héllo\0world";
+    }
+}
+
+fn peer(url: string) {
+    let client = match websocket.connect(url) {
+        .Ok(value) => value,
+        .Err(_) => panic("connect failed"),
+    };
+    assert(client.send_text("héllo\0world") == 0);
+    let reply = client.recv();
+    assert(reply.text() == "still writable");
+    reply.close();
+    client.close();
+}
+
+fn main() {
+    let listener = match websocket.listen("127.0.0.1:0") {
+        .Ok(value) => value,
+        .Err(_) => panic("listen failed"),
+    };
+    let receiver = spawn Receiver;
+    scope {
+        let _client = fork peer(f"ws://127.0.0.1:{listener.port()}");
+        let server = listener.accept();
+        server.attach(receiver);
+        assert(server.send_text("still writable") == 0);
+        var finished = false;
+        for attempt in 0 .. 5000 {
+            let state = match receiver.result() {
+                .Ok(value) => value,
+                .Err(_) => panic("receiver failed"),
+            };
+            if state.1 {
+                assert(state.0);
+                finished = true;
+                break;
+            }
+            sleep(1ms);
+        }
+        assert(finished);
+        server.close();
+    };
+    listener.close();
+    close(receiver);
+    println("websocket attached text and outbound reply");
+}

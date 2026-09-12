@@ -1321,6 +1321,19 @@
         "native"
       ],
       "classification": "non-declarable",
+      "extent": "length-or-count",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_submit_native_terminal( HewLocalPidId, i32, *mut c_void, usize, HewMsgEnvelopeDropFn, ) -> i32"
+      },
+      "symbol": "hew_actor_submit_native_terminal"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -18057,27 +18070,14 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
+      "classification": "non-declarable",
+      "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_tcp_attach( c_int, *const HewActorRef, i32, i32, ) -> c_int"
+        "native": "fn hew_tcp_attach_native( c_int, NativeActorToken, AttachCallback, AttachCallback, ) -> c_int"
       },
-      "symbol": "hew_tcp_attach"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_tcp_attach_local( c_int, *mut HewActor, i32, i32, ) -> c_int"
-      },
-      "symbol": "hew_tcp_attach_local"
+      "symbol": "hew_tcp_attach_native"
     },
     {
       "availability": [
@@ -18398,14 +18398,14 @@
       "availability": [
         "native"
       ],
-      "classification": "stable-stdlib",
+      "classification": "non-declarable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_tls_attach( *mut HewTlsStream, *mut c_void, i64, i64, ) -> i32"
+        "native": "fn hew_tls_attach_native( *mut HewTlsStream, NativeActorToken, AttachCallback, AttachCallback, ) -> i32"
       },
-      "symbol": "hew_tls_attach"
+      "symbol": "hew_tls_attach_native"
     },
     {
       "availability": [
@@ -22011,14 +22011,14 @@
       "availability": [
         "native"
       ],
-      "classification": "stable-stdlib",
+      "classification": "non-declarable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_ws_attach( *mut HewWsConn, *mut c_void, i64, i64, ) -> i32"
+        "native": "fn hew_ws_attach_native( *mut HewWsConn, NativeActorToken, AttachCallback, AttachCallback, ) -> i32"
       },
-      "symbol": "hew_ws_attach"
+      "symbol": "hew_ws_attach_native"
     },
     {
       "availability": [

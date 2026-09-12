@@ -8,6 +8,53 @@ use crate::{CallableId, SemModule};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActorId(pub u32);
 
+/// A one-way entry adapter for a runtime producer's borrowed input buffer.
+/// The selected handler remains the authority for message identity and fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ActorIngressAdapter {
+    pub actor: ActorId,
+    pub message: u32,
+}
+
+impl ActorIngressAdapter {
+    /// Validate the exact protocol member before realizing its callback.
+    ///
+    /// # Errors
+    /// Rejects an absent member or a handler outside the ingress protocol.
+    pub fn handler(self, actors: &[SemActor]) -> Result<&SemActorHandler, String> {
+        let handler = actors
+            .get(self.actor.0 as usize)
+            .filter(|actor| actor.id == self.actor)
+            .and_then(|actor| {
+                actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == self.message)
+            })
+            .ok_or("actor ingress adapter has no selected handler")?;
+        if handler.return_ty != ResolvedTy::Unit
+            || !matches!(
+                handler.params.as_slice(),
+                [] | [ResolvedTy::Bytes | ResolvedTy::String]
+            )
+        {
+            return Err(
+                "actor ingress adapter requires a unit handler with no field, bytes or string"
+                    .into(),
+            );
+        }
+        Ok(handler)
+    }
+
+    #[must_use]
+    pub fn pointer_type() -> ResolvedTy {
+        ResolvedTy::Pointer {
+            is_mutable: false,
+            pointee: Box::new(ResolvedTy::U8),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemActorField {
     pub ty: ResolvedTy,

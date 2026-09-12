@@ -152,9 +152,8 @@ impl TlsStreamMethods for TlsStream {
     }
     /// Compiler-lowered active-mode attach.
     ///
-    /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
-    /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
-    /// four-argument runtime ABI. This stub is never lowered.
+    /// The runtime delivers owned messages using the selected actor handlers.
+    #[runtime(family = TlsAttachLocal, symbol = hew_tls_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_data, close = on_close, result = discard_status)]
     fn attach(stream: TlsStream, handler: TlsHandler) {}
 }
 

@@ -1,0 +1,14 @@
+import std.net;
+
+actor Receiver {
+    receive fn on_data(data: bytes) {}
+
+    receive fn on_close() {}
+}
+
+fn install(consume conn: net.Connection, receiver: Receiver) {
+    conn.attach(receiver);
+    conn.close();
+}
+
+fn main() {}

@@ -3,13 +3,14 @@
 
 Scans hew-runtime and hew-std Rust source files for #[no_mangle] extern "C"
 and extern "C-unwind" fn exports and validates the classifications in
-scripts/runtime-export-classification.toml.
+scripts/runtime-export-classification.toml and its declaration-derived supplement.
 
 ABI classifications:
   stable         -- user-visible runtime surface; user `extern "rt"` blocks
                     and native generated-code hosts.
   non-declarable -- compiler-emitted and runtime-only; generated-code hosts provide these alongside
                     stable, but users cannot name them in `extern "rt"`.
+  non-declarable-stdlib -- corresponding compiler-only exports from hew-std.
   public-host    -- public C host API; excluded from source extern rt and generated code.
   public-host-stdlib -- the corresponding C host API exported by hew-std.
 
@@ -31,22 +32,26 @@ import argparse
 from itertools import combinations
 import re
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from corpus_nonempty import check_nonempty  # noqa: E402
+from runtime_classification import load_document  # noqa: E402
 
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 STDLIB_SRC = ROOT / "hew-std" / "src"
 RUNTIME_EXPORT_CLASSIFICATION = ROOT / "scripts" / "runtime-export-classification.toml"
+GENERATED_RUNTIME_DECLARATIONS = (
+    ROOT / "scripts" / "generated-runtime-declarations.toml"
+)
 SOURCE_ENCODING = "utf-8"
 CLASSIFICATION_CRATES = {
     "stable": "runtime",
     "stable-stdlib": "stdlib",
     "non-declarable": "runtime",
+    "non-declarable-stdlib": "stdlib",
     "public-host": "runtime",
     "public-host-stdlib": "stdlib",
 }
@@ -329,8 +334,8 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 
 
 def load_jit_symbol_classification() -> dict[str, set[str]]:
-    document = tomllib.loads(
-        RUNTIME_EXPORT_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    document = load_document(
+        RUNTIME_EXPORT_CLASSIFICATION, GENERATED_RUNTIME_DECLARATIONS
     )
     allowed_keys = set(CLASSIFICATION_CRATES) | {"ownership", "sys-lane-closure"}
     unknown_keys = sorted(set(document) - allowed_keys)
@@ -341,7 +346,9 @@ def load_jit_symbol_classification() -> dict[str, set[str]]:
         )
     classification: dict[str, set[str]] = {}
     for key in CLASSIFICATION_CRATES:
-        if key not in document and key not in PUBLIC_HOST_TIERS:
+        if key not in document and key not in PUBLIC_HOST_TIERS | {
+            "non-declarable-stdlib"
+        }:
             raise ValueError(f"{RUNTIME_EXPORT_CLASSIFICATION}: missing {key} list")
         symbols = document.get(key, [])
         if not isinstance(symbols, list) or any(
@@ -364,8 +371,8 @@ def validate_ownership_contracts(
     fn_param_counts: dict[str, set[int]],
 ) -> list[str]:
     errors: list[str] = []
-    document = tomllib.loads(
-        RUNTIME_EXPORT_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    document = load_document(
+        RUNTIME_EXPORT_CLASSIFICATION, GENERATED_RUNTIME_DECLARATIONS
     )
     ownership = document.get("ownership")
     if not isinstance(ownership, dict):

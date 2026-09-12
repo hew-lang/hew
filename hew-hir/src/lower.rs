@@ -13223,10 +13223,12 @@ impl LowerCtx {
     /// structured dispatch will carry to MIR.
     fn call_target_presentation_name(target: &CallTarget) -> String {
         match target {
-            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+            CallTarget::User(declaration)
+            | CallTarget::ImplMethod(declaration)
+            | CallTarget::Extern { declaration, .. }
+            | CallTarget::DeclaredRuntime { declaration, .. } => {
                 declaration.full_path().to_string()
             }
-            CallTarget::Extern { declaration, .. } => declaration.full_path().to_string(),
             CallTarget::Runtime(family) => format!("runtime::{family:?}"),
             CallTarget::Builtin { endpoint } => endpoint.clone(),
             CallTarget::RuntimeCollection(family) => format!("runtime collection::{family:?}"),
@@ -26735,23 +26737,14 @@ impl LowerCtx {
                 );
             }
         }
-        // A checker-selected typed runtime endpoint is already a complete
-        // executable dispatch decision.  It intentionally wins over the
-        // declaration-level resolver verdict that was also recorded while
-        // validating the source method surface: active transport `attach`, for
-        // example, has a source trait implementation solely for type checking,
-        // while its actual call ABI is the runtime family that synthesises
-        // concrete actor protocol IDs.  Trying to project that source stub into
-        // an imported HIR body both loses the runtime ABI and rejects valid
-        // imported handles when the trait declaration has no materialised
-        // body.  Keep this precedence structural (the typed `CallTarget`), not
-        // symbol- or receiver-name based, so every future runtime override has
-        // the same semantics.
+        // Runtime invocation facts already select an executable contract.
+        // They supersede the ordinary source-body resolver verdict recorded
+        // while checking the same declaration's public method signature.
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         let runtime_rewrite_selected = matches!(
             &rewrite,
             Some(MethodCallRewrite::RewriteToFunction {
-                target: CallTarget::Runtime(_),
+                target: CallTarget::Runtime(_) | CallTarget::DeclaredRuntime { .. },
                 ..
             })
         );
@@ -27080,6 +27073,16 @@ impl LowerCtx {
                     .map_or(ResolvedTy::Unit, |ty| {
                         self.qualify_current_module_record_ty(ty)
                     });
+                if matches!(target, CallTarget::DeclaredRuntime { .. }) {
+                    return self.lower_declared_runtime_invocation(
+                        target,
+                        receiver,
+                        args,
+                        consumes_receiver,
+                        ret_ty,
+                        &span,
+                    );
+                }
                 let c_symbol = match &target {
                     CallTarget::ImplMethod(declaration) => {
                         let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
@@ -28958,6 +28961,170 @@ impl LowerCtx {
                 return;
             }
         }
+    }
+
+    /// Consume the checked source contract and concrete callback identities.
+    /// The runtime status is adapted with ordinary value/branch constructs, so
+    /// SIR receives one raw invocation and owns the same cleanup paths as any
+    /// other call and Result construction.
+    fn lower_declared_runtime_invocation(
+        &mut self,
+        target: CallTarget,
+        receiver: &Spanned<Expr>,
+        args: &[hew_parser::ast::CallArg],
+        consumes_receiver: bool,
+        result_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        use hew_types::check::dispatch::ResolvedRuntimeResult;
+        let CallTarget::DeclaredRuntime { family, result, .. } = &target else {
+            unreachable!("declared runtime invocation requires its checked target");
+        };
+        let family = *family;
+        let adaptation = result.clone();
+        let receiver = self.lower_expr(
+            receiver,
+            if consumes_receiver {
+                IntentKind::Consume
+            } else {
+                IntentKind::Read
+            },
+        );
+        let mut lowered_args = vec![receiver];
+        lowered_args.extend(
+            args.iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read)),
+        );
+        let callee = self.make_expr(
+            HirExprKind::BindingRef {
+                name: family.c_symbol().to_string(),
+                resolved: ResolvedRef::Builtin(family),
+            },
+            ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: lowered_args.iter().map(|arg| arg.ty.clone()).collect(),
+                ret: Box::new(ResolvedTy::I32),
+            },
+            IntentKind::Read,
+            span.clone(),
+        );
+        let call = self.make_expr(
+            HirExprKind::Call {
+                target,
+                callee: Box::new(callee),
+                args: lowered_args,
+            },
+            ResolvedTy::I32,
+            IntentKind::Read,
+            span.clone(),
+        );
+        if adaptation == ResolvedRuntimeResult::DiscardStatus {
+            return (
+                HirExprKind::Block(HirBlock {
+                    node: self.ids.node(),
+                    scope: self.ids.scope(),
+                    statements: vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(call),
+                        span: span.clone(),
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: span.clone(),
+                }),
+                ResolvedTy::Unit,
+            );
+        }
+        let ResolvedRuntimeResult::StatusResult { error } = adaptation else {
+            unreachable!("status discard was handled above");
+        };
+        self.lower_runtime_status_result(call, error, result_ty, span)
+    }
+
+    /// Map the raw runtime status to the source-selected Result constructors.
+    fn lower_runtime_status_result(
+        &mut self,
+        call: HirExpr,
+        error: hew_types::VariantMatch,
+        result_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let error_ty = self.qualify_current_module_record_ty(ResolvedTy::Named {
+            name: error.type_name.clone(),
+            args: Vec::new(),
+            builtin: None,
+            is_opaque: false,
+        });
+        let error_key = format!("{}::{}", error.type_name, error.variant_name);
+        // This is the ordinary checked VariantMatch identity. Project its
+        // exact constructor into the HIR layout registry, without resolving a
+        // source spelling or retrying a short variant name.
+        let constructors = self
+            .machine_ctor_registry
+            .get(&error_key)
+            .cloned()
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Ok", span))
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Err", span));
+        let Some((((error_name, error_index), (_, ok_index)), (_, err_index))) = constructors
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: error_key,
+                    reason: "checked runtime result constructor has no HIR layout".to_string(),
+                },
+                span.clone(),
+                "runtime result constructor facts could not be lowered",
+            ));
+            return (
+                HirExprKind::Unsupported("invalid declared runtime result".to_string()),
+                result_ty,
+            );
+        };
+        let error = self.synthetic_variant_ctor(&error_name, error_index, None, error_ty, span);
+        let unit = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Unit),
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let success = self.synthetic_variant_ctor(
+            "Result",
+            ok_index,
+            Some(vec![("0".to_string(), unit)]),
+            result_ty.clone(),
+            span,
+        );
+        let refusal = self.synthetic_variant_ctor(
+            "Result",
+            err_index,
+            Some(vec![("0".to_string(), error)]),
+            result_ty.clone(),
+            span,
+        );
+        let zero = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Integer(0)),
+            ResolvedTy::I32,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: hew_parser::ast::BinaryOp::Equal,
+                left: Box::new(call),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        (
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(success),
+                else_expr: Some(Box::new(refusal)),
+            },
+            result_ty,
+        )
     }
 
     /// Build the `HirExprKind::MachineVariantCtor` node for a tuple-variant

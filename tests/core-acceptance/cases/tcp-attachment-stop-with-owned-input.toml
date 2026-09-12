@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-attachment-stop-with-owned-input"
+intent = "Close a TCP destination after it acknowledges owned input, with another chunk pending; suspended and queued owners are reclaimed."
+source = "cases/tcp-attachment-stop-with-owned-input.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "attached input released on actor close\n"
+exit = 0

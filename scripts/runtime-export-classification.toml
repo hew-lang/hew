@@ -5,7 +5,9 @@
 # in one of the three lists below. Keep entries sorted for stable diffs.
 #
 # Ownership contracts live in [[ownership.contracts]] entries at the end of
-# this file. A row exists for a symbol only when a real consumer reads it: the
+# this file. Declaration-owned runtime rows are projected into
+# generated-runtime-declarations.toml from the owning .hew attributes.
+# A row exists for a symbol only when a real consumer reads it: the
 # checker consults contracts for source-declarable `extern "rt"` symbols
 # (absence is the fail-closed "no mint" default), and a handful of
 # runtime-call families look up rows by C symbol (see hew-sir/src/resource.rs,
@@ -770,8 +772,6 @@ stable = [
   "hew_task_spawn_thread",
   "hew_task_spawn_thread_with_inherited_context",
   "hew_tcp_accept",
-  "hew_tcp_attach",
-  "hew_tcp_attach_local",
   "hew_tcp_broadcast_except",
   "hew_tcp_close",
   "hew_tcp_connect",
@@ -1179,7 +1179,6 @@ stable-stdlib = [
   "hew_smtp_send_html_once",
   "hew_smtp_send_once",
   "hew_sort_floats",
-  "hew_tls_attach",
   "hew_tls_close",
   "hew_tls_connect",
   "hew_tls_last_error",
@@ -1228,7 +1227,6 @@ stable-stdlib = [
   "hew_uuid_parse",
   "hew_uuid_v4",
   "hew_uuid_v7",
-  "hew_ws_attach",
   "hew_ws_close",
   "hew_ws_conn_is_valid",
   "hew_ws_connect",
@@ -1333,6 +1331,7 @@ non-declarable = [
   "hew_actor_send_wait_poll",
   "hew_actor_spawn_native",
   "hew_actor_submit_native",
+  "hew_actor_submit_native_terminal",
   "hew_actor_terminate_set_fault",
   "hew_actor_wait_edge_fault",
   "hew_actor_wait_edge_free",
@@ -4303,22 +4302,6 @@ result-retention = "resource-transfer"
 result-retention-basis = "accept inserts the newly accepted TcpStream under a fresh table handle; only that returned token selects its hew_tcp_close removal"
 
 [[ownership.contracts]]
-symbol = "hew_tcp_attach"
-result = "none"
-params = ["consume", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.Connection", "", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_tcp_attach_local"
-result = "none"
-params = ["consume", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.Connection", "", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
 symbol = "hew_tcp_broadcast_except"
 result = "none"
 params = ["borrow", "borrow"]
@@ -5317,16 +5300,7 @@ discharge-depth = "none"
 # WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
 # HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
 # Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
-# string. hew_ws_attach wraps the borrowed local actor pointer in a by-value
-# actor-ref snapshot for its reader thread.
-[[ownership.contracts]]
-symbol = "hew_ws_attach"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.websocket.Conn", "", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
+# string. Active-mode registration is declaration-owned.
 [[ownership.contracts]]
 symbol = "hew_ws_close"
 result = "none"
@@ -5455,16 +5429,8 @@ discharge-depth = "none"
 # TLS — hew-std/src/tls.rs. connect returns a Box'd HewTlsStream consumed by
 # hew_tls_close. hew_tls_read_result returns a repr(C) struct whose .data
 # field is a fresh owned BytesTriple (released via hew_bytes_drop); the write
-# bridge only reads its borrowed BytesTriple. hew_tls_attach wraps the borrowed
-# local actor pointer in a by-value actor-ref snapshot for its reader thread.
-[[ownership.contracts]]
-symbol = "hew_tls_attach"
-result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
-resource-param-types = ["std.net.tls.TlsStream", "", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
+# bridge only reads its borrowed BytesTriple. Active-mode registration is
+# declaration-owned.
 [[ownership.contracts]]
 symbol = "hew_tls_close"
 result = "none"

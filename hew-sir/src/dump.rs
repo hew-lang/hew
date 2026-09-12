@@ -200,6 +200,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
         SemOpKind::ConstInteger(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::ActorIngressAdapter(adapter) => {
+            writeln!(out, "actor_ingress_adapter {adapter:?}").expect("write to String");
+        }
         SemOpKind::TupleMake { elements } => {
             write!(out, "tuple.make(").expect("write to String");
             for (index, element) in elements.iter().enumerate() {

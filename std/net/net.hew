@@ -722,8 +722,8 @@ impl Connection {
     /// The runtime takes over the connection's lifecycle on success, so this
     /// is a terminal transfer just like `close` and `into_stream_sink`. On
     /// refusal the runtime closes the consumed connection before returning
-    /// `Err(AttachError.Refused)`. Every call site is rewritten to
-    /// `hew_tcp_attach_local` by the checker/codegen.
+    /// `Err(AttachError.Refused)`.
+    #[runtime(family = TcpAttachLocal, symbol = hew_tcp_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable", receiver = connection, data = on_data, close = on_close, result = status_result, error_type = "std.net.AttachError", error_variant = Refused)]
     fn attach(consume self, handler: ConnectionHandler) -> Result<(), AttachError> {
         Err(AttachError.Refused)
     }

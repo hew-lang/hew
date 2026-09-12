@@ -6,9 +6,9 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorField, SemActorHandler,
-    SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
-    SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, SemActor, SemActorField,
+    SemActorHandler, SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy,
+    SemSupervisedRole, SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -396,6 +396,7 @@ pub struct PhysicalCallable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalConst {
+    ActorIngressAdapter(hew_sir::ActorIngressAdapter),
     /// Exact destination-width two's-complement bit pattern for an integer
     /// constant, derived once here from the SIR value and the destination's
     /// realized layout (D421). Codegen emits these bits unsigned; it decides
@@ -2640,6 +2641,10 @@ impl FunctionLowerer<'_> {
                     value: PhysicalConst::IntegerBits(bits),
                 })
             }
+            SemOpKind::ActorIngressAdapter(adapter) => one(PhysicalOp::Const {
+                dest: self.one_result(operation)?,
+                value: PhysicalConst::ActorIngressAdapter(*adapter),
+            }),
             SemOpKind::ConstBool(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Bool(*value),
@@ -5762,6 +5767,14 @@ fn verify_constant(
 ) -> Result<(), PhysicalError> {
     let destination = storage(function, dest)?;
     let matches_destination = match value {
+        PhysicalConst::ActorIngressAdapter(adapter) => {
+            adapter
+                .handler(&module.actors)
+                .map_err(PhysicalError::new)?;
+            destination.ty == hew_sir::ActorIngressAdapter::pointer_type()
+                && destination.own == OwnKind::None
+                && destination.layout.repr == PhysicalRepr::Pointer
+        }
         PhysicalConst::IntegerBits(bits) => {
             destination.ty.is_integer()
                 && destination.own == OwnKind::None

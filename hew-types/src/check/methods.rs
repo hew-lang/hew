@@ -16,24 +16,6 @@ use crate::runtime_call::{FloatMethodOp, IntArithKind, IntBitOp, IntMethodWidth}
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
-/// Resolve the closed set of compiler-lowered active transport attach methods.
-///
-/// The fully-qualified receiver identity is load-bearing. A user record may be
-/// named `Connection`, `TlsStream`, or `Conn`; admitting a short-name match
-/// would replace its ordinary inherent method with a runtime ABI call that
-/// expects an opaque transport handle and actor PID.
-fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<&'static str> {
-    if method != "attach" {
-        return None;
-    }
-    match receiver_name {
-        STD_NET_CONNECTION => Some("hew_tcp_attach_local"),
-        "std.net.tls.TlsStream" => Some("hew_tls_attach_local"),
-        "std.net.websocket.Conn" => Some("hew_ws_attach_local"),
-        _ => None,
-    }
-}
-
 impl Checker {
     /// Return the checker-minted trait declaration IDs for a call-site trait
     /// spelling. Import aliases are resolved through their full source owner;
@@ -1835,22 +1817,14 @@ impl Checker {
         &mut self,
         receiver_ty: &Ty,
         method: &str,
+        args: &[CallArg],
         span: &Span,
     ) {
         self.record_handle_method_call_receiver_kind_if_any(receiver_ty, span);
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
-        // Active-mode transport `attach(handler)` methods rewrite to
-        // callee-name-dispatch symbols intercepted by the LLVM backend. The
-        // backend resolves the concrete actor type from the `handler` arg's
-        // recorded actor-handle type (the structural handler coercion
-        // deliberately does not erase that recorded type), synthesises each
-        // transport protocol's handler `msg_id`s, and emits the real four-arg
-        // runtime attach ABI. The source impl bodies are stubs, so these
-        // explicit rewrites are the authority. Mirrors `RemotePid::send`.
-        if let Some(symbol) = self.resolved_transport_attach_runtime_symbol(name, method) {
-            self.record_runtime_method_call_rewrite(span, symbol);
+        if self.record_declared_runtime_method(name, method, args, span) {
             return;
         }
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
@@ -1881,42 +1855,172 @@ impl Checker {
         }
     }
 
-    /// Resolve an active transport handle to its compiler-lowered attach symbol.
-    ///
-    /// Imported method return types may retain their defining module's bare
-    /// spelling (`Connection`, `TlsStream`, or `Conn`). Canonicalise that
-    /// already-resolved nominal type through the checker's owner tables before
-    /// consulting the closed symbol map. Registry membership then proves the
-    /// identity is a loaded fieldless `#[opaque]` handle, while the user-module
-    /// guard prevents an alias-qualified user type from impersonating a stdlib
-    /// carrier. A root-local same-named type deliberately remains bare under
-    /// `canonical_nominal_name` and therefore cannot reach this rewrite.
-    fn resolved_transport_attach_runtime_symbol(
+    /// Resolve callback endpoints while the argument still carries its concrete
+    /// actor identity. Handler names are selected by the source declaration's
+    /// runtime contract; this does not infer a protocol from runtime symbols.
+    fn resolved_runtime_actor_endpoints(
         &self,
+        handler: &Spanned<Expr>,
+        data_handler: &str,
+        close_handler: &str,
+    ) -> Result<crate::check::dispatch::ResolvedActorEndpoints, String> {
+        use crate::check::dispatch::{ResolvedActorEndpoint, ResolvedActorEndpoints};
+        let key = SpanKey::in_module(&handler.1, self.current_module_idx);
+        let ty = self
+            .expr_types
+            .get(&key)
+            .ok_or_else(|| "runtime handler argument has no checked type".to_string())?;
+        let Ty::Named {
+            name,
+            builtin: Some(BuiltinType::ActorHandle),
+            ..
+        } = self.subst.resolve(ty)
+        else {
+            return Err("runtime handler requires a concrete actor handle".to_string());
+        };
+        let canonical = self.canonical_nominal_name(&name).unwrap_or(name.clone());
+        let protocol = self
+            .actor_protocol_descriptors
+            .get(&canonical)
+            .or_else(|| self.actor_protocol_descriptors.get(&name))
+            .ok_or_else(|| format!("actor `{canonical}` has no receive protocol"))?;
+        let actor = self
+            .identity
+            .declaration_by_path(&canonical)
+            .cloned()
+            .ok_or_else(|| format!("actor `{canonical}` has no declaration identity"))?;
+        let endpoint = |name: &str| -> Result<ResolvedActorEndpoint, String> {
+            let receive = protocol
+                .handlers
+                .iter()
+                .find(|handler| handler.name == name)
+                .ok_or_else(|| format!("actor `{canonical}` has no `{name}` receive handler"))?;
+            if receive.return_ty != ResolvedTy::Unit {
+                return Err(format!(
+                    "runtime delivery handler `{canonical}::{name}` must return unit"
+                ));
+            }
+            let handler = self
+                .identity
+                .declaration_by_path(&format!("{canonical}::{name}"))
+                .cloned()
+                .ok_or_else(|| {
+                    format!("handler `{canonical}::{name}` has no declaration identity")
+                })?;
+            Ok(ResolvedActorEndpoint {
+                handler,
+                msg_id: receive.msg_id,
+            })
+        };
+        Ok(ResolvedActorEndpoints {
+            actor,
+            data: endpoint(data_handler)?,
+            close: endpoint(close_handler)?,
+        })
+    }
+
+    fn record_declared_runtime_method(
+        &mut self,
         receiver_name: &str,
         method: &str,
-    ) -> Option<&'static str> {
+        args: &[CallArg],
+        span: &Span,
+    ) -> bool {
+        use crate::check::dispatch::ResolvedRuntimeResult;
+        use crate::runtime_call::DeclaredRuntimeResult;
         let canonical = self
             .canonical_nominal_name(receiver_name)
             .unwrap_or_else(|| receiver_name.to_string());
-        let symbol = transport_attach_runtime_symbol(&canonical, method)?;
-        let (module, _) = canonical.rsplit_once('.')?;
-        // The registry carries the original loaded spelling (`tls.TlsStream` /
-        // `websocket.Conn`), while nominal resolution carries its exact full
-        // source owner. Join the two identities here rather than asking the
-        // registry to recognise the canonical spelling directly: a user
-        // module may use either leaf spelling but cannot produce the same
-        // loaded source identity.
-        if self.user_modules.contains(module)
+        let key = format!("{canonical}::{method}");
+        let Some(contract) = crate::runtime_call::declared_runtime_method(&key) else {
+            return false;
+        };
+        if !self.canonical_std_module_sources.contains(contract.module)
+            || self.user_modules.contains(contract.module)
             || self
                 .module_registry
                 .canonical_handle_type_identity(receiver_name)
                 .as_deref()
                 != Some(canonical.as_str())
         {
-            return None;
+            return false;
         }
-        Some(symbol)
+        let selected = (|| {
+            let declaration = self
+                .impl_method_declaration_ids
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("runtime method `{key}` has no declaration identity"))?;
+            let [handler] = args else {
+                return Err(format!("runtime method `{key}` requires one actor handler"));
+            };
+            let endpoints = self.resolved_runtime_actor_endpoints(
+                handler.expr(),
+                contract.data_handler,
+                contract.close_handler,
+            )?;
+            let result = match contract.result {
+                DeclaredRuntimeResult::DiscardStatus => ResolvedRuntimeResult::DiscardStatus,
+                DeclaredRuntimeResult::StatusResult {
+                    error_type,
+                    error_variant,
+                } => {
+                    let error_ty = Ty::Named {
+                        name: error_type.to_string(),
+                        args: Vec::new(),
+                        builtin: None,
+                    };
+                    let error = self.resolve_variant_match(
+                        &format!("{error_type}::{error_variant}"), &error_ty,
+                    ).ok_or_else(|| format!("runtime error variant `{error_type}::{error_variant}` is not declared"))?;
+                    if !self.lookup_type_def(&error.type_name).is_some_and(|ty| {
+                        matches!(ty.variants.get(&error.variant_name), Some(VariantDef::Unit))
+                    }) {
+                        return Err("runtime status error must be a unit enum variant".to_string());
+                    }
+                    ResolvedRuntimeResult::StatusResult { error }
+                }
+            };
+            Ok::<_, String>(CallTarget::DeclaredRuntime {
+                declaration,
+                family: contract.family,
+                actor_endpoints: Some(endpoints),
+                result,
+            })
+        })();
+        let target = match selected {
+            Ok(target) => target,
+            Err(reason) => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    reason.clone(),
+                ));
+                CallTarget::Unsupported { reason }
+            }
+        };
+        // The source signature has been checked; this declaration contract
+        // is the invocation authority, including for suspension effects.
+        self.resolved_calls
+            .remove(&SpanKey::in_module(span, self.current_module_idx));
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target,
+                c_symbol: contract.family.c_symbol().to_string(),
+                descriptor: Some(
+                    crate::RuntimeCallDescriptor::new(contract.family, None)
+                        .expect("declared runtime family has no element parameter"),
+                ),
+                extern_identity: None,
+                elem_ty: None,
+                consumes_receiver: contract.consumes_receiver,
+                requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
+                returns_receiver_identity: false,
+            },
+        );
+        true
     }
 
     /// True when `name` (qualified `regex.PatternHandle` or bare `Listener`)
@@ -3038,7 +3142,7 @@ impl Checker {
                     },
                 );
             }
-            self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, span);
+            self.record_handle_method_call_rewrite_if_any(receiver_ty, method_name, args, span);
             return ty;
         }
 
@@ -9380,7 +9484,7 @@ impl Checker {
                             );
                         }
                     }
-                    self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    self.record_handle_method_call_rewrite_if_any(&resolved, method, args, span);
                     let builtin_option_result_marker =
                         Self::is_builtin_option_result_marker_method(*builtin, method);
                     if let Some(receiver_builtin @ (BuiltinType::Result | BuiltinType::Option)) =
@@ -10751,34 +10855,6 @@ mod tests {
                 .is_none(),
             "a missing lexical module binding must not fall back to bare Reply"
         );
-    }
-
-    #[test]
-    fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
-        for (receiver, symbol) in [
-            (STD_NET_CONNECTION, "hew_tcp_attach_local"),
-            ("std.net.tls.TlsStream", "hew_tls_attach_local"),
-            ("std.net.websocket.Conn", "hew_ws_attach_local"),
-        ] {
-            assert_eq!(
-                transport_attach_runtime_symbol(receiver, "attach"),
-                Some(symbol),
-                "canonical transport identity must retain its attach rewrite"
-            );
-            assert_eq!(
-                transport_attach_runtime_symbol(receiver, "close"),
-                None,
-                "only attach belongs to the compiler-lowered transport path"
-            );
-        }
-
-        for user_name in ["Connection", "TlsStream", "Conn"] {
-            assert_eq!(
-                transport_attach_runtime_symbol(user_name, "attach"),
-                None,
-                "a bare user type named {user_name} must keep ordinary method dispatch"
-            );
-        }
     }
 
     #[test]

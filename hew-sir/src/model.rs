@@ -1132,6 +1132,8 @@ pub enum SemOpKind {
     /// destination-width bit pattern.
     ConstInteger(i128),
     ConstBool(bool),
+    /// Address of a checked one-way runtime ingress adapter.
+    ActorIngressAdapter(crate::ActorIngressAdapter),
     /// Construct a semantic tuple value from its ordered elements.
     ///
     /// This is deliberately an aggregate-value operation: it says nothing
@@ -1350,6 +1352,7 @@ impl SemOpKind {
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)
@@ -1442,6 +1445,7 @@ impl SemOpKind {
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)
@@ -1539,6 +1543,7 @@ impl SemOpKind {
             | Self::CallableCoerce { .. }
             | Self::DynMake { .. }
             | Self::ConstInteger(..)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(..)
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
@@ -1635,6 +1640,7 @@ impl SemOpKind {
             | Self::EndLifetime { .. } => EffectSet::IMPURE,
             Self::FunctionMake { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)

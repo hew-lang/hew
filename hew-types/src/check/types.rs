@@ -1294,7 +1294,7 @@ pub struct PatternPlan {
 ///
 /// Keyed by the arm's pattern span and consumed by match-arm HIR lowering to
 /// emit `MachineVariantCtor` / `EnumVariantCtor` etc. without re-resolving.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VariantMatch {
     /// Canonical name of the type definition that owns this variant.
     /// For built-in `Option`/`Result` this is `"Option"` / `"Result"`.

@@ -3434,83 +3434,107 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     }
 }
 
-/// Attach a TCP connection to an actor for active-mode delivery.
-///
-/// After this call the connection's socket is non-blocking and registered with
-/// the active-mode reactor: each chunk of inbound data is delivered to the
-/// actor as an `on_data(bytes)` message (`on_data_type`), and a single
-/// `on_close()` message (`on_close_type`) is delivered when the peer closes or
-/// the socket errors. The actor must NOT call blocking `read`/`read_string`
-/// after attach (the reactor owns the read side); outbound `send`/`write`
-/// remain valid until close.
-///
-/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable).
-///
-/// # Safety
-///
-/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
-/// - `actor_ref` must point to a valid [`HewActorRef`] for the duration of the
-///   call (a by-value snapshot is taken; mirrors `hew_ws_attach`).
-#[no_mangle]
-pub unsafe extern "C" fn hew_tcp_attach(
-    conn: c_int,
-    actor_ref: *const HewActorRef,
-    on_data_type: i32,
-    on_close_type: i32,
-) -> c_int {
-    // SAFETY: caller guarantees `actor_ref` is valid for this call; the reactor
-    // takes a by-value snapshot before returning.
-    let status =
-        unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) };
-    if status < 0 {
-        let _ = tcp_close_unowned_conn(conn);
-    }
-    status
+/// Stable native actor identity used by attachment callbacks.
+pub type NativeActorToken = crate::lifetime::local_handles::HewLocalPidId;
+
+/// Generated adapter: copies borrowed input into the compiler's typed message.
+pub type AttachCallback = unsafe extern "C" fn(usize, *const u8, usize) -> i32;
+
+/// An attachment retains an immutable identity, never an actor allocation.
+/// Every observation resolves the original incarnation through the live registry;
+/// generated delivery separately pins native admission through the stable token.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeAttachment {
+    token: NativeActorToken,
+    pub(crate) incarnation: crate::lifetime::live_actors::ActorIncarnation,
+    data: AttachCallback,
+    close: AttachCallback,
 }
 
-/// Attach a TCP connection to a *local* actor, identified by its raw
-/// `*mut HewActor` pointer rather than a fully-formed `HewActorRef`.
-///
-/// This is the entry point the Hew `conn.attach(handler)` surface lowers to:
-/// a Hew actor handle reaches the C ABI as the bare actor pointer (no
-/// `HewActorRef` wrapper), so codegen cannot hand `hew_tcp_attach` the
-/// `*const HewActorRef` it expects. This wrapper constructs the local
-/// `HewActorRef` on the runtime side (the owner of that layout) and forwards
-/// to the same reactor path. Mirrors `hew_ws_attach`, which likewise accepts
-/// the raw actor pointer for the active-mode WebSocket surface.
-///
-/// `on_data_type` / `on_close_type` are the `msg_id`s (SipHash-1-3 over the
-/// handler's fully-qualified name) the compiler synthesises at the attach call
-/// site from the concrete actor's `on_data` / `on_close` receive functions.
-///
-/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable,
-/// leak-prone mailbox).
+impl NativeAttachment {
+    #[cfg(test)]
+    pub(crate) fn inert_for_test() -> Self {
+        unsafe extern "C" fn ignore(_: usize, _: *const u8, _: usize) -> i32 {
+            2
+        }
+        Self {
+            token: NativeActorToken::INVALID,
+            incarnation: crate::lifetime::live_actors::ActorIncarnation::NONE,
+            data: ignore,
+            close: ignore,
+        }
+    }
+
+    /// Capture a live destination and the generated adapters for its protocol.
+    ///
+    /// # Safety
+    /// Both callbacks must match this destination's generated protocol. Data
+    /// accepts every borrowed slice for the duration of the call; close accepts
+    /// null input with length zero. Each callback owns its allocations on refusal.
+    pub unsafe fn new(
+        token: NativeActorToken,
+        data: AttachCallback,
+        close: AttachCallback,
+    ) -> Option<Self> {
+        let id = crate::lifetime::local_handles::resolve_current_actor(token)?;
+        let pin = crate::lifetime::live_actors::pin_actor_by_id(id)?;
+        // SAFETY: the registry pin keeps the actor alive during capture.
+        let incarnation =
+            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(pin.as_ptr()) };
+        let target = Self {
+            token,
+            incarnation,
+            data,
+            close,
+        };
+        target.is_alive().then_some(target)
+    }
+
+    /// Closed or faulted actors cannot receive late transport input.
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        crate::lifetime::live_actors::with_live_incarnation(self.incarnation, |pin| {
+            let state = pin.actor().actor_state.load(Ordering::Acquire);
+            state != crate::internal::types::HewActorState::Stopping as i32
+                && state != crate::internal::types::HewActorState::Stopped as i32
+                && state != crate::internal::types::HewActorState::Crashed as i32
+        })
+        .unwrap_or(false)
+    }
+
+    /// The adapter owns any allocations it makes, including refused messages.
+    #[must_use]
+    pub fn deliver(&self, bytes: &[u8]) -> i32 {
+        // SAFETY: the generated adapter reads only this borrowed slice and
+        // admits through a non-reused identity, never a retained raw pointer.
+        unsafe { (self.data)(self.token.as_usize(), bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Send the terminal event through the compiler's zero-field message adapter.
+    #[must_use]
+    pub fn closed(&self) -> i32 {
+        // SAFETY: close adapters accept an empty borrowed input.
+        unsafe { (self.close)(self.token.as_usize(), std::ptr::null(), 0) }
+    }
+}
+
+/// Consume a TCP connection into native actor delivery, including on refusal.
 ///
 /// # Safety
-///
-/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
-/// - `actor` must be a valid pointer to a live [`HewActor`] that outlives the
-///   connection's active-mode registration.
+/// Callback pointers must be generated adapters for the destination protocol.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tcp_attach_local(
+pub unsafe extern "C" fn hew_tcp_attach_native(
     conn: c_int,
-    actor: *mut HewActor,
-    on_data_type: i32,
-    on_close_type: i32,
+    token: NativeActorToken,
+    data: AttachCallback,
+    close: AttachCallback,
 ) -> c_int {
-    if actor.is_null() {
-        set_last_error("hew_tcp_attach_local: null actor pointer");
-        let _ = tcp_close_unowned_conn(conn);
-        return -1;
-    }
-    // SAFETY: `actor` is non-null (checked above) and the caller guarantees it
-    // points to a live actor for this call.
-    let actor_ref = unsafe { hew_actor_ref_local(actor) };
-    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; `reactor_attach`
-    // takes a by-value snapshot before returning, so the address is only needed
-    // for the duration of this call.
-    let status = unsafe {
-        crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
+    // SAFETY: the native attach ABI requires matching generated callbacks.
+    let status = if let Some(target) = unsafe { NativeAttachment::new(token, data, close) } {
+        crate::reactor::reactor_attach_native(conn, target)
+    } else {
+        set_last_error("tcp.attach: destination is closed");
+        -1
     };
     if status < 0 {
         let _ = tcp_close_unowned_conn(conn);
@@ -3528,7 +3552,7 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
 /// `enqueue_resume`s the parked continuation.
 ///
 /// `actor` is the raw `*mut HewActor` the Hew actor handle lowers to (same shape
-/// as `hew_tcp_attach_local`); the runtime constructs the local `HewActorRef`.
+/// the runtime constructs the local `HewActorRef` from that live actor pointer.
 ///
 /// Returns 0 on success, -1 on failure (null args, unknown handle, reactor
 /// unavailable). On failure the caller's slot ref is untouched and the codegen

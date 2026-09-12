@@ -4,19 +4,16 @@
 //! All `extern "C"` functions are designed to be called from compiled Hew
 //! programs via FFI. `host` and the result of [`hew_tls_last_error`] use
 //! managed UTF-8 strings; null is the canonical empty string.
-use std::ffi::c_void;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-#[cfg(test)]
-use std::os::raw::c_char;
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use hew_cabi::cabi::alloc_cstring;
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
+use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
 
@@ -34,7 +31,7 @@ const TLS_STATUS_IO_ERROR: c_int = 3;
 /// TLS stream inner state, shared between the caller and any attached reader
 /// thread via an [`Arc<Mutex<...>>`].
 ///
-/// WHY the inner/outer split: `hew_tls_attach` spawns a reader thread that
+/// WHY the inner/outer split: `hew_tls_attach_native` spawns a reader thread that
 /// owns read access. The caller retains write access through the outer pointer.
 /// `rustls::StreamOwned` requires `&mut self` for both directions so we hold
 /// it behind a single `Mutex` and take the lock for every I/O call. Both sides
@@ -57,7 +54,7 @@ type TlsInner = Arc<TlsShared>;
 pub struct TlsShared {
     stream: Mutex<Option<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>>,
     closed: AtomicBool,
-    /// Join handle for the background reader spawned by [`hew_tls_attach`].
+    /// Join handle for the background reader spawned by [`hew_tls_attach_native`].
     ///
     /// WHY: a detached reader can keep calling into the runtime
     /// (`hew_actor_ref_is_alive`, `hew_actor_try_send`) for up to
@@ -66,7 +63,7 @@ pub struct TlsShared {
     /// `hew_tls_close` joins this handle before returning so the reader is
     /// deterministically reaped — mirroring `websocket.rs::join_reader`.
     ///
-    /// ATOMICITY: the check-then-store in `hew_tls_attach` holds this lock
+    /// ATOMICITY: the check-then-store in `hew_tls_attach_native` holds this lock
     /// across both operations so two concurrent callers cannot both pass the
     /// `is_some()` guard and both spawn a reader.
     reader: Mutex<Option<JoinHandle<()>>>,
@@ -103,7 +100,7 @@ impl HewTlsStream {
     /// The production path (`hew_tls_connect`) always validates against the
     /// webpki roots, which cannot trust a self-signed loopback cert. This
     /// constructor lets the loopback test inject a client connection whose
-    /// config trusts the test CA, so the real `hew_tls_attach` reader and
+    /// config trusts the test CA, so the real `hew_tls_attach_native` reader and
     /// `hew_tls_close` reap path are exercised against an encrypted round-trip.
     #[cfg(test)]
     fn from_stream(
@@ -350,7 +347,7 @@ pub extern "C" fn hew_tls_last_error() -> *mut HewString {
 /// Write `data` to the TLS stream.
 ///
 /// Returns the number of bytes written, or −1 on error.
-/// After `hew_tls_attach`, this function still holds the write side; it
+/// After `hew_tls_attach_native`, this function still holds the write side; it
 /// acquires the stream mutex before every write call.
 ///
 /// EDGE (lazy handshake under the reader's read timeout): once an attached
@@ -421,7 +418,7 @@ pub unsafe extern "C" fn hew_tls_write(
 /// receives `0` for success or orderly EOF, `1` for retryable would-block/timeout
 /// conditions, `2` for TLS alert/protocol failures, and `3` for I/O failures.
 ///
-/// After `hew_tls_attach` this function should not be called — the reader
+/// After `hew_tls_attach_native` this function should not be called — the reader
 /// thread owns read access; calling `hew_tls_read` concurrently with an
 /// attached reader produces a deadlock on the stream mutex.
 ///
@@ -589,94 +586,11 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
 
 // ── TLS Attach (Erlang-style active mode) ────────────────────────────────────
 //
-// `hew_tls_attach` transfers read ownership to a background OS thread that
+// `hew_tls_attach_native` transfers read ownership to a background OS thread that
 // reads decrypted TLS bytes and delivers them as actor messages (`on_data`).
 // The caller retains write access through the outer pointer (write goes through
 // the stream mutex, same as before attach). This is the Erlang active-mode
-// pattern, mirroring `hew_ws_attach`.
-
-// Mirrored from `hew-std/src/websocket.rs` — kept local to avoid a cross-module
-// C-ABI dependency. The layout must match `HewActorRef` in the runtime.
-const TLS_ACTOR_REF_LOCAL: c_int = 0;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct TlsLocation {
-    node: [u8; 16],
-    slot: u64,
-    incarnation: u32,
-    reserved: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct TlsActorRefRemote {
-    // This struct is read by value from a runtime-produced `HewActorRef` and
-    // passed back across the FFI boundary, so its layout MUST stay
-    // byte-identical to the runtime definition.
-    location: TlsLocation,
-    conn: c_int,
-    transport: *mut c_void,
-}
-
-#[repr(C)]
-union TlsActorRefData {
-    local: *mut c_void,
-    remote: TlsActorRefRemote,
-}
-
-#[repr(C)]
-struct TlsActorRef {
-    kind: c_int,
-    data: TlsActorRefData,
-}
-
-// SAFETY: `TlsActorRef` snapshots are copied by value and dereferenced only
-// through the runtime ABI (`hew_actor_ref_is_alive`). The reader thread holds
-// this snapshot until it exits; `hew_tls_close` joins the reader before
-// returning, so the reader is guaranteed to have stopped touching the actor by
-// the time the connection is torn down. Callers MUST close the attached TLS
-// stream (via `hew_tls_close`) before freeing the actor.
-unsafe impl Send for TlsActorRef {}
-
-extern "C" {
-    fn hew_actor_try_send(actor: *mut c_void, msg_type: i32, data: *mut c_void, size: usize)
-        -> i32;
-    fn hew_actor_ref_is_alive(actor: *const TlsActorRef) -> i32;
-}
-
-fn tls_actor_is_alive(actor_ref: &TlsActorRef) -> bool {
-    // SAFETY: `actor_ref` is the owned copy captured by the reader thread.
-    unsafe { hew_actor_ref_is_alive(actor_ref) != 0 }
-}
-
-fn tls_actor_local_ptr(actor_ref: &TlsActorRef) -> Option<*mut c_void> {
-    if actor_ref.kind != TLS_ACTOR_REF_LOCAL {
-        return None;
-    }
-    // SAFETY: local variant is active when kind == TLS_ACTOR_REF_LOCAL.
-    let ptr = unsafe { actor_ref.data.local };
-    (!ptr.is_null()).then_some(ptr)
-}
-
-fn tls_actor_send(
-    actor_ref: &TlsActorRef,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-) -> Result<(), i32> {
-    let Some(actor) = tls_actor_local_ptr(actor_ref) else {
-        eprintln!("[tls-attach] remote ActorRef is unsupported for TLS attach");
-        return Err(-1);
-    };
-    // SAFETY: `actor` is extracted from a valid local ActorRef snapshot.
-    let rc = unsafe { hew_actor_try_send(actor, msg_type, data, size) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(rc)
-    }
-}
+// pattern, mirroring `hew_ws_attach_native`.
 
 /// Read timeout for the background TLS reader thread. Short enough that the
 /// reader detects actor death and closure quickly; long enough to avoid
@@ -718,12 +632,7 @@ fn prepare_tls_attach_reader(inner: &TlsShared) -> Result<(), String> {
         .map_err(|err| format!("tls.attach: failed to set read timeout: {err}"))
 }
 
-fn run_tls_attach_reader(
-    inner: &TlsInner,
-    actor_ref: &TlsActorRef,
-    on_data_type: i32,
-    on_close_type: i32,
-) {
+fn run_tls_attach_reader(inner: &TlsInner, delivery: &NativeAttachment) {
     let mut buf = vec![0u8; READ_BUFFER_SIZE];
     let mut notify_close = false;
 
@@ -731,7 +640,7 @@ fn run_tls_attach_reader(
         if inner.closed.load(Ordering::Acquire) {
             break;
         }
-        if !tls_actor_is_alive(actor_ref) {
+        if !delivery.is_alive() {
             break;
         }
 
@@ -756,26 +665,7 @@ fn run_tls_attach_reader(
                 if inner.closed.load(Ordering::Acquire) {
                     break;
                 }
-                // Deliver the received bytes as a `bytes` argument.
-                // SAFETY: `buf[..n]` is valid for `n` bytes; alloc_cstring
-                // copies the content with a header word prepended.
-                let str_ptr = unsafe { alloc_cstring(buf.as_ptr(), n) }; // CSTRING-ALLOC: str-open (tls-reader str_ptr: header-aware Hew bytes passed to on_data)
-                if str_ptr.is_null() {
-                    eprintln!("[tls-attach] alloc_cstring failed; exiting");
-                    notify_close = true;
-                    break;
-                }
-                let mut arg_buf = [0u8; std::mem::size_of::<usize>()];
-                arg_buf.copy_from_slice(&(str_ptr as usize).to_ne_bytes());
-                if let Err(rc) = tls_actor_send(
-                    actor_ref,
-                    on_data_type,
-                    arg_buf.as_mut_ptr().cast(),
-                    arg_buf.len(),
-                ) {
-                    eprintln!("[tls-attach] on_data delivery failed: rc={rc}; exiting");
-                    // SAFETY: send failed before the actor took ownership.
-                    unsafe { hew_cabi::cabi::free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees tls-reader str_ptr on send-fail)
+                if delivery.deliver(&buf[..n]) != 0 {
                     notify_close = true;
                     break;
                 }
@@ -797,10 +687,8 @@ fn run_tls_attach_reader(
         }
     }
 
-    if notify_close && tls_actor_is_alive(actor_ref) {
-        if let Err(rc) = tls_actor_send(actor_ref, on_close_type, std::ptr::null_mut(), 0) {
-            eprintln!("[tls-attach] on_close delivery failed: rc={rc}");
-        }
+    if notify_close && delivery.is_alive() {
+        let _ = delivery.closed();
     }
 
     // Drop the inner stream to close the underlying socket on reader exit.
@@ -819,106 +707,56 @@ fn run_tls_attach_reader(
     inner.reader_exited.store(true, Ordering::Release);
 }
 
-fn spawn_tls_attach_reader(
-    inner: TlsInner,
-    actor_ref: TlsActorRef,
-    on_data_type: i32,
-    on_close_type: i32,
-) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("hew-tls-attach-reader".to_owned())
-        .spawn(move || run_tls_attach_reader(&inner, &actor_ref, on_data_type, on_close_type))
-}
-
-/// Attach a TLS stream to an actor for Erlang-style active mode.
-///
-/// Spawns a reader thread that reads decrypted TLS bytes in the background and
-/// delivers each chunk as an `on_data` actor message. When the connection closes
-/// or errors, an `on_close` message is sent. After attach, callers must not call
-/// `hew_tls_read` — the reader thread owns the read side. Outbound
-/// `hew_tls_write` and `hew_tls_write_result` remain valid.
-///
-/// - `stream`: the TLS connection. Must not be null.
-/// - `actor`: pointer to the target local actor (an actor-ref snapshot is taken).
-/// - `on_data_type`: `msg_type` index for data delivery.
-/// - `on_close_type`: `msg_type` index for close/error notification.
-///
-/// The two message-type indices cross as `i64` and are range-checked here.
-/// Narrowing them on the Hew side would turn `2^32 + 1` into index `1` and
-/// attach the reader to a different message than the caller named, so an
-/// index outside `c_int` range is refused and no reader is spawned.
+/// Attach borrowed TLS read authority to generated native actor adapters.
+/// Outbound writes and explicit close remain available to the caller.
 ///
 /// # Safety
-///
-/// - `stream` must be a valid pointer returned by [`hew_tls_connect`].
-/// - `actor` must be a valid local actor pointer that outlives the connection.
+/// `stream` is live; callbacks match the destination's protocol.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_attach(
+pub unsafe extern "C" fn hew_tls_attach_native(
     stream: *mut HewTlsStream,
-    actor: *mut c_void,
-    on_data_type: i64,
-    on_close_type: i64,
+    token: NativeActorToken,
+    data: AttachCallback,
+    close: AttachCallback,
 ) -> i32 {
-    if stream.is_null() || actor.is_null() {
-        set_tls_last_error(format!(
-            "tls.attach: null handle (stream={}, actor={})",
-            stream.is_null(),
-            actor.is_null()
-        ));
-        return -1;
-    }
-    let (Ok(on_data_type), Ok(on_close_type)) = (
-        c_int::try_from(on_data_type),
-        c_int::try_from(on_close_type),
-    ) else {
-        set_tls_last_error(format!(
-            "tls.attach: message-type index out of range (on_data_type={on_data_type}, \
-             on_close_type={on_close_type})"
-        ));
-        eprintln!(
-            "[tls-attach] message-type index out of range: on_data_type={on_data_type} \
-             on_close_type={on_close_type}"
-        );
+    // SAFETY: the caller supplies a live stream, or null for refusal.
+    let Some(stream) = (unsafe { stream.as_ref() }) else {
+        set_tls_last_error("tls.attach: null stream");
         return -1;
     };
-    // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
-    let s = unsafe { &*stream };
-    // Refuse a second attach: the stored handle would otherwise be overwritten
-    // (leaking the first reader) and two readers would race the stream mutex.
-    // Hold the reader lock across check + spawn + store so two concurrent
-    // callers cannot both pass the `is_some()` guard and both spawn a reader
-    // (a TOCTOU race if we drop and re-acquire the lock between the two steps).
-    let mut reader_guard = s
+    // SAFETY: callers supply the generated adapters for this native destination.
+    let Some(target) = (unsafe { NativeAttachment::new(token, data, close) }) else {
+        set_tls_last_error("tls.attach: destination is closed");
+        return -1;
+    };
+    let mut reader = stream
         .inner
         .reader
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    if reader_guard.is_some() {
+    if reader.is_some() {
         set_tls_last_error("tls.attach: reader already attached");
         return -1;
     }
-    if let Err(detail) = prepare_tls_attach_reader(&s.inner) {
+    if let Err(detail) = prepare_tls_attach_reader(&stream.inner) {
         set_tls_last_error(detail);
         return -1;
     }
-    // A Hew actor handle crosses an extern C call as the bare local actor
-    // pointer. Build the stable by-value actor-ref snapshot the reader owns.
-    let actor_ref = TlsActorRef {
-        kind: TLS_ACTOR_REF_LOCAL,
-        data: TlsActorRefData { local: actor },
-    };
-    let join =
-        match spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type)
-        {
-            Ok(join) => join,
-            Err(err) => {
-                set_tls_last_error(format!("tls.attach: failed to spawn reader: {err}"));
-                return -1;
-            }
-        };
-    *reader_guard = Some(join);
-    clear_tls_last_error();
-    0
+    let inner = Arc::clone(&stream.inner);
+    match std::thread::Builder::new()
+        .name("hew-tls-attach-reader".to_owned())
+        .spawn(move || run_tls_attach_reader(&inner, &target))
+    {
+        Ok(join) => {
+            *reader = Some(join);
+            clear_tls_last_error();
+            0
+        }
+        Err(error) => {
+            set_tls_last_error(format!("tls.attach: failed to spawn reader: {error}"));
+            -1
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -928,14 +766,12 @@ mod tests {
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use crate::test_string::ManagedString;
-    use hew_cabi::cabi::free_cstring;
     use hew_cabi::string::string_release;
     use hew_runtime::actor;
     use hew_runtime::bytes::{hew_bytes_clone_ref, hew_bytes_drop, hew_bytes_push};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::cell::Cell;
     use std::collections::HashMap;
-    use std::ffi::CStr;
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::os::raw::c_void;
@@ -1506,12 +1342,9 @@ mod tests {
     fn attach_null_stream_is_rejected() {
         // SAFETY: null stream exercises the guard path; actor pointer is
         // irrelevant because the null-stream check fires first.
-        let status = unsafe { hew_tls_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1) };
+        let status = unsafe { attach_tls_for_test(std::ptr::null_mut(), std::ptr::null_mut()) };
         assert_eq!(status, -1);
-        assert_eq!(
-            last_error_string(),
-            "tls.attach: null handle (stream=true, actor=true)"
-        );
+        assert_eq!(last_error_string(), "tls.attach: null stream");
     }
 
     #[test]
@@ -1528,50 +1361,9 @@ mod tests {
         });
         let stream_ptr = Box::into_raw(boxed);
         // SAFETY: null actor pointer exercises the null-actor guard.
-        let status = unsafe { hew_tls_attach(stream_ptr, std::ptr::null_mut(), 0, 1) };
+        let status = unsafe { attach_tls_for_test(stream_ptr, std::ptr::null_mut()) };
         assert_eq!(status, -1);
-        assert_eq!(
-            last_error_string(),
-            "tls.attach: null handle (stream=false, actor=true)"
-        );
-        // SAFETY: we created `stream_ptr` and it was not consumed.
-        unsafe { hew_tls_close(stream_ptr) };
-    }
-
-    #[test]
-    fn attach_wrapped_message_type_index_is_refused_not_narrowed() {
-        // `2^32 + 1` narrows to message-type index 1. Attaching under that
-        // index would deliver data to a different `receive fn` than the caller
-        // named, so the attach is refused and no reader is spawned.
-        let shared = Arc::new(TlsShared {
-            stream: Mutex::new(None),
-            closed: AtomicBool::new(false),
-            reader: Mutex::new(None),
-            reader_exited: AtomicBool::new(false),
-        });
-        let boxed = Box::new(HewTlsStream {
-            inner: Arc::clone(&shared),
-        });
-        let stream_ptr = Box::into_raw(boxed);
-        let mut actor: usize = 0;
-        let actor_ptr = std::ptr::from_mut(&mut actor).cast::<c_void>();
-        // SAFETY: `stream_ptr` is live and `actor_ptr` is a valid, aligned slot.
-        let status = unsafe { hew_tls_attach(stream_ptr, actor_ptr, 4_294_967_297, 1) };
-
-        assert_eq!(status, -1);
-        assert_eq!(
-            last_error_string(),
-            "tls.attach: message-type index out of range \
-             (on_data_type=4294967297, on_close_type=1)"
-        );
-        assert!(
-            shared
-                .reader
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_none(),
-            "no reader may be attached under a narrowed message-type index"
-        );
+        assert_eq!(last_error_string(), "tls.attach: destination is closed");
         // SAFETY: we created `stream_ptr` and it was not consumed.
         unsafe { hew_tls_close(stream_ptr) };
     }
@@ -1593,13 +1385,10 @@ mod tests {
 
     // ── Behavioural reader loopback (real TLS round-trip + reap) ──────────────
     //
-    // Exercises the `hew_tls_attach` reader path that the null-guard tests never
+    // Exercises the `hew_tls_attach_native` reader path that the null-guard tests never
     // touch: a real rustls handshake completes, decrypted bytes arrive via
     // `on_data`, server EOF surfaces as `on_close`, and `hew_tls_close`
     // deterministically reaps the reader thread (the #1963 reader-lifetime fix).
-
-    const TLS_ON_DATA_TYPE: i32 = 7;
-    const TLS_ON_CLOSE_TYPE: i32 = 8;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum TlsActorEvent {
@@ -1631,6 +1420,9 @@ mod tests {
     }
 
     fn unregister_tls_actor_events(test_id: u64) {
+        if let Some(targets) = TLS_TARGETS.get() {
+            targets.lock().unwrap().retain(|_, id| *id != test_id);
+        }
         tls_actor_events()
             .lock()
             .expect("tls actor event registry poisoned")
@@ -1648,35 +1440,49 @@ mod tests {
         }
     }
 
+    static TLS_TARGETS: OnceLock<Mutex<HashMap<usize, u64>>> = OnceLock::new();
+
+    unsafe extern "C" fn tls_test_data(token: usize, data: *const u8, len: usize) -> i32 {
+        let test_id = TLS_TARGETS.get().unwrap().lock().unwrap()[&token];
+        // SAFETY: the attachment callback borrows exactly len bytes for this call.
+        let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+        send_tls_actor_event(test_id, TlsActorEvent::Data(bytes));
+        0
+    }
+
+    unsafe extern "C" fn tls_test_close(token: usize, _: *const u8, _: usize) -> i32 {
+        let test_id = TLS_TARGETS.get().unwrap().lock().unwrap()[&token];
+        send_tls_actor_event(test_id, TlsActorEvent::Closed);
+        0
+    }
+
+    unsafe fn attach_tls_for_test(stream: *mut HewTlsStream, actor: *mut c_void) -> i32 {
+        let token = if actor.is_null() {
+            NativeActorToken::INVALID
+        } else {
+            // SAFETY: each test holds this actor live during attach.
+            let actor = unsafe { &*actor.cast::<actor::HewActor>() };
+            // SAFETY: this test actor was spawned with a complete POD test state.
+            let state = unsafe { &*actor.state.cast::<TlsTestActorState>() };
+            TLS_TARGETS
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap()
+                .insert(actor.local_pid_id.as_usize(), state.test_id);
+            actor.local_pid_id
+        };
+        // SAFETY: test callbacks borrow input correctly and both setup handles are live.
+        unsafe { hew_tls_attach_native(stream, token, tls_test_data, tls_test_close) }
+    }
+
     unsafe extern "C-unwind" fn tls_test_dispatch(
-        _ctx: *mut hew_runtime::HewExecutionContext,
-        state: *mut c_void,
-        msg_type: i32,
-        data: *mut c_void,
-        _size: usize,
-        _borrow_mode: i32,
+        _: *mut hew_runtime::HewExecutionContext,
+        _: *mut c_void,
+        _: i32,
+        _: *mut c_void,
+        _: usize,
+        _: i32,
     ) -> *mut c_void {
-        // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
-        let state = unsafe { &*(state.cast::<TlsTestActorState>()) };
-        match msg_type {
-            TLS_ON_DATA_TYPE => {
-                // SAFETY: the reader packs a pointer-sized value holding the
-                // malloc-allocated header-aware Hew bytes payload.
-                let str_ptr = unsafe { *(data.cast::<usize>()) as *mut c_char };
-                let bytes = if str_ptr.is_null() {
-                    Vec::new()
-                } else {
-                    // SAFETY: `alloc_cstring` produced a NUL-terminated buffer.
-                    let bytes = unsafe { CStr::from_ptr(str_ptr) }.to_bytes().to_vec();
-                    // SAFETY: ownership transfers to the handler on successful send.
-                    unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees reader str_ptr after readback)
-                    bytes
-                };
-                send_tls_actor_event(state.test_id, TlsActorEvent::Data(bytes));
-            }
-            TLS_ON_CLOSE_TYPE => send_tls_actor_event(state.test_id, TlsActorEvent::Closed),
-            _ => {}
-        }
         std::ptr::null_mut()
     }
 
@@ -1730,14 +1536,7 @@ mod tests {
         // therefore used to produce a false `0` with a dead published reader.
         fail_next_tls_attach_setup();
         // SAFETY: the caller keeps `stream_ptr` and `actor` live for this probe.
-        let setup_failure = unsafe {
-            hew_tls_attach(
-                stream_ptr,
-                actor.cast(),
-                TLS_ON_DATA_TYPE.into(),
-                TLS_ON_CLOSE_TYPE.into(),
-            )
-        };
+        let setup_failure = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(
             setup_failure, -1,
             "fallible reader setup must complete before attach reports success"
@@ -1764,6 +1563,61 @@ mod tests {
     }
 
     #[test]
+    fn attach_reader_exits_after_actor_free_with_input_pending() {
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (config, certificate) = self_signed_server_pair();
+        let (release, released) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            tcp.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+            let connection = rustls::ServerConnection::new(config).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, tcp);
+            tls.write_all(b"first\0chunk").unwrap();
+            tls.flush().unwrap();
+            released.recv_timeout(Duration::from_secs(3)).unwrap();
+            let _ = tls.write_all(b"input after actor free");
+            let _ = tls.flush();
+        });
+        let stream = HewTlsStream::from_stream(client_stream_trusting(address, certificate));
+        let (test_id, events) = register_tls_actor_events();
+        let state = TlsTestActorState { test_id };
+        // SAFETY: the actor copies the complete POD state.
+        let actor = unsafe {
+            actor::hew_actor_spawn(
+                (&raw const state).cast_mut().cast(),
+                std::mem::size_of::<TlsTestActorState>(),
+                Some(tls_test_dispatch),
+            )
+        };
+        // SAFETY: both handles are live for attachment setup.
+        assert_eq!(unsafe { attach_tls_for_test(stream, actor.cast()) }, 0);
+        assert_eq!(
+            recv_tls_event(&events, Duration::from_secs(3)),
+            TlsActorEvent::Data(b"first\0chunk".to_vec())
+        );
+        // SAFETY: freeing the destination while its reader exists is supported;
+        // the attachment retained only its stable identity, not this allocation.
+        assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        // SAFETY: this test owns the outer stream until close below.
+        let inner = unsafe { Arc::clone(&(*stream).inner) };
+        while !inner.reader_exited.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "reader outlived its stopped destination"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        // SAFETY: joins the reader and releases the one stream owner.
+        unsafe { hew_tls_close(stream) };
+        server.join().unwrap();
+        unregister_tls_actor_events(test_id);
+    }
+
+    #[test]
     fn attach_reader_delivers_decrypted_data_and_reaps_on_close() {
         let _runtime = NetErrorSlotRuntimeGuard::new();
 
@@ -1773,7 +1627,7 @@ mod tests {
 
         // Server: accept one connection, complete the handshake, send a payload,
         // then close cleanly so the client reader observes EOF.
-        let payload = b"hello-over-tls";
+        let payload = b"hello\0over-tls-\xc3\xa9";
         let server = thread::spawn(move || {
             let (tcp, _) = listener.accept().expect("server accept");
             let conn = rustls::ServerConnection::new(server_config).expect("server connection");
@@ -1806,25 +1660,11 @@ mod tests {
         assert_attach_setup_failure_is_fail_closed(stream_ptr, actor);
 
         // SAFETY: `stream_ptr` and `actor` are live for the attach.
-        let attach_status = unsafe {
-            hew_tls_attach(
-                stream_ptr,
-                actor.cast(),
-                TLS_ON_DATA_TYPE.into(),
-                TLS_ON_CLOSE_TYPE.into(),
-            )
-        };
+        let attach_status = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(attach_status, 0, "first attach should succeed");
 
         // SAFETY: both handles are live, but the stream already owns a reader.
-        let second_status = unsafe {
-            hew_tls_attach(
-                stream_ptr,
-                actor.cast(),
-                TLS_ON_DATA_TYPE.into(),
-                TLS_ON_CLOSE_TYPE.into(),
-            )
-        };
+        let second_status = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(second_status, -1);
         assert_eq!(last_error_string(), "tls.attach: reader already attached");
 
@@ -2091,14 +1931,7 @@ mod tests {
         };
         assert!(!actor.is_null(), "test actor should spawn");
         // SAFETY: `stream_ptr` and `actor` are live for the attach.
-        let attach_status = unsafe {
-            hew_tls_attach(
-                stream_ptr,
-                actor.cast(),
-                TLS_ON_DATA_TYPE.into(),
-                TLS_ON_CLOSE_TYPE.into(),
-            )
-        };
+        let attach_status = unsafe { attach_tls_for_test(stream_ptr, actor.cast()) };
         assert_eq!(attach_status, 0, "attach should succeed");
 
         // Let the reader settle into its blocking read loop before closing.

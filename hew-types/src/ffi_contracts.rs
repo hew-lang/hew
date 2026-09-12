@@ -1,9 +1,9 @@
 //! Machine-checked ownership facts for C-ABI extern symbols.
 //!
-//! `scripts/runtime-export-classification.toml` is the single source of truth.
-//! `hew-types/build.rs` projects it here so HIR can validate an extern
-//! resource boundary before MIR lowering, while MIR consumes the exact same
-//! table through its re-export.  An absent row is deliberately not a borrow.
+//! Declaration-owned runtime operations derive their rows from stdlib `.hew`
+//! attributes; remaining extern contracts live in the export classification
+//! TOML. `hew-types/build.rs` merges these disjoint owners into one table for
+//! HIR and MIR. An absent row is deliberately not a borrow.
 
 /// Ownership disposition of one C-ABI parameter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -3,7 +3,8 @@
 use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{
-    ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler, SemFailureDisplay,
+    ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
+    SemFailureDisplay,
 };
 use inkwell::types::StructType;
 
@@ -20,6 +21,13 @@ struct SpawnFailure<'ctx> {
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
+
+#[path = "physical_actor_ingress.rs"]
+mod ingress;
+
+pub(super) fn ingress_symbol(adapter: ActorIngressAdapter) -> String {
+    format!("hew.actor.{}.ingress.{}", adapter.actor.0, adapter.message)
+}
 #[path = "physical_actor_lifecycle.rs"]
 mod lifecycle;
 

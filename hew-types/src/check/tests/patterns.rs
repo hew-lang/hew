@@ -1466,11 +1466,11 @@ fn foo(s: Shape) -> i64 {
 
 // ── Generic machine transition-body inference (Lane B S8 prerequisite) ────
 
-/// MACHINE-SPEC, "Implementation scope": composite state evaluation is not
-/// yet admitted by the ordinary evaluator, so the form is refused rather than
-/// lowered.
+/// HEW-SPEC-2026 §3.11.9: a depth-1 composite flattens to its substates
+/// before checking, so its transitions are ordinary transitions between
+/// declared states.
 #[test]
-fn composite_machine_transition_is_refused() {
+fn composite_machine_transition_checks_against_the_flattened_states() {
     let output = check_source(
         r"
         machine Connection {
@@ -1490,11 +1490,8 @@ fn composite_machine_transition_is_refused() {
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("composite states")),
-        "expected the documented composite-state refusal: {:#?}",
+        output.errors.is_empty(),
+        "a depth-1 composite machine should check cleanly: {:#?}",
         output.errors
     );
 }
